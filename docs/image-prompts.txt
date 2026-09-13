@@ -1,0 +1,15 @@
+Generator: built-in image_gen; three calls in one parallel batch.
+
+1. Use case: product-mockup. Asset type: Dellvit delivery website hero visual. Generate a premium realistic 3D smartphone tilted slightly, white screen with a polished red/orange Dellvit food delivery app UI. Brand word on screen exactly 'Dellvit'. Floating beside the phone: a paper grocery bag with produce, a delicious burger, and a small cardboard parcel. Warm orange and red abstract curved swoosh backdrop behind the phone. Overall pale white/cream background, soft studio shadows, sophisticated appetizing material detail, delightful premium design. Landscape 3:2 composition, all objects entirely in frame, generous outer margin. Palette red #d91e45 orange #fb9e42 cream #fff5e6. No surrounding marketing copy, no watermark.
+
+2. Use case: stylized-concept. Asset type: Dellvit delivery website rider visual. A friendly young adult Pakistani male delivery rider wearing a safety helmet, seated naturally on a red scooter with a red delivery box on the rear. Premium polished realistic 3D illustration with soft friendly proportions and refined materials. Cream background #fff5e6, isolated complete full scooter with both wheels visible and ample space around it, slight three-quarter view, cheerful confident expression. Red #d91e45 scooter and box, orange #fb9e42 accents. Landscape 3:2, soft studio shadows, no text, no logos, no watermark.
+
+3. Use case: product-mockup. Asset type: four delivery service images in one square 2 by 2 atlas for precise quadrant cropping. Generate exactly four independent product still lifes centered in four equal quadrants separated with broad whitespace, no borders, no dividers, no text. Top-left: delicious burger, golden fries in a red sleeve, plain red drink cup. Top-right: fresh groceries and vegetables in a wooden crate. Bottom-left: one sealed cardboard delivery parcel. Bottom-right: household essentials in a basket: laundry detergent bottle, tissues, cleaning spray and paper roll, no readable labels. Consistent premium realistic 3D product photography throughout, pale warm offwhite #fff5e6 background everywhere, red #d91e45 and orange #fb9e42 accents, soft studio shadows. Square image, each still life fully contained well inside its own quadrant, generous clear margins around each still life and clear central horizontal and vertical whitespace. No additional objects outside the four groups, no watermark.
+
+Final assets:
+/workspace/scratch/736f5db19cc4/dellvit-art/hero-phone.webp
+/workspace/scratch/736f5db19cc4/dellvit-art/delivery-rider.webp
+/workspace/scratch/736f5db19cc4/dellvit-art/category-food.webp
+/workspace/scratch/736f5db19cc4/dellvit-art/category-groceries.webp
+/workspace/scratch/736f5db19cc4/dellvit-art/category-parcel.webp
+/workspace/scratch/736f5db19cc4/dellvit-art/category-essentials.webp
