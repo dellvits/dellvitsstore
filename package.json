@@ -20,6 +20,9 @@
     "bootstrap": "npm run bootstrap -w @dellvit/api",
     "import:local": "npm run import:local -w @dellvit/api"
   },
+  "dependencies": {
+    "@swc/helpers": "0.5.23"
+  },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",
     "@types/node": "^24.0.0",
