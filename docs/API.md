@@ -124,7 +124,7 @@ All `/manage/*` routes require a matching staff role. Outlet ownership is checke
 | POST   | `/manage/products`     | Admin / outlet create                                                                           |
 | PUT    | `/manage/products/:id` | Admin / owner outlet edit or restore archived product                                           |
 | DELETE | `/manage/products/:id` | Admin / owner outlet archive; order history preserved                                           |
-| POST   | `/manage/images`       | Admin / outlet, multipart field `file`, max 8 MB; returns `{ "url": "/api/media/<uuid>.webp" }` |
+| POST   | `/manage/images`       | Admin / outlet, multipart field `file`, max 4 MB; returns `{ "url": "/api/media/<uuid>.webp" }` |
 | GET    | `/manage/outlet`       | Current outlet's management details                                                             |
 | GET    | `/media/:name`         | Public generated WebP image only; PDF documents are not served here                             |
 
@@ -169,7 +169,7 @@ Every route below requires an active admin session. There is no client-provided 
 | PUT    | `/admin/locations/:id`         | Edit area                                                        |
 | PATCH  | `/admin/orders/:id/assign`     | `{ "rider_id": "..." }`; rider must be active in matching area   |
 | GET    | `/admin/outlets/:id/documents` | Private document metadata                                        |
-| POST   | `/admin/outlets/:id/documents` | Multipart `file`; PDF header required; max 8 MB                  |
+| POST   | `/admin/outlets/:id/documents` | Multipart `file`; PDF header required; max 4 MB                  |
 | GET    | `/admin/documents/:id`         | Authorized attachment download                                   |
 | DELETE | `/admin/documents/:id`         | Delete private file and metadata                                 |
 | GET    | `/admin/messages`              | Contact form inbox                                               |

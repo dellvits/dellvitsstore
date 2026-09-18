@@ -1,13 +1,15 @@
 # Dellvit delivery platform
 
-Responsive Next.js storefront and role-based workspaces backed by Express and SQLite. Categories, products, orders, campaigns, permissions, delivery settings, and payment settings are persisted in the API database.
+Responsive Next.js storefront and role-based workspaces backed by Express, Supabase PostgreSQL and Cloudflare R2. Categories, products, orders, campaigns, permissions, delivery settings, and payment settings are persisted in the API database.
 
 ## Start with real data
 
-Requires Node.js 24 or later. Run commands from the project root. On PowerShell, use `npm.cmd` if script execution policy blocks `npm`.
+Requires Node.js 24. Run commands from the project root. On PowerShell, use `npm.cmd` if script execution policy blocks `npm`.
 
 ```powershell
 npm.cmd install
+# Create apps/api/.env from its example and fill in Supabase/R2 credentials first.
+npm.cmd run db:migrate
 $env:ADMIN_EMAIL = 'your-admin@example.com'
 $env:ADMIN_NAME = 'Store owner'
 # Set ADMIN_PASSWORD to a unique password of at least 12 characters in your local environment.
@@ -17,7 +19,7 @@ npm.cmd run dev
 
 Open `http://localhost:3000/admin/login`. Bootstrap creates only the super administrator; it never creates inventory, riders, customers, orders, or sample campaigns. It refuses to overwrite an existing super administrator. Remove ADMIN_PASSWORD from your shell environment after bootstrap.
 
-For an existing installation, the one-time platform migration preserves all data and gives the earliest existing administrator super-admin access. Other existing administrators receive no module permissions until assigned by the super administrator. The migration does not delete existing demonstration records.
+For an existing local installation, follow the one-time SQLite and upload import instructions in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). The importer preserves existing accounts and permissions; do not bootstrap a second store before importing.
 
 Configure your store in this order:
 
@@ -91,22 +93,28 @@ Riders can enable GPS sharing during active deliveries. The browser asks for loc
 
 ## Configuration and commands
 
-For Vercel storefront settings and backend hosting requirements, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+For one-project Vercel deployment, Supabase and R2 setup, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
-The API defaults to port 4000 and the web app to port 3000. Browser requests use the Next.js `/api` proxy. Environment examples are in the two app workspaces.
+The API defaults to port 4000 and the web app to port 3000. Browser requests use `/api`, routed by Vercel Services in production and the Next.js proxy locally. Environment examples are in the two app workspaces.
 
-| Variable           | Purpose                                                        |
-| ------------------ | -------------------------------------------------------------- |
-| `DATABASE_PATH`    | SQLite path, relative to API working directory unless absolute |
-| `UPLOAD_DIR`       | Uploaded images and private documents                          |
-| `WEB_ORIGIN`       | Exact web origin allowed for authenticated browser writes      |
-| `PORT`             | API port                                                       |
-| `NODE_ENV`         | Production enables HTTPS-only cookies                          |
-| `TRUST_PROXY`      | Set only for the trusted reverse proxy configuration           |
-| `API_INTERNAL_URL` | Web build/proxy destination; default `http://127.0.0.1:4000`   |
-| `NEXT_DIST_DIR`    | Optional isolated web build folder for local previews          |
+| Variable               | Purpose                                                   |
+| ---------------------- | --------------------------------------------------------- |
+| `DATABASE_URL`         | Supabase PostgreSQL transaction-pooler connection URI     |
+| `DATABASE_SSL_CA`      | Optional trusted Supabase CA certificate PEM              |
+| `R2_ACCOUNT_ID`        | Cloudflare account ID                                     |
+| `R2_ACCESS_KEY_ID`     | R2 S3 Access Key ID                                       |
+| `R2_SECRET_ACCESS_KEY` | R2 S3 Secret Access Key                                   |
+| `R2_BUCKET_NAME`       | Private bucket for images, receipts and documents         |
+| `WEB_ORIGIN`           | Exact web origin allowed for authenticated browser writes |
+| `PORT`                 | API port                                                  |
+| `NODE_ENV`             | Production enables HTTPS-only cookies                     |
+| `TRUST_PROXY`          | Set only for the trusted reverse proxy configuration      |
+| `API_INTERNAL_URL`     | Local web proxy destination; unused on Vercel             |
+| `NEXT_DIST_DIR`        | Optional isolated web build folder for local previews     |
 
 ```text
+npm run db:migrate Apply the Supabase schema before first use
+npm run import:local Import an existing local store into fresh Supabase/R2 storage
 npm run bootstrap  Create the first super administrator from environment credentials
 npm run dev        Start API and web development servers
 npm run typecheck  Check both TypeScript workspaces
@@ -118,4 +126,4 @@ npm run format     Format source and documentation
 
 `npm run seed` remains an explicit development-only fixture command. Do not run it for a real store. The original local demonstration logins are `admin@dellvit.local`, `customer@dellvit.local`, outlet IDs `DLV-001` through `DLV-005`, and rider IDs `DRV-001` / `DRV-002`, with the fixture password `Dellvit@2026`. These accounts are created only by the optional seed command or isolated tests.
 
-SQLite and local uploads are the active storage. Hosting, HTTPS, backups, production routing, payment-gateway integration, background mobile tracking, MFA, SMS/email delivery, and deployment acceptance are separate operational work. See [docs/PLATFORM.md](docs/PLATFORM.md) for the API additions and access model.
+Supabase PostgreSQL and Cloudflare R2 are the active storage. Vercel Services configuration deploys both applications under one domain. Cloud accounts, credentials and initial schema setup are required before deployment. Backups, payment-gateway integration, background mobile tracking, MFA and SMS/email delivery remain operational work. See [docs/PLATFORM.md](docs/PLATFORM.md) for the API additions and access model.

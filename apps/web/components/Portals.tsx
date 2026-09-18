@@ -970,7 +970,7 @@ function DocumentManager({ outletId }: { outletId: string }) {
       </div>
       <label className="upload-tile wide">
         <Upload size={18} />
-        <span>{busy ? 'Uploading…' : 'Upload PDF (max 8 MB)'}</span>
+        <span>{busy ? 'Uploading…' : 'Upload PDF (max 4 MB)'}</span>
         <input
           type="file"
           accept="application/pdf"

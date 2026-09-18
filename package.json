@@ -6,7 +6,7 @@
     "apps/*"
   ],
   "engines": {
-    "node": ">=24.0.0"
+    "node": "24.x"
   },
   "scripts": {
     "dev": "concurrently -k -n API,WEB -c yellow,magenta \"npm run dev -w @dellvit/api\" \"npm run dev -w @dellvit/web\"",
@@ -14,17 +14,20 @@
     "start": "concurrently -k -n API,WEB \"npm run start -w @dellvit/api\" \"npm run start -w @dellvit/web\"",
     "seed": "npm run seed -w @dellvit/api",
     "typecheck": "npm run typecheck --workspaces",
-    "test": "node --import tsx --test tests/api.test.ts",
+    "test": "tsc -p tsconfig.test.json && node --test .test-build/tests/*.test.js",
+    "db:migrate": "npm run db:migrate -w @dellvit/api",
     "format": "prettier --write \"apps/**/*.{ts,tsx,css,json,mjs}\" \"docs/**/*.md\" \"tests/**/*.ts\" README.md",
-    "bootstrap": "npm run bootstrap -w @dellvit/api"
+    "bootstrap": "npm run bootstrap -w @dellvit/api",
+    "import:local": "npm run import:local -w @dellvit/api"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1",
-    "tsx": "^4.20.5",
-    "typescript": "^5.9.3",
+    "@electric-sql/pglite": "^0.5.8",
     "@types/node": "^24.0.0",
+    "concurrently": "^9.2.1",
     "light-my-request": "^6.6.0",
-    "prettier": "^3.6.2"
+    "prettier": "^3.6.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.3"
   },
   "type": "module"
 }

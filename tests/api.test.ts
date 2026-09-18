@@ -1,23 +1,20 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import inject from 'light-my-request';
-const temp = mkdtempSync(join(tmpdir(), 'dellvit-test-'));
-process.env.DATABASE_PATH = join(temp, 'test.sqlite');
-process.env.UPLOAD_DIR = join(temp, 'uploads');
 process.env.WEB_ORIGIN = 'http://localhost:3000';
 process.env.NODE_ENV = 'test';
+const { setupTestDatabase, storedObjects } = await import('./helpers/database.js');
+await setupTestDatabase();
 const { app } = await import('../apps/api/src/app.js');
 const { seed } = await import('../apps/api/src/seed.js');
 const { db, one, run } = await import('../apps/api/src/db.js');
-seed();
+await seed();
 after(async () => {
   await new Promise((resolve) => setImmediate(resolve));
-  db.close();
-  rmSync(temp, { recursive: true, force: true });
+  await db.close();
 });
 async function request(
   method: string,
@@ -96,7 +93,7 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
       origin: 'http://localhost:3000',
     });
     assert.equal(r.status, 401, JSON.stringify(r.data));
-    assert.equal(one('SELECT COUNT(*) n FROM orders')!.n, 0);
+    assert.equal((await one('SELECT COUNT(*) n FROM orders'))!.n, 0);
     assert.equal(
       (
         await request('POST', '/orders', orderBody(), undefined, {
@@ -119,7 +116,7 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
   await t.test(
     'server controls prices, stock, rider assignment and duplicate checkout',
     async () => {
-      const before = one('SELECT stock FROM products WHERE id=?', 'product-1')!.stock;
+      const before = (await one('SELECT stock FROM products WHERE id=?', 'product-1'))!.stock;
       const body = orderBody();
       const r = await request('POST', '/orders', body, customer);
       assert.equal(r.status, 201, JSON.stringify(r.data));
@@ -133,12 +130,18 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
       assert.ok(order.events.some((e: any) => e.status === 'payment_verified'));
       assert.equal(order.notes, 'Call at the gate.');
       assert.match(order.reference, /^DLV-/);
-      assert.equal(one('SELECT stock FROM products WHERE id=?', 'product-1')!.stock, before - 2);
+      assert.equal(
+        (await one('SELECT stock FROM products WHERE id=?', 'product-1'))!.stock,
+        before - 2,
+      );
       const retry = await request('POST', '/orders', body, customer);
       assert.equal(retry.data.id, order.id);
-      assert.equal(one('SELECT stock FROM products WHERE id=?', 'product-1')!.stock, before - 2);
       assert.equal(
-        one('SELECT address FROM users WHERE id=?', 'customer-1')!.address,
+        (await one('SELECT stock FROM products WHERE id=?', 'product-1'))!.stock,
+        before - 2,
+      );
+      assert.equal(
+        (await one('SELECT address FROM users WHERE id=?', 'customer-1'))!.address,
         '6th Road, Rawalpindi',
       );
     },
@@ -171,8 +174,14 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
         'a rider is required',
       );
       assert.equal(
-        (await request('POST', '/admin/orders/' + order.id + '/dispatch', { rider_id: 'rider-2' }, admin))
-          .status,
+        (
+          await request(
+            'POST',
+            '/admin/orders/' + order.id + '/dispatch',
+            { rider_id: 'rider-2' },
+            admin,
+          )
+        ).status,
         400,
         'riders from another area are refused',
       );
@@ -295,8 +304,11 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
         ).status,
         429,
       );
-      assert.equal(one('SELECT status FROM orders WHERE id=?', order.id)!.status, 'picked_up');
-      run(
+      assert.equal(
+        (await one('SELECT status FROM orders WHERE id=?', order.id))!.status,
+        'picked_up',
+      );
+      await run(
         'UPDATE orders SET otp_locked_until=? WHERE id=?',
         new Date(Date.now() - 1000).toISOString(),
         order.id,
@@ -327,7 +339,18 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
       assert.equal(done.data.status, 'delivered');
       assert.deepEqual(
         done.data.events.map((e: any) => e.status).filter((s: string) => !['reminder'].includes(s)),
-        ['placed', 'payment_verified', 'sent', 'outlet_accepted', 'rider_accepted', 'confirmed', 'preparing', 'ready', 'picked_up', 'delivered'],
+        [
+          'placed',
+          'payment_verified',
+          'sent',
+          'outlet_accepted',
+          'rider_accepted',
+          'confirmed',
+          'preparing',
+          'ready',
+          'picked_up',
+          'delivered',
+        ],
       );
       assert.ok(done.data.delivered_at);
       assert.equal(done.data.locked, true);
@@ -349,8 +372,14 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
       );
       const future = new Date(Date.now() + 86400000).toISOString();
       assert.equal(
-        (await request('GET', '/admin/summary?from=' + encodeURIComponent(future), undefined, admin))
-          .data.orders,
+        (
+          await request(
+            'GET',
+            '/admin/summary?from=' + encodeURIComponent(future),
+            undefined,
+            admin,
+          )
+        ).data.orders,
         0,
       );
       const outletSummary = await request('GET', '/manage/outlet/summary', undefined, outlet);
@@ -366,10 +395,7 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
       const inbox = await request('GET', '/notifications', undefined, customer);
       assert.ok(inbox.data.items.some((n: any) => n.title === 'Delivered'));
       assert.ok(inbox.data.unread > 0);
-      assert.equal(
-        (await request('POST', '/notifications/read-all', {}, customer)).status,
-        200,
-      );
+      assert.equal((await request('POST', '/notifications/read-all', {}, customer)).status, 200);
       assert.equal((await request('GET', '/notifications', undefined, customer)).data.unread, 0);
       const outletInbox = await request('GET', '/notifications', undefined, outlet);
       assert.ok(outletInbox.data.items.some((n: any) => n.title === 'New order request'));
@@ -393,16 +419,16 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     },
   );
   await t.test('cancellation restores stock exactly once', async () => {
-    const before = one('SELECT stock FROM products WHERE id=?', 'product-1')!.stock;
+    const before = (await one('SELECT stock FROM products WHERE id=?', 'product-1'))!.stock;
     const created = await request('POST', '/orders', orderBody(), customer);
     const url = '/orders/' + created.data.id + '/status';
     assert.equal((await request('PATCH', url, { status: 'cancelled' }, customer)).status, 200);
-    assert.equal(one('SELECT stock FROM products WHERE id=?', 'product-1')!.stock, before);
+    assert.equal((await one('SELECT stock FROM products WHERE id=?', 'product-1'))!.stock, before);
     assert.equal((await request('PATCH', url, { status: 'cancelled' }, customer)).status, 400);
-    assert.equal(one('SELECT stock FROM products WHERE id=?', 'product-1')!.stock, before);
+    assert.equal((await one('SELECT stock FROM products WHERE id=?', 'product-1'))!.stock, before);
   });
   await t.test('outlet rejection cancels; rider rejection only unassigns', async () => {
-    const before = one('SELECT stock FROM products WHERE id=?', 'product-1')!.stock;
+    const before = (await one('SELECT stock FROM products WHERE id=?', 'product-1'))!.stock;
     const a = (await request('POST', '/orders', orderBody(), customer)).data;
     const dispatch = (id: string, rider_id = 'rider-1') =>
       request('POST', '/admin/orders/' + id + '/dispatch', { rider_id }, admin);
@@ -418,15 +444,21 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     assert.equal(seen.status, 'cancelled');
     assert.equal(seen.flow.cancel_reason, 'Out of buns tonight');
     assert.equal(seen.flow.cancelled_by, 'outlet');
-    assert.equal(one('SELECT stock FROM products WHERE id=?', 'product-1')!.stock, before);
+    assert.equal((await one('SELECT stock FROM products WHERE id=?', 'product-1'))!.stock, before);
     const inbox = (await request('GET', '/notifications', undefined, customer)).data.items;
     assert.ok(inbox.some((n: any) => n.body.includes('Out of buns tonight')));
 
     const b = (await request('POST', '/orders', orderBody(), customer)).data;
     assert.equal((await dispatch(b.id)).status, 200);
     assert.equal(
-      (await request('POST', '/orders/' + b.id + '/outlet-response', { decision: 'accept' }, outlet))
-        .status,
+      (
+        await request(
+          'POST',
+          '/orders/' + b.id + '/outlet-response',
+          { decision: 'accept' },
+          outlet,
+        )
+      ).status,
       200,
     );
     assert.equal(
@@ -470,7 +502,10 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
         .status,
       200,
     );
-    assert.equal((await request('GET', '/orders/' + b.id, undefined, admin)).data.status, 'confirmed');
+    assert.equal(
+      (await request('GET', '/orders/' + b.id, undefined, admin)).data.status,
+      'confirmed',
+    );
     // While preparing, only an administrator can cancel; the outlet may ask.
     const status = (s: string, token: string, reason = '') =>
       request('PATCH', '/orders/' + b.id + '/status', { status: s, reason }, token);
@@ -478,8 +513,14 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     assert.equal((await status('cancelled', customer)).status, 400);
     assert.equal((await status('cancelled', outlet)).status, 403);
     assert.equal(
-      (await request('POST', '/orders/' + b.id + '/cancel-request', { reason: 'Oven broke' }, outlet))
-        .status,
+      (
+        await request(
+          'POST',
+          '/orders/' + b.id + '/cancel-request',
+          { reason: 'Oven broke' },
+          outlet,
+        )
+      ).status,
       200,
     );
     assert.equal(
@@ -502,7 +543,10 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     assert.equal(view.status, 'cancelled');
     assert.equal(view.flow.cancel_reason, 'Oven broke');
     assert.equal(view.flow.cancel_request, '');
-    assert.ok(!view.events.some((e: any) => e.status === 'cancel_requested'), 'internal events hidden');
+    assert.ok(
+      !view.events.some((e: any) => e.status === 'cancel_requested'),
+      'internal events hidden',
+    );
   });
   await t.test('riders hand over COD cash and request payouts for admin review', async () => {
     const cash = (await request('GET', '/rider/cash', undefined, rider)).data;
@@ -519,7 +563,8 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
       400,
     );
     assert.equal(
-      (await request('POST', '/rider/cash/deposits', { amount: 5000, method: 'bank' }, rider)).status,
+      (await request('POST', '/rider/cash/deposits', { amount: 5000, method: 'bank' }, rider))
+        .status,
       400,
       'transfers need a transaction ID',
     );
@@ -539,17 +584,27 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
       400,
     );
     assert.equal(
-      (await request('PATCH', '/admin/cash/deposits/' + dep.data.id, { decision: 'approve' }, admin))
-        .status,
+      (
+        await request(
+          'PATCH',
+          '/admin/cash/deposits/' + dep.data.id,
+          { decision: 'approve' },
+          admin,
+        )
+      ).status,
       200,
     );
     const after = (await request('GET', '/rider/cash', undefined, rider)).data;
-    assert.deepEqual([after.in_hand, after.approved, after.submitted_range], [0, order.total, order.total]);
+    assert.deepEqual(
+      [after.in_hand, after.approved, after.submitted_range],
+      [0, order.total, order.total],
+    );
 
     const statement = (await request('GET', '/rider/earnings', undefined, rider)).data;
     assert.equal(statement.available, 10000);
     assert.equal(
-      (await request('POST', '/rider/payout-requests', { amount: 10001, method: 'cash' }, rider)).status,
+      (await request('POST', '/rider/payout-requests', { amount: 10001, method: 'cash' }, rider))
+        .status,
       400,
     );
     const req1 = await request(
@@ -671,8 +726,14 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
       (r: any) => r.id === 'rider-1',
     );
     assert.equal(
-      (await request('POST', '/admin/riders/rider-1/payouts', { amount: r1.balance + 1, note: '' }, admin))
-        .status,
+      (
+        await request(
+          'POST',
+          '/admin/riders/rider-1/payouts',
+          { amount: r1.balance + 1, note: '' },
+          admin,
+        )
+      ).status,
       400,
     );
     const payout = await request(
@@ -714,6 +775,7 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     });
     assert.equal(r.statusCode, 201, r.body);
     const docId = r.json().id;
+    assert.ok(storedObjects.has('documents/' + docId + '.pdf'));
     const file = await inject(app as any, {
       method: 'GET',
       url: '/api/admin/documents/' + docId,
@@ -726,6 +788,7 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
       (await request('DELETE', '/admin/documents/' + docId, undefined, admin)).status,
       200,
     );
+    assert.equal(storedObjects.has('documents/' + docId + '.pdf'), false);
   });
   await t.test('image uploads become usable WebP', async () => {
     const img = readFileSync(resolve('apps/web/public/images/food.webp'));
@@ -786,7 +849,7 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
       admin,
     );
     assert.equal(loc.status, 201);
-    assert.ok(one('SELECT id FROM locations WHERE id=?', loc.data.id));
+    assert.ok(await one('SELECT id FROM locations WHERE id=?', loc.data.id));
   });
   await t.test('registration, profile updates and password rotation work', async () => {
     const p = {
@@ -1011,8 +1074,10 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     await t.test(
       'checkout enforces coupon limits, configured fees and disabled payment methods',
       async () => {
-        run("UPDATE products SET active=1,stock=100,location_id='rawalpindi' WHERE id='product-1'");
-        run("UPDATE outlets SET active=1 WHERE id='outlet-1'");
+        await run(
+          "UPDATE products SET active=1,stock=100,location_id='rawalpindi' WHERE id='product-1'",
+        );
+        await run("UPDATE outlets SET active=1 WHERE id='outlet-1'");
         const coupon = {
           name: 'Test campaign',
           code: 'SAVE15',
@@ -1061,7 +1126,13 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
             await request(
               'PUT',
               '/admin/records/payments/wallet',
-              { name: 'JazzCash', type: 'wallet', provider: 'JazzCash', account_title: 'Store', mobile_number: '12345' },
+              {
+                name: 'JazzCash',
+                type: 'wallet',
+                provider: 'JazzCash',
+                account_title: 'Store',
+                mobile_number: '12345',
+              },
               admin,
             )
           ).status,
@@ -1070,18 +1141,18 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
         const saved = await request('PUT', '/admin/records/payments/bank', bank, admin);
         assert.equal(saved.status, 200, JSON.stringify(saved.data));
         assert.equal(saved.data.iban, 'PK36MEZN0000000123456789');
-        const publicBank = (await request('GET', '/payments')).data.find((m: any) => m.id === 'bank');
+        const publicBank = (await request('GET', '/payments')).data.find(
+          (m: any) => m.id === 'bank',
+        );
         assert.equal(publicBank.account_title, 'Real Store');
-        const payment = { transaction_id: 'TID-100200', payer_name: 'Ayesha Khan', payer_account: '0300' };
+        const payment = {
+          transaction_id: 'TID-100200',
+          payer_name: 'Ayesha Khan',
+          payer_account: '0300',
+        };
         assert.equal(
-          (
-            await request(
-              'POST',
-              '/orders',
-              { ...orderBody(), payment_method: 'bank' },
-              customer,
-            )
-          ).status,
+          (await request('POST', '/orders', { ...orderBody(), payment_method: 'bank' }, customer))
+            .status,
           400,
         );
         const body = { ...orderBody(), coupon_code: 'SAVE15', payment_method: 'bank', payment };
@@ -1101,7 +1172,10 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
         assert.equal(r.data.transaction_id, 'TID-100200');
         assert.equal(r.data.payment_details.bank_name, 'Meezan Bank');
         assert.equal((await request('POST', '/orders', body, customer)).data.id, r.data.id);
-        assert.equal(one('SELECT COUNT(*) n FROM coupon_uses WHERE coupon_id=?', 'save15')!.n, 1);
+        assert.equal(
+          (await one('SELECT COUNT(*) n FROM coupon_uses WHERE coupon_id=?', 'save15'))!.n,
+          1,
+        );
         assert.equal(
           (await request('POST', '/orders', { ...body, idempotency_key: randomUUID() }, customer))
             .status,
@@ -1146,7 +1220,7 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     await t.test(
       'manual payment requires confirmation; rider location is scoped and terminal orders hide it',
       async () => {
-        run('UPDATE orders SET rider_id=? WHERE id=?', 'rider-1', manualOrder.id);
+        await run('UPDATE orders SET rider_id=? WHERE id=?', 'rider-1', manualOrder.id);
         const upload = await request(
           'POST',
           '/rider/location',
@@ -1189,7 +1263,12 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
         );
         assert.equal(early.status, 400);
         assert.match(early.data.error, /Verify the payment/);
-        const outletView = await request('GET', '/orders/' + manualOrder.id, undefined, outletToken);
+        const outletView = await request(
+          'GET',
+          '/orders/' + manualOrder.id,
+          undefined,
+          outletToken,
+        );
         assert.equal(outletView.data.transaction_id, undefined);
         assert.equal(
           (
@@ -1228,7 +1307,7 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
             .payment_status,
           'submitted',
         );
-        run("UPDATE orders SET status='picked_up' WHERE id=?", manualOrder.id);
+        await run("UPDATE orders SET status='picked_up' WHERE id=?", manualOrder.id);
         const verify = { otp: manualOrder.otp, cash_received: true };
         assert.equal(
           (await request('POST', '/orders/' + manualOrder.id + '/verify', verify, rider)).status,
@@ -1335,7 +1414,8 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
           position: 5,
         };
         assert.equal(
-          (await request('PUT', '/admin/records/payments/card', { ...card, secret_key: '' }, admin)).status,
+          (await request('PUT', '/admin/records/payments/card', { ...card, secret_key: '' }, admin))
+            .status,
           400,
         );
         const saved = await request('PUT', '/admin/records/payments/card', card, admin);
@@ -1371,9 +1451,9 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
           ...extra,
         });
         // No adapter registered for this gateway yet: nothing is created or charged.
-        const before = one('SELECT COUNT(*) n FROM orders')!.n;
+        const before = (await one('SELECT COUNT(*) n FROM orders'))!.n;
         assert.equal((await request('POST', '/orders', cardOrder(), customer)).status, 503);
-        assert.equal(one('SELECT COUNT(*) n FROM orders')!.n, before);
+        assert.equal((await one('SELECT COUNT(*) n FROM orders'))!.n, before);
 
         const { cardGateways } = await import('../apps/api/src/cards.js');
         const charges: any[] = [];
@@ -1385,8 +1465,11 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
               : { status: 'paid', transaction_id: 'ch_' + c.reference };
           },
         };
-        assert.equal((await request('POST', '/orders', cardOrder({ payment: {} }), customer)).status, 400);
-        const stock = one("SELECT stock FROM products WHERE id='product-1'")!.stock;
+        assert.equal(
+          (await request('POST', '/orders', cardOrder({ payment: {} }), customer)).status,
+          400,
+        );
+        const stock = (await one("SELECT stock FROM products WHERE id='product-1'"))!.stock;
         const paid = await request('POST', '/orders', cardOrder(), customer);
         assert.equal(paid.status, 201, JSON.stringify(paid.data));
         assert.equal(paid.data.payment_status, 'paid');
@@ -1407,11 +1490,14 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
         );
         assert.equal(declined.status, 402);
         assert.equal(declined.data.error, 'Card declined by issuer.');
-        const failed = one(
+        const failed = (await one(
           "SELECT o.status,d.payment_status FROM orders o JOIN order_details d ON d.order_id=o.id WHERE d.payment_note='Card declined by issuer.'",
-        )!;
+        ))!;
         assert.deepEqual({ ...failed }, { status: 'cancelled', payment_status: 'failed' });
-        assert.equal(one("SELECT stock FROM products WHERE id='product-1'")!.stock, stock - 2);
+        assert.equal(
+          (await one("SELECT stock FROM products WHERE id='product-1'"))!.stock,
+          stock - 2,
+        );
         delete cardGateways.TestPay;
       },
     );

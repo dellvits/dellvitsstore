@@ -6,8 +6,8 @@ const server = app.listen(port, () =>
   console.log(`Dellvit API listening on http://localhost:${port}`),
 );
 function shutdown() {
-  server.close(() => {
-    db.close();
+  server.close(async () => {
+    await db.close();
     process.exit(0);
   });
 }

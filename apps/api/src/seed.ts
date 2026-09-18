@@ -3,16 +3,16 @@ import './riders.js';
 import { randomUUID } from 'node:crypto';
 import { db, one, run, transaction } from './db.js';
 import { hashPassword } from './security.js';
-export function seed() {
-  if (one('SELECT id FROM locations LIMIT 1')) return;
-  transaction(() => {
+export async function seed() {
+  if (await one('SELECT id FROM locations LIMIT 1')) return;
+  await transaction(async () => {
     for (const row of [
       ['rawalpindi', '6th Road, Rawalpindi', 33.6442, 73.0713],
       ['satellite-town', 'Satellite Town, Rawalpindi', 33.6523, 73.0645],
       ['islamabad', 'F-10, Islamabad', 33.6955, 73.0122],
     ])
-      run('INSERT INTO locations VALUES(?,?,?,?)', ...row);
-    const createUser = (
+      await run('INSERT INTO locations VALUES(?,?,?,?)', ...row);
+    const createUser = async (
       id: string,
       name: string,
       email: string,
@@ -20,7 +20,7 @@ export function seed() {
       login: string | null,
       loc = 'rawalpindi',
     ) =>
-      run(
+      await run(
         'INSERT INTO users(id,name,email,phone,address,location_id,password_hash,role,login_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
         id,
         name,
@@ -33,11 +33,11 @@ export function seed() {
         login,
         new Date().toISOString(),
       );
-    createUser('admin-1', 'Dellvit Admin', 'admin@dellvit.local', 'admin', null);
-    run("INSERT OR IGNORE INTO admin_access VALUES('admin-1',1,'[]')");
+    await createUser('admin-1', 'Dellvit Admin', 'admin@dellvit.local', 'admin', null);
+    await run("INSERT INTO admin_access VALUES('admin-1',1,'[]') ON CONFLICT DO NOTHING");
     for (const name of ['Food', 'Groceries', 'Parcels', 'More'])
-      run(
-        'INSERT OR IGNORE INTO platform_records VALUES(?,?,?)',
+      await run(
+        'INSERT INTO platform_records VALUES(?,?,?) ON CONFLICT DO NOTHING',
         'categories',
         name,
         JSON.stringify({
@@ -72,17 +72,24 @@ export function seed() {
         position: 2,
       },
     }))
-      run(
-        'INSERT OR IGNORE INTO platform_records VALUES(?,?,?)',
+      await run(
+        'INSERT INTO platform_records VALUES(?,?,?) ON CONFLICT DO NOTHING',
         'payments',
         id,
         JSON.stringify({ active: true, ...method }),
       );
-    createUser('customer-1', 'Ayesha Khan', 'customer@dellvit.local', 'customer', null);
-    createUser('rider-1', 'Ali Hassan', 'rider@dellvit.local', 'rider', 'DRV-001');
-    createUser('rider-2', 'Bilal Ahmed', 'rider2@dellvit.local', 'rider', 'DRV-002', 'islamabad');
-    run("INSERT INTO rider_settings VALUES('rider-1','fixed',10000,'delivery_fee')");
-    run("INSERT INTO rider_settings VALUES('rider-2','percent',80,'delivery_fee')");
+    await createUser('customer-1', 'Ayesha Khan', 'customer@dellvit.local', 'customer', null);
+    await createUser('rider-1', 'Ali Hassan', 'rider@dellvit.local', 'rider', 'DRV-001');
+    await createUser(
+      'rider-2',
+      'Bilal Ahmed',
+      'rider2@dellvit.local',
+      'rider',
+      'DRV-002',
+      'islamabad',
+    );
+    await run("INSERT INTO rider_settings VALUES('rider-1','fixed',10000,'delivery_fee')");
+    await run("INSERT INTO rider_settings VALUES('rider-2','percent',80,'delivery_fee')");
     const outlets = [
       [
         'outlet-1',
@@ -137,7 +144,7 @@ export function seed() {
     ];
     for (const [id, name, category, image, customer, loc, lat, lng] of outlets) {
       const uid = 'user-' + id;
-      createUser(
+      await createUser(
         uid,
         String(name),
         String(id) + '@dellvit.local',
@@ -145,8 +152,8 @@ export function seed() {
         String(customer),
         String(loc),
       );
-      const location = one('SELECT name FROM locations WHERE id=?', loc)!;
-      run(
+      const location = (await one('SELECT name FROM locations WHERE id=?', loc))!;
+      await run(
         'INSERT INTO outlets VALUES(?,?,?,?,?,?,?,?,?,?,?, ?,?)',
         id,
         name,
@@ -272,7 +279,7 @@ export function seed() {
     ];
     for (const [i, p] of products.entries()) {
       const [name, desc, cat, price, stock, unit, outlet, loc, discount, deal, img, inc, exc] = p;
-      run(
+      await run(
         'INSERT INTO products VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         'product-' + (i + 1),
         outlet,
@@ -292,7 +299,7 @@ export function seed() {
         1,
       );
     }
-    run(
+    await run(
       'INSERT INTO settings VALUES(?,?)',
       'ad',
       JSON.stringify({
@@ -308,6 +315,6 @@ export function seed() {
   console.log('Demo data ready. See README for local demo accounts.');
 }
 if (process.argv[1]?.endsWith('seed.ts') || process.argv[1]?.endsWith('seed.js')) {
-  seed();
-  db.close();
+  await seed();
+  await db.close();
 }

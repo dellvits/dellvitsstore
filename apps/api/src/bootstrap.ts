@@ -9,11 +9,11 @@ if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || !password || password
     'Set ADMIN_EMAIL and ADMIN_PASSWORD (at least 12 characters) before running bootstrap.',
   );
 }
-if (one('SELECT user_id FROM admin_access WHERE super=1'))
-  throw new Error('A super administrator already exists. Bootstrap does not overwrite accounts.');
-transaction(() => {
+await transaction(async () => {
+  if (await one('SELECT user_id FROM admin_access WHERE super=1'))
+    throw new Error('A super administrator already exists. Bootstrap does not overwrite accounts.');
   const id = randomUUID();
-  run(
+  await run(
     "INSERT INTO users(id,name,email,password_hash,role,created_at) VALUES(?,?,?,?,'admin',?)",
     id,
     process.env.ADMIN_NAME || 'Store owner',
@@ -21,7 +21,7 @@ transaction(() => {
     hashPassword(password),
     new Date().toISOString(),
   );
-  run("INSERT INTO admin_access VALUES(?,1,'[]')", id);
+  await run("INSERT INTO admin_access VALUES(?,1,'[]')", id);
 });
-db.close();
+await db.close();
 console.log('Super administrator created. Sign in at /admin/login.');

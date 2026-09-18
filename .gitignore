@@ -7,3 +7,5 @@ data/
 *.tsbuildinfo
 
 .next-review/
+.test-build/
+.npm-cache/
