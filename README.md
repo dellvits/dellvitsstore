@@ -1,199 +1,119 @@
-# Dellvit — web delivery platform
+# Dellvit delivery platform
 
-A runnable web project based on the supplied Dellvit design, brand assets and client requirements. The frontend uses **Next.js 16.3.4, React 19, TypeScript and Tailwind CSS 4**. The separate backend uses **Express 5, TypeScript and SQLite** through Node's built-in SQLite driver.
+Responsive Next.js storefront and role-based workspaces backed by Express and SQLite. Categories, products, orders, campaigns, permissions, delivery settings, and payment settings are persisted in the API database.
 
-The customer website, admin dashboard, outlet portal and rider portal use the same REST API. The future Flutter app can use this API as well; it should never connect directly to the SQLite file.
+## Start with real data
 
-## Quick start — Windows, macOS or Linux
-
-Install **Node.js 24 LTS** first. Extract this ZIP, open a terminal inside `dellvit-web`, and run:
-
-```bash
-npm install
-npm run seed
-npm run dev
-```
-
-Run these commands **once from the project root**. npm workspaces install the web and API dependencies together; you do not need separate installs inside the two app folders.
-
-Open **http://localhost:3000**. Express runs at **http://localhost:4000**. The Next.js `/api/*` proxy keeps browser requests and cookies on the web origin.
-
-`npm run seed` creates the example delivery areas, outlets, products and accounts. It is safe to run again; it does not overwrite an existing database. The app does not automatically recreate demo accounts on every startup.
-
-## Demo accounts
-
-All the following **local demo accounts** use password **`Dellvit@2026`**.
-
-| Role                       | Login                    | Page             |
-| -------------------------- | ------------------------ | ---------------- |
-| Administrator              | `admin@dellvit.local`    | `/admin`         |
-| Customer                   | `customer@dellvit.local` | `/account`       |
-| Burger Kitchen outlet      | `DLV-001`                | `/portal/outlet` |
-| Fresh Basket outlet        | `DLV-002`                | `/portal/outlet` |
-| Parcel Point outlet        | `DLV-003`                | `/portal/outlet` |
-| Everyday Essentials outlet | `DLV-004`                | `/portal/outlet` |
-| Capital Burger outlet      | `DLV-005`                | `/portal/outlet` |
-| Rawalpindi rider           | `DRV-001`                | `/portal/rider`  |
-| Islamabad rider            | `DRV-002`                | `/portal/rider`  |
-
-Use separate browser profiles or different browsers when demonstrating customer, outlet and rider accounts simultaneously. Each browser session has one signed-in role. Signing out of a staff account also allows guest checkout.
-
-The demo stores, product descriptions, prices, stock, staff details and delivery estimates are sample data, not verified merchant listings. The client-provided Dellvit contact information is used as supplied.
-
-## Environment setup
-
-No environment file is required for the default local setup. To customize it, copy the examples:
-
-**PowerShell**
+Requires Node.js 24 or later. Run commands from the project root. On PowerShell, use `npm.cmd` if script execution policy blocks `npm`.
 
 ```powershell
-Copy-Item apps/api/.env.example apps/api/.env
-Copy-Item apps/web/.env.example apps/web/.env.local
+npm.cmd install
+$env:ADMIN_EMAIL = 'your-admin@example.com'
+$env:ADMIN_NAME = 'Store owner'
+# Set ADMIN_PASSWORD to a unique password of at least 12 characters in your local environment.
+npm.cmd run bootstrap
+npm.cmd run dev
 ```
 
-**macOS / Linux**
+Open `http://localhost:3000/admin/login`. Bootstrap creates only the super administrator; it never creates inventory, riders, customers, orders, or sample campaigns. It refuses to overwrite an existing super administrator. Remove ADMIN_PASSWORD from your shell environment after bootstrap.
 
-```bash
-cp apps/api/.env.example apps/api/.env
-cp apps/web/.env.example apps/web/.env.local
-```
+For an existing installation, the one-time platform migration preserves all data and gives the earliest existing administrator super-admin access. Other existing administrators receive no module permissions until assigned by the super administrator. The migration does not delete existing demonstration records.
 
-| File                  | Variable           | Default / purpose                                                                    |
-| --------------------- | ------------------ | ------------------------------------------------------------------------------------ |
-| `apps/api/.env`       | `PORT`             | `4000`                                                                               |
-| `apps/api/.env`       | `WEB_ORIGIN`       | `http://localhost:3000`; exact browser origin allowed to make authenticated requests |
-| `apps/api/.env`       | `DATABASE_PATH`    | `./data/dellvit.sqlite`, resolved relative to the API workspace                      |
-| `apps/api/.env`       | `UPLOAD_DIR`       | `./data/uploads`, resolved relative to the API workspace                             |
-| `apps/api/.env`       | `NODE_ENV`         | `development` locally; `production` enables HTTPS-only cookies                       |
-| `apps/api/.env`       | `TRUST_PROXY`      | `0`; set to `1` only behind one known reverse proxy                                  |
-| `apps/web/.env.local` | `API_INTERNAL_URL` | `http://127.0.0.1:4000`; backend destination for the Next.js proxy                   |
+Configure your store in this order:
 
-Keep `.env` files and the `data/` folder out of source control. The ZIP intentionally excludes installed dependencies, build output and databases containing sessions or test orders.
+1. Delivery areas, service radius, and fees.
+2. Categories and category images.
+3. Outlets and their credentials; then products, images, prices, stock, and discounts.
+4. Riders, assigned areas, availability, and delivery capacity.
+5. Payment methods and customer instructions.
+6. Website sections, hero artwork, banners, coupons, support details, and checkout settings.
+7. Delegated administrator accounts and their module permissions.
 
-### Testing on your phone over Wi-Fi
+## Workspaces
 
-Use your computer's LAN IP, for example `192.168.1.103`. Set `WEB_ORIGIN=http://192.168.1.103:3000` in the API environment, restart both apps, and open that exact URL on your phone. The frontend always uses `/api`, so it will not try to connect to the phone's own localhost. Allow port 3000 through the local firewall. Development over a LAN uses HTTP; production requires HTTPS.
+| Audience                            | Route                    | Access                                                                       |
+| ----------------------------------- | ------------------------ | ---------------------------------------------------------------------------- |
+| Super administrator / administrator | `/admin/login`, `/admin` | Separate login endpoint; server-enforced module permissions                  |
+| Outlet                              | `/portal/outlet`         | Own products and orders                                                      |
+| Rider                               | `/portal/rider`          | Assigned deliveries, duty status, browser GPS sharing, delivery verification |
+| Customer                            | `/account`, `/orders`    | Own profile, password, order summaries, tracking and cancellation            |
 
-Next.js may ask you to configure `allowedDevOrigins` for your LAN host in `apps/web/next.config.ts`. Add the IP to the existing configuration if your local Next.js development origin check requests it. The API origin setting and Next.js development origin setting are separate controls.
+Administrator account creation, account disabling, permission changes, and session revocation are available only to the super administrator. Module permissions grant read and write access within that module. Account ownership restrictions remain enforced for customers, outlets, and riders. The workspace hides modules the administrator cannot access, and the API independently checks every request.
 
-## What is implemented
+Existing secure cookie sessions, password hashing, origin checks, login rate limits, upload validation, private outlet documents, stock transactions, checkout idempotency, and delivery OTP verification are retained. Browsers use one account session at a time; use separate browser profiles for simultaneous roles.
 
-### Customer web experience
+## Store and operations controls
 
-- Responsive Dellvit homepage using the supplied logo and red, orange, gold and cream palette.
-- Generated WebP phone concept, rider and four service-category images. Generated prompts are included.
-- Header navigation for Home, Search, Cart, Orders, Outlets, About, Contact, Log in and Sign up, with a mobile menu.
-- Delivery-area selection that filters actual product and outlet locations.
-- Search, category filters, price sorting and discount sorting.
-- Outlet pages and product detail pages with photos, quantity, unit, original/discounted price, included/excluded items and estimated delivery time.
-- Device-local basket drafts, quantity updates, remove and clear actions. Checkout validates against the database.
-- Customer registration, login, profile updates and password change.
-- Saved customer delivery details, an order-only address override and delivery notes.
-- Guest checkout and guest order history tied to a private browser session. Guest orders are attached to a customer account when that browser registers or logs in as a customer.
-- Cash-on-delivery checkout with server-controlled totals, a unique reference and a private six-digit delivery OTP.
-- Order status timeline, rider contact details and pickup/drop map.
-- Cancellation before preparation for signed-in customers, with stock restoration.
-- Contact form stored in the admin inbox; working telephone and email links.
+- Dynamic categories, images, product catalog, stock, outlet accounts, rider accounts, order progression and assignment.
+- Homepage hero copy and artwork, ordered content sections, banners, advertising, and section visibility. Hero artwork has irregular curved feathered edges; the original artwork remains sharp.
+- Store settings for support contacts, About copy, checkout pause and minimum order subtotal.
+- Coupons with fixed or percentage discounts, minimum subtotal, start/end dates, and global redemption limits. Checkout validates discounts atomically against actual products and limits.
+- Per-area delivery fees and radius; paused areas reject new orders. Automatic and manual dispatch respect rider availability and capacity.
+- Customer directory with account disabling; administrator activity log with the latest 200 successful changes.
+- Responsive layouts, searchable management lists, permission checkboxes, image uploads, explicit empty states, and customer order summaries.
 
-### Admin dashboard
+Amounts in the API are integer paisa. Delivery pricing forms display PKR. Coupon and minimum-order forms explicitly label values in paisa.
 
-- Order counts, in-progress orders, active outlets and delivered sales totals.
-- Create/edit/disable outlets with name, phone, email, delivery area, pickup address, coordinates and a unique customer ID used for login.
-- Set or reset outlet passwords without revealing existing passwords.
-- Product creation, editing, archive/restore, images, prices, stock, discounts, deal labels and service areas.
-- Product image uploads converted to WebP on the server.
-- PDF document upload, download and deletion for each outlet; **admin-only API authorization**. Outlet accounts have no document access.
-- Create/edit/disable rider accounts and assign their delivery areas.
-- Automatic rider selection at checkout and manual reassignment by admins.
-- Order progression and early cancellation.
-- Create/edit delivery areas.
-- Editable homepage advertisement: image, label, text, link and visibility.
-- Contact-message inbox with reply-by-email links.
+## Customer experience
 
-### Outlet portal
+- Customers must sign in or create an account before placing an order; the API rejects guest orders with 401. The cart is kept while they sign in.
+- On the first visit the browser location is detected and matched to the nearest delivery area within its radius. Customers can change it at any time. If no area covers them, the home page asks them to choose one.
+- Home page: hero, benefits, **Good things near you** (products for the selected area), one section per category marked **Show on home page** (up to 8 products in two columns with **Explore all**), then a horizontally scrolling **Outlets near you** row with **Explore more**.
+- Product cards show a cart icon; once an item is in the cart the icon becomes an arrow that opens the cart.
+- Checkout has **Use my current location** to fill the doorstep latitude and longitude, which can still be edited by hand.
 
-- Login using customer ID and password.
-- Manage only the outlet's own products, images, stock and deals.
-- See only that outlet's orders and delivery details.
-- Accept orders, start preparation and mark orders ready for pickup.
-- No access to private documents, other outlets' products or customer delivery OTPs.
+## Payments
 
-### Rider portal
+Administrators manage payment methods in **Payments → Payment methods**. Each method can be enabled, disabled or deleted at any time. Supported types:
 
-- Assigned deliveries only, with pickup address, drop address, notes and customer contact.
-- COD amount and a delivery countdown.
-- OpenStreetMap map and OSRM road route, plus a Google Maps navigation link.
-- Confirm pickup once the outlet marks the order ready.
-- Confirm cash collection and enter the customer's delivery OTP to complete delivery.
-- Five incorrect OTP attempts lock verification for 15 minutes. Riders cannot retrieve the customer's OTP through the API.
+| Type                 | Details shown to the customer                                   |
+| -------------------- | --------------------------------------------------------------- |
+| Cash on delivery     | Rider collects cash                                             |
+| Bank transfer (IBFT) | Bank name, account title, account number, IBAN (validated `PK`) |
+| Mobile wallet        | JazzCash, Easypaisa, SadaPay, NayaPay or UPaisa; title, number  |
+| Raast                | Account title and Raast ID (mobile number) or IBAN              |
 
-## Run the delivery demo
+For online methods the customer sends the order total, then enters the transaction ID (TID), the sender name and, optionally or when required, a receipt screenshot. The order shows **Verifying** until an administrator approves or rejects it in **Payments → Verification**. A rejection includes a reason, and the customer can resubmit. Outlets cannot accept an order and riders cannot complete it until the payment is verified. Transaction IDs cannot be reused across active orders.
 
-1. Select **6th Road, Rawalpindi** and add a Burger Kitchen product.
-2. Check out as the customer or a guest. Choose a delivery pin within 8 km of the area centre.
-3. Note the displayed order reference and delivery code on the customer order page.
-4. In another browser profile, log in as `DLV-001`. Accept the order, start preparation and mark it ready.
-5. In another browser profile, log in as `DRV-001`. Open the assigned delivery and confirm pickup.
-6. Confirm cash collection, enter the customer's six-digit code and complete the delivery.
-7. The customer timeline and admin totals update on their next automatic refresh.
+No automatic gateway API is connected; verification is manual against your bank or wallet statement.
 
-For an area with no active rider, an order is saved as awaiting assignment. Create or activate a rider in that area, then assign them through the admin order panel.
+## Notifications
 
-## Commands
+Customers, outlets, riders and administrators receive notifications for new orders, status changes, rider assignment, payments to verify, payment decisions, commissions, payouts and contact messages. The header bell shows the latest items with sound alerts; `/notifications` is a filterable inbox with mark read/unread and delete. **Desktop & mobile pop-ups** subscribes the device to Web Push, so notifications appear in Windows, macOS and Android system trays (iOS requires adding the site to the home screen). Push requires HTTPS or `localhost`. VAPID keys are generated once and stored in the database, or can be supplied with `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT`.
 
-```bash
-npm run dev         # Web and API together
-npm run seed        # Seed an empty local database
-npm run typecheck   # Check frontend and backend TypeScript
-npm test            # Isolated API integration suite
-npm run build       # Compile Express and build Next.js
-npm start           # Run both production builds locally
-npm run format      # Format authored source and docs
-```
+## Rider commission
 
-For local testing with `npm start`, keep `NODE_ENV=development` in the API unless you are serving HTTPS. Next.js itself uses its production build; the API's `NODE_ENV=production` deliberately makes session cookies secure.
+When creating or editing a rider, set a fixed amount per delivery or a percentage of the delivery fee, items subtotal or order total. Commission is recorded when a delivery is verified. Riders see their balance, today and weekly earnings, cash collected and per-order history under **Earnings**. Administrators open **Riders → Earnings & payouts** to review the statement and record payouts, which cannot exceed the balance.
 
-## Project structure
+## Rider tracking
+
+Riders can enable GPS sharing during active deliveries. The browser asks for location permission; production requires HTTPS. Sharing works while the rider page is open, not as a background mobile service. Customer tracking is limited to their own active orders; completed and cancelled orders do not expose rider positions. The UI labels stale positions and reports accuracy and update time. Maps use OpenStreetMap and OSRM; an unavailable road route is explicitly identified.
+
+## Configuration and commands
+
+The API defaults to port 4000 and the web app to port 3000. Browser requests use the Next.js `/api` proxy. Environment examples are in the two app workspaces.
+
+| Variable           | Purpose                                                        |
+| ------------------ | -------------------------------------------------------------- |
+| `DATABASE_PATH`    | SQLite path, relative to API working directory unless absolute |
+| `UPLOAD_DIR`       | Uploaded images and private documents                          |
+| `WEB_ORIGIN`       | Exact web origin allowed for authenticated browser writes      |
+| `PORT`             | API port                                                       |
+| `NODE_ENV`         | Production enables HTTPS-only cookies                          |
+| `TRUST_PROXY`      | Set only for the trusted reverse proxy configuration           |
+| `API_INTERNAL_URL` | Web build/proxy destination; default `http://127.0.0.1:4000`   |
+| `NEXT_DIST_DIR`    | Optional isolated web build folder for local previews          |
 
 ```text
-dellvit-web/
-  apps/
-    web/                 Next.js App Router frontend
-      app/               Routes, layout and responsive stylesheet
-      components/        Customer screens and staff portals
-      lib/               API client, types and state loading
-      public/images/     Supplied branding and generated WebP assets
-    api/                 Separate Express backend
-      src/app.ts         Validated endpoints and role/ownership checks
-      src/db.ts          SQLite schema, queries and transactions
-      src/security.ts    Password hashing and opaque sessions
-      src/seed.ts        Explicit demo seed
-      src/index.ts       HTTP server
-  tests/api.test.ts      Isolated workflow and authorization tests
-  docs/                 API contract, requirements and migration notes
-  package.json          Root workspace commands
+npm run bootstrap  Create the first super administrator from environment credentials
+npm run dev        Start API and web development servers
+npm run typecheck  Check both TypeScript workspaces
+npm test           Run isolated API integration tests
+npm run build      Compile API and build the production web application
+npm start          Run production builds
+npm run format     Format source and documentation
 ```
 
-## Important boundaries for this web version
+`npm run seed` remains an explicit development-only fixture command. Do not run it for a real store. The original local demonstration logins are `admin@dellvit.local`, `customer@dellvit.local`, outlet IDs `DLV-001` through `DLV-005`, and rider IDs `DRV-001` / `DRV-002`, with the fixture password `Dellvit@2026`. These accounts are created only by the optional seed command or isolated tests.
 
-- Flutter is not built in this ZIP. `docs/API.md` describes the shared API for that next phase.
-- Supabase is not connected yet. SQLite is the active database; see `docs/ARCHITECTURE.md` for the Postgres migration plan.
-- Payment is cash on delivery. No card, JazzCash or Easypaisa gateway is connected.
-- Maps require internet access. OSRM's public demo routing service has no service guarantee; the UI explicitly marks the fallback as a connector between locations, not a drivable route. Replace public demo routing with a production service before launch.
-- Order status polling is implemented. Live rider GPS streaming, background app tracking, SMS/email OTP dispatch and push notifications are not implemented. The delivery OTP is shown directly on the customer's order screen, as the brief specifies.
-- The advertising area is functional and admin-editable. An external ad-network account or script is not connected.
-- Guest history is tied to that browser's seven-day session. Account order history persists in the database after sign-in.
-- A basket holds one outlet's products at a time; checkout enforces this. Products and delivery fees use integer paisa to avoid floating-point money calculations. The default delivery fee is PKR 150, configurable in `src/app.ts` and the shared frontend fee constant.
-- Parcel listings represent a pickup from the listed outlet. A separate arbitrary-origin courier booking flow was not specified in the PDF and is not included.
-- Uploaded outlet documents are PDF-only, up to 8 MB. Product uploads accept raster images and convert them to WebP. Malware scanning and full document-content validation require a production upload pipeline.
-- This is a locally runnable implementation for client review. Before public launch, replace demo data and passwords, confirm real service areas/fees/policies, configure HTTPS and production hosting, schedule database/upload backups, and complete deployment-specific security and browser/device acceptance testing.
-
-## Validation performed
-
-The delivered source passes the Next.js production build and TypeScript checks. The included API integration suite exercises catalog filtering, guest isolation, server pricing, duplicate checkout, stock handling, role boundaries, order transitions, OTP lockout/completion, cancellation, product/outlet/rider management, private document handling, WebP upload, contact/advertisement persistence and account changes. See `docs/VALIDATION.md` for the recorded results and limits.
-
-No browser or physical-device visual acceptance test was performed in this build session. Responsive layouts are implemented in source, and page assets were inspected separately.
-
-## References
-
-The supplied PDF and design are the product specification. [Oderela](https://www.oderela.com/) was reviewed for the location-filtered outlet/product concept; no source code or merchant photography was copied. Framework references: [Next.js](https://nextjs.org/docs), [Express](https://expressjs.com/en/5x/api/), [Node SQLite](https://nodejs.org/api/sqlite.html).
+SQLite and local uploads are the active storage. Hosting, HTTPS, backups, production routing, payment-gateway integration, background mobile tracking, MFA, SMS/email delivery, and deployment acceptance are separate operational work. See [docs/PLATFORM.md](docs/PLATFORM.md) for the API additions and access model.

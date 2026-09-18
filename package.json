@@ -15,7 +15,8 @@
     "seed": "npm run seed -w @dellvit/api",
     "typecheck": "npm run typecheck --workspaces",
     "test": "node --import tsx --test tests/api.test.ts",
-    "format": "prettier --write \"apps/**/*.{ts,tsx,css,json,mjs}\" \"docs/**/*.md\" \"tests/**/*.ts\" README.md"
+    "format": "prettier --write \"apps/**/*.{ts,tsx,css,json,mjs}\" \"docs/**/*.md\" \"tests/**/*.ts\" README.md",
+    "bootstrap": "npm run bootstrap -w @dellvit/api"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

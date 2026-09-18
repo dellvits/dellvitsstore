@@ -1,68 +1,61 @@
 'use client';
 import Link from 'next/link';
 import { useState, type FormEvent } from 'react';
-import { Mail, Phone, MapPin, ArrowRight, Heart, ShieldCheck, Store } from 'lucide-react';
+import { Mail, Phone, MapPin, ArrowRight, Heart, ShieldCheck, Store, CheckCircle2 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { useData } from '@/lib/useData';
 import { ErrorBox } from './UI';
+
 export function About() {
+  const { data } = useData<{ settings: Record<string, string> | null }>('/site');
+  const settings = data?.settings;
   return (
     <div className="container page">
-      <div className="about-hero">
+      <section className="about-hero card">
         <div>
-          <div className="eyebrow accent">Meet Dellvit</div>
-          <h1>
-            Your neighbourhood.
-            <br />A little closer.
-          </h1>
+          <span className="eyebrow">About Dellvit</span>
+          <h1>{settings?.about_title || 'Your neighbourhood, a little closer.'}</h1>
           <p>
-            Good food, fresh groceries and everyday essentials shouldn’t be far away. Dellvit
-            connects you with local outlets and brings their best to your door.
+            {settings?.about_description ||
+              'Dellvit connects you with local outlets and brings their best to your door — quickly and safely.'}
           </p>
-          <Link className="button" href="/search">
+          <Link className="button large" href="/search">
             Explore your area <ArrowRight size={18} />
           </Link>
         </div>
-        <img src="/images/rider.webp" alt="Dellvit delivery rider" width="700" height="470" />
-      </div>
-      <div className="about-values">
+        <img src="/images/rider.webp" alt="Dellvit delivery rider" />
+      </section>
+      <div className="feature-grid">
         {[
-          [
-            Store,
-            'Rooted in local',
-            'Discover the shops and kitchens around you, all in one place.',
-          ],
-          [
-            Heart,
-            'Made for everyday',
-            'From lunch to your weekly groceries, we help make the little things easier.',
-          ],
-          [
-            ShieldCheck,
-            'Care at every step',
-            'Follow order updates and confirm delivery with your own private code.',
-          ],
+          [Store, 'Rooted in local', 'The shops and kitchens around you, in one place.'],
+          [Heart, 'Made for everyday', 'From lunch to weekly groceries.'],
+          [ShieldCheck, 'Care at every step', 'Live updates and a private delivery code.'],
         ].map(([Icon, title, body]) => {
           const I = Icon as typeof Store;
           return (
-            <section className="panel" key={String(title)}>
-              <I size={32} />
-              <h2>{String(title)}</h2>
+            <div className="card feature" key={String(title)}>
+              <span className="feature-icon">
+                <I size={22} />
+              </span>
+              <h3>{String(title)}</h3>
               <p>{String(body)}</p>
-            </section>
+            </div>
           );
         })}
       </div>
-      <section className="about-cta">
-        <h2>Have a shop, a question or an idea?</h2>
-        <p>We’d love to hear from you.</p>
-        <Link className="button secondary" href="/contact">
+      <section className="cta-band">
+        <h2>Have a shop or an idea?</h2>
+        <Link className="button white" href="/contact">
           Let’s talk <ArrowRight size={18} />
         </Link>
       </section>
     </div>
   );
 }
+
 export function Contact() {
+  const { data } = useData<{ settings: Record<string, string> | null }>('/site');
+  const settings = data?.settings;
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -82,84 +75,85 @@ export function Contact() {
       setBusy(false);
     }
   }
+  const email = settings?.support_email || 'dellvitsupport@gmail.com';
+  const phone = settings?.support_phone || '0316 9212708';
   return (
     <div className="container page">
-      <div className="page-heading">
-        <div className="eyebrow accent">A real person is a good start</div>
-        <h1>Let’s talk.</h1>
-        <p>Order question, partnership idea or just saying hello? We’re here.</p>
-      </div>
-      <div className="contact-grid">
-        <div className="contact-details">
-          <a href="mailto:dellvitsupport@gmail.com">
-            <Mail />
-            <span>
-              <small>EMAIL US</small>
-              <strong>dellvitsupport@gmail.com</strong>
-            </span>
-          </a>
-          <a href="tel:+923169212708">
-            <Phone />
-            <span>
-              <small>GIVE US A CALL</small>
-              <strong>0316 9212708</strong>
-            </span>
-          </a>
-          <div>
-            <MapPin />
-            <span>
-              <small>FIND US</small>
-              <strong>6th Road, Rawalpindi</strong>
-            </span>
-          </div>
-          <img
-            src="/images/parcel.webp"
-            alt="A parcel ready for delivery"
-            width="400"
-            height="350"
-          />
+      <div className="page-title">
+        <div>
+          <span className="eyebrow">Support</span>
+          <h1>Contact us</h1>
         </div>
-        <section className="panel">
-          <h2>Drop us a message.</h2>
+      </div>
+      <div className="split reverse">
+        <section className="card">
           {success ? (
-            <div className="success-box">
-              <h3>Your message is with us.</h3>
-              <p>
-                The Dellvit team can now see your message and contact details. For urgent delivery
-                help, give us a call.
-              </p>
-              <button className="button secondary" onClick={() => setSuccess(false)}>
-                Send another message
+            <div className="success-state">
+              <CheckCircle2 size={36} />
+              <h3>Message sent</h3>
+              <p className="muted">We’ll get back to you soon. For urgent delivery help, call us.</p>
+              <button className="button ghost" onClick={() => setSuccess(false)}>
+                Send another
               </button>
             </div>
           ) : (
-            <form onSubmit={submit} className="form-stack">
+            <form onSubmit={submit} className="stack">
+              <div className="form-grid">
+                <label>
+                  Name
+                  <input name="name" required maxLength={100} />
+                </label>
+                <label>
+                  Email
+                  <input name="email" type="email" required maxLength={200} />
+                </label>
+              </div>
               <label>
-                Your name
-                <input name="name" required maxLength={100} />
-              </label>
-              <label>
-                Email address
-                <input name="email" type="email" required maxLength={200} />
-              </label>
-              <label>
-                How can we help?
+                Message
                 <textarea
                   name="message"
                   required
                   maxLength={3000}
                   rows={6}
-                  placeholder="For an order enquiry, include your order number."
+                  placeholder="Include your order number for order questions."
                 />
               </label>
               {error && <ErrorBox error={error} />}
-              <button className="button" disabled={busy}>
-                {busy ? 'Sending…' : 'Send message'}
-                <ArrowRight size={18} />
+              <button className="button large" disabled={busy}>
+                {busy ? 'Sending…' : 'Send message'} <ArrowRight size={18} />
               </button>
             </form>
           )}
         </section>
+        <aside className="stack">
+          <a className="card contact-item" href={'mailto:' + email}>
+            <span className="feature-icon">
+              <Mail size={20} />
+            </span>
+            <span>
+              <small>Email</small>
+              <strong>{email}</strong>
+            </span>
+          </a>
+          <a className="card contact-item" href={'tel:' + phone.replace(/\s/g, '')}>
+            <span className="feature-icon">
+              <Phone size={20} />
+            </span>
+            <span>
+              <small>Phone</small>
+              <strong>{phone}</strong>
+            </span>
+          </a>
+          <div className="card contact-item">
+            <span className="feature-icon">
+              <MapPin size={20} />
+            </span>
+            <span>
+              <small>Address</small>
+              <strong>{settings?.support_address || '6th Road, Rawalpindi'}</strong>
+            </span>
+          </div>
+        </aside>
       </div>
     </div>
   );

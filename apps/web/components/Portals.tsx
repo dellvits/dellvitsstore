@@ -1,609 +1,282 @@
 'use client';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
-import { useState, type FormEvent } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useState, type FormEvent, type ReactNode } from 'react';
 import {
-  LayoutDashboard,
-  Package,
-  Store,
+  ArchiveRestore,
+  Archive,
+  Banknote,
   Bike,
-  ImageIcon,
+  ClipboardList,
+  HandCoins,
+  CreditCard,
+  Download,
+  Edit3,
+  ExternalLink,
+  Eye,
+  FileText,
+  Image as ImageIcon,
+  LayoutDashboard,
+  LogOut,
   Mail,
   MapPin,
+  Menu,
+  Megaphone,
+  Package,
   Plus,
-  Edit3,
-  Trash2,
-  Upload,
-  Download,
-  ArrowUpRight,
-  LogOut,
-  RefreshCw,
-  Phone,
-  Navigation,
-  Wallet,
+  Reply,
+  Settings,
   ShieldCheck,
-  Search,
+  ShoppingBag,
+  Store,
+  Tags,
+  Ticket,
+  Trash2,
+  Truck,
+  Upload,
   UserRound,
+  Users,
+  Wallet,
+  X,
+  History,
+  Layers,
 } from 'lucide-react';
 import { useApp } from './Provider';
-import { api, money, date, label } from '@/lib/api';
+import { api, money, date } from '@/lib/api';
 import { useData } from '@/lib/useData';
-import type { Product, Outlet, Order, User, Ad, Location } from '@/lib/types';
-import { Loading, ErrorBox, Empty, Modal } from './UI';
-import { Countdown } from './Orders';
+import type { Product, Outlet, User, Ad, Location } from '@/lib/types';
+import {
+  Badge,
+  Confirm,
+  DataTable,
+  Empty,
+  ErrorBox,
+  IconAction,
+  Loading,
+  Modal,
+  Toggle,
+} from './UI';
+import { NotificationBell } from './Notifications';
+import {
+  RecordManager,
+  SettingsManager,
+  PaymentsWorkspace,
+  StaffManager,
+  FleetManager,
+  RiderTools,
+  CustomerDirectory,
+  AuditLog,
+  commissionText,
+} from './Platform';
+import { OrderDesk } from './OrderDesk';
+import { AdminOverview, OutletDashboard } from './Dashboards';
+import { AdminCash, AdminPayouts, RiderCash, RiderEarnings, RiderStatementModal } from './Finance';
 const DeliveryMap = dynamic(() => import('./DeliveryMap'), {
   ssr: false,
   loading: () => <div className="map-placeholder">Loading map…</div>,
 });
-const navItems = [
-  ['overview', 'Overview', LayoutDashboard],
-  ['orders', 'Orders', Package],
-  ['products', 'Products', ShoppingIcon],
-  ['outlets', 'Outlets', Store],
-  ['riders', 'Riders', Bike],
-  ['locations', 'Delivery areas', MapPin],
-  ['ads', 'Advertising', ImageIcon],
-  ['messages', 'Messages', Mail],
-] as const;
-function ShoppingIcon(props: { size?: number }) {
-  return <Package {...props} />;
-}
+
+type Nav = { key: string; title: string; icon: typeof Package; group: string; permission?: string };
+const adminNav: Nav[] = [
+  { key: 'overview', title: 'Dashboard', icon: LayoutDashboard, group: 'Main' },
+  { key: 'orders', title: 'Orders', icon: ClipboardList, group: 'Main' },
+  { key: 'payments', title: 'Payments', icon: CreditCard, group: 'Main' },
+  { key: 'cash', title: 'COD cash', icon: HandCoins, group: 'Finance', permission: 'riders' },
+  { key: 'payouts', title: 'Rider payouts', icon: Banknote, group: 'Finance', permission: 'riders' },
+  { key: 'products', title: 'Products', icon: ShoppingBag, group: 'Catalog' },
+  { key: 'categories', title: 'Categories', icon: Tags, group: 'Catalog' },
+  { key: 'outlets', title: 'Outlets', icon: Store, group: 'Catalog' },
+  { key: 'riders', title: 'Riders', icon: Bike, group: 'Operations' },
+  { key: 'locations', title: 'Delivery areas', icon: MapPin, group: 'Operations' },
+  { key: 'customers', title: 'Customers', icon: Users, group: 'Operations' },
+  { key: 'content', title: 'Homepage content', icon: Layers, group: 'Marketing' },
+  { key: 'ads', title: 'Advertising', icon: Megaphone, group: 'Marketing' },
+  { key: 'coupons', title: 'Coupons', icon: Ticket, group: 'Marketing' },
+  { key: 'messages', title: 'Messages', icon: Mail, group: 'Marketing' },
+  { key: 'staff', title: 'Admin access', icon: ShieldCheck, group: 'System' },
+  { key: 'audit', title: 'Activity log', icon: History, group: 'System' },
+  { key: 'settings', title: 'Store settings', icon: Settings, group: 'System' },
+];
+const outletNav: Nav[] = [
+  { key: 'dashboard', title: 'Dashboard', icon: LayoutDashboard, group: 'Outlet' },
+  { key: 'orders', title: 'Orders', icon: ClipboardList, group: 'Outlet' },
+  { key: 'products', title: 'Products', icon: ShoppingBag, group: 'Outlet' },
+];
+const riderNav: Nav[] = [
+  { key: 'orders', title: 'Deliveries', icon: Truck, group: 'Rider' },
+  { key: 'cash', title: 'COD cash', icon: HandCoins, group: 'Rider' },
+  { key: 'earnings', title: 'Earnings & payouts', icon: Wallet, group: 'Rider' },
+];
+
 export default function Portal({ role }: { role: 'admin' | 'outlet' | 'rider' }) {
   const { user, ready, logout } = useApp();
-  const [tab, setTab] = useState(role === 'admin' ? 'overview' : 'orders');
-  const [filter, setFilter] = useState('');
+  const params = useSearchParams();
+  const router = useRouter();
+  const [drawer, setDrawer] = useState(false);
   if (!ready) return <Loading />;
   if (!user)
     return (
       <div className="container page">
         <Empty
-          title={
-            role === 'admin'
-              ? 'Dellvit administration'
-              : role === 'outlet'
-                ? 'Your outlet, all in one place.'
-                : 'Ready for your next delivery?'
-          }
-          href={
-            '/login?next=' + encodeURIComponent(role === 'admin' ? '/admin' : '/portal/' + role)
-          }
-          action="Log in to your portal"
+          title={role === 'admin' ? 'Administration' : role === 'outlet' ? 'Outlet portal' : 'Rider portal'}
+          href={role === 'admin' ? '/admin/login' : '/login?next=' + encodeURIComponent('/portal/' + role)}
+          action="Log in"
+          icon={<ShieldCheck size={26} />}
         >
-          Use your assigned{' '}
-          {role === 'outlet' ? 'customer ID' : role === 'rider' ? 'rider ID' : 'admin email'} and
-          password to continue.
+          Sign in with your {role === 'outlet' ? 'outlet ID' : role === 'rider' ? 'rider ID' : 'admin email'}.
         </Empty>
       </div>
     );
   if (user.role !== role)
     return (
-      <div className="container page">
-        <ErrorBox
-          error={`This portal is for ${role} accounts. You are signed in as ${user.role}.`}
-        />
-        <Link className="button" href="/account">
-          Manage your account
-        </Link>
+      <div className="container page narrow">
+        <ErrorBox error={`This portal is for ${role} accounts. You are signed in as ${user.role}.`} />
       </div>
     );
   const nav =
     role === 'admin'
-      ? navItems
+      ? adminNav.filter(
+          (x) => user.is_super_admin || (x.key !== 'staff' && user.permissions?.includes(x.permission || x.key)),
+        )
       : role === 'outlet'
-        ? navItems.filter((x) => ['orders', 'products'].includes(x[0]))
-        : navItems.filter((x) => x[0] === 'orders');
+        ? outletNav
+        : riderNav;
+  const wanted = params.get('tab') || nav[0]?.key;
+  const tab = nav.some((x) => x.key === wanted) ? wanted : nav[0]?.key;
+  const current = nav.find((x) => x.key === tab);
+  const go = (key: string) => {
+    router.replace('?tab=' + key, { scroll: false });
+    setDrawer(false);
+  };
+  const groups = [...new Set(nav.map((n) => n.group))];
+  const sidebar = (
+    <>
+      <div className="side-brand">
+        <Link href="/">
+          <img src="/images/logo.webp" alt="Dellvit" width="92" height="52" />
+        </Link>
+        <span className="role-chip">
+          {role === 'admin' ? (user.is_super_admin ? 'Super admin' : 'Admin') : role === 'outlet' ? 'Outlet' : 'Rider'}
+        </span>
+      </div>
+      <nav className="side-nav" aria-label="Portal navigation">
+        {groups.map((g) => (
+          <div key={g} className="side-group">
+            <span className="side-label">{g}</span>
+            {nav
+              .filter((n) => n.group === g)
+              .map((n) => (
+                <button key={n.key} className={tab === n.key ? 'active' : ''} onClick={() => go(n.key)}>
+                  <n.icon size={18} />
+                  {n.title}
+                </button>
+              ))}
+          </div>
+        ))}
+        <div className="side-group">
+          <span className="side-label">Account</span>
+          <Link href="/account">
+            <UserRound size={18} /> Profile
+          </Link>
+          <Link href="/notifications">
+            <ExternalLink size={18} /> Notifications
+          </Link>
+        </div>
+      </nav>
+      <div className="side-foot">
+        <div className="side-user">
+          <span className="avatar">{user.name.slice(0, 1)}</span>
+          <span>
+            <strong>{user.name}</strong>
+            <small>{user.login_id || user.email}</small>
+          </span>
+        </div>
+        <button className="icon-action" title="Log out" aria-label="Log out" onClick={() => logout().then(() => router.push('/'))}>
+          <LogOut size={17} />
+        </button>
+      </div>
+    </>
+  );
   return (
     <div className="portal">
-      <aside className="portal-sidebar">
-        <div className="portal-brand">
-          <span className="eyebrow accent">DELLVIT WORKSPACE</span>
-          <h2>
-            {role === 'admin'
-              ? 'Mission control'
-              : role === 'outlet'
-                ? 'Your storefront'
-                : 'On the move'}
-          </h2>
-          <p>{user.name}</p>
-        </div>
-        <nav aria-label="Portal navigation">
-          {nav.map(([key, title, Icon]) => (
-            <button
-              key={key}
-              className={tab === key ? 'selected' : ''}
-              onClick={() => {
-                setTab(key);
-                setFilter('');
-              }}
-            >
-              <Icon size={19} />
-              {title}
+      <aside className="sidebar">{sidebar}</aside>
+      {drawer && (
+        <div className="drawer-backdrop" onClick={() => setDrawer(false)}>
+          <aside className="sidebar drawer-side" onClick={(e) => e.stopPropagation()}>
+            <button className="icon-action drawer-close" onClick={() => setDrawer(false)} aria-label="Close menu">
+              <X size={18} />
             </button>
-          ))}
-          <Link href="/account">
-            <UserRound size={19} />
-            Account settings
-          </Link>
-        </nav>
-        <div className="portal-sidebar-bottom">
-          <Link href="/">
-            View Dellvit <ArrowUpRight size={16} />
-          </Link>
-          <button onClick={logout}>
-            <LogOut size={16} />
-            Log out
-          </button>
+            {sidebar}
+          </aside>
         </div>
-      </aside>
+      )}
       <div className="portal-main">
-        <header className="portal-heading">
-          <div>
-            <div className="eyebrow muted">{role} portal</div>
-            <h1>
-              {tab === 'overview'
-                ? 'A view of your everyday.'
-                : tab === 'orders' && role === 'rider'
-                  ? 'Your delivery board.'
-                  : label(tab) + '.'}
-            </h1>
+        <header className="topbar">
+          <button className="header-icon mobile-only" onClick={() => setDrawer(true)} aria-label="Open menu">
+            <Menu size={20} />
+          </button>
+          <div className="topbar-title">
+            <small>{role === 'admin' ? 'Admin' : role === 'outlet' ? 'Outlet' : 'Rider'} portal</small>
+            <h1>{current?.title || 'Workspace'}</h1>
           </div>
-          <span className="workspace-badge">
-            <ShieldCheck size={15} />
-            {role === 'admin' ? 'Administrator' : role === 'outlet' ? user.login_id : 'Rider'}
-          </span>
+          <div className="topbar-actions">
+            <Link href="/" className="button ghost small hide-sm">
+              <Store size={15} /> View store
+            </Link>
+            <NotificationBell />
+          </div>
         </header>
-        {tab === 'overview' ? (
-          <Overview onOrders={() => setTab('orders')} />
-        ) : tab === 'orders' ? (
-          <OrderManager role={role} />
-        ) : tab === 'products' ? (
-          <ProductManager admin={role === 'admin'} />
-        ) : tab === 'outlets' ? (
-          <OutletManager />
-        ) : tab === 'riders' ? (
-          <RiderManager />
-        ) : tab === 'locations' ? (
-          <LocationManager />
-        ) : tab === 'ads' ? (
-          <AdManager />
-        ) : (
-          <Messages />
-        )}
+        <div className="portal-content">
+          {!tab ? (
+            <Empty title="No modules assigned">Ask your super administrator for access.</Empty>
+          ) : tab === 'overview' ? (
+            <AdminOverview go={go} />
+          ) : tab === 'dashboard' ? (
+            <OutletDashboard go={go} />
+          ) : tab === 'orders' ? (
+            <>
+              {role === 'rider' && <RiderTools />}
+              <OrderDesk key={role} role={role} />
+            </>
+          ) : tab === 'cash' ? (
+            role === 'rider' ? <RiderCash /> : <AdminCash />
+          ) : tab === 'payouts' ? (
+            <AdminPayouts />
+          ) : tab === 'earnings' ? (
+            <RiderEarnings />
+          ) : tab === 'payments' ? (
+            <PaymentsWorkspace />
+          ) : tab === 'products' ? (
+            <ProductManager admin={role === 'admin'} />
+          ) : tab === 'outlets' ? (
+            <OutletManager />
+          ) : tab === 'riders' ? (
+            <RiderManager />
+          ) : tab === 'locations' ? (
+            <LocationManager />
+          ) : tab === 'ads' ? (
+            <AdManager />
+          ) : tab === 'messages' ? (
+            <Messages />
+          ) : tab === 'staff' ? (
+            <StaffManager />
+          ) : tab === 'customers' ? (
+            <CustomerDirectory />
+          ) : tab === 'audit' ? (
+            <AuditLog />
+          ) : tab === 'settings' ? (
+            <SettingsManager />
+          ) : (
+            <RecordManager key={tab} kind={tab} />
+          )}
+        </div>
       </div>
     </div>
   );
 }
-function Overview({ onOrders }: { onOrders: () => void }) {
-  const { data, error, loading } = useData<{
-    orders: number;
-    revenue: number;
-    active_orders: number;
-    outlets: number;
-  }>('/admin/summary', 20000);
-  const { data: orders } = useData<Order[]>('/orders', 20000);
-  if (loading && !data) return <Loading />;
-  if (error) return <ErrorBox error={error} />;
-  return (
-    <>
-      <div className="stats-grid">
-        {[
-          [Package, 'Total orders', data?.orders || 0],
-          [Wallet, 'Delivered sales', money(data?.revenue || 0)],
-          [Bike, 'In progress', data?.active_orders || 0],
-          [Store, 'Active outlets', data?.outlets || 0],
-        ].map(([Icon, title, value]) => {
-          const I = Icon as typeof Package;
-          return (
-            <div className="stat-card" key={String(title)}>
-              <span>
-                <I size={21} />
-              </span>
-              <small>{String(title)}</small>
-              <strong>{String(value)}</strong>
-            </div>
-          );
-        })}
-      </div>
-      <section className="panel">
-        <div className="section-head">
-          <h2>Latest orders</h2>
-          <button className="text-button" onClick={onOrders}>
-            Manage orders <ArrowUpRight size={17} />
-          </button>
-        </div>
-        {!orders?.length ? (
-          <Empty title="Your order board is ready.">
-            New orders appear here as soon as customers check out.
-          </Empty>
-        ) : (
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Order</th>
-                  <th>Customer</th>
-                  <th>Outlet</th>
-                  <th>Total</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {orders.slice(0, 8).map((o) => (
-                  <tr key={o.id}>
-                    <td>{o.reference}</td>
-                    <td>{o.name}</td>
-                    <td>{o.outlet.name}</td>
-                    <td>{money(o.total)}</td>
-                    <td>
-                      <span className={'status ' + o.status}>{label(o.status)}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-      <div className="portal-tip">
-        <ShieldCheck size={22} />
-        <p>
-          Outlet documents stay in administration. Customers receive their own delivery code; riders
-          verify it when handing over an order.
-        </p>
-      </div>
-    </>
-  );
-}
-function OrderManager({ role }: { role: string }) {
-  const { notice } = useApp();
-  const { data, loading, error, refresh } = useData<Order[]>('/orders', 10000);
-  const { data: riders } = useData<User[]>(role === 'admin' ? '/admin/riders' : null);
-  const [status, setStatus] = useState('active');
-  const [selected, setSelected] = useState<string | null>(null);
-  const [query, setQuery] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [otp, setOtp] = useState('');
-  const [cash, setCash] = useState(false);
-  const [confirmCancel, setConfirmCancel] = useState(false);
-  const current = data?.find((o) => o.id === selected);
-  const rows = (data || []).filter(
-    (o) =>
-      (status === 'all' ||
-        (status === 'active' && !['delivered', 'cancelled'].includes(o.status)) ||
-        o.status === status) &&
-      `${o.reference} ${o.name} ${o.outlet.name}`.toLowerCase().includes(query.toLowerCase()),
-  );
-  async function change(o: Order, s: string) {
-    setBusy(true);
-    try {
-      await api('/orders/' + o.id + '/status', {
-        method: 'PATCH',
-        body: JSON.stringify({ status: s }),
-      });
-      refresh();
-      setConfirmCancel(false);
-      notice('Order updated.');
-    } catch (e) {
-      notice((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function verify(e: FormEvent) {
-    e.preventDefault();
-    if (!current) return;
-    setBusy(true);
-    try {
-      await api('/orders/' + current.id + '/verify', {
-        method: 'POST',
-        body: JSON.stringify({ otp, cash_received: cash }),
-      });
-      setOtp('');
-      setCash(false);
-      refresh();
-      notice('Delivery verified. Great work!');
-    } catch (e) {
-      notice((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function assign(oid: string, rid: string) {
-    if (!rid) return;
-    setBusy(true);
-    try {
-      await api('/admin/orders/' + oid + '/assign', {
-        method: 'PATCH',
-        body: JSON.stringify({ rider_id: rid }),
-      });
-      refresh();
-      notice('Rider assigned.');
-    } catch (e) {
-      notice((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <>
-      <div className="manage-toolbar">
-        <div className="search-input">
-          <Search size={18} />
-          <input
-            aria-label="Search orders"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search order number, customer…"
-          />
-        </div>
-        <select
-          aria-label="Order status"
-          value={status}
-          onChange={(e) => setStatus(e.target.value)}
-        >
-          {[
-            'active',
-            'all',
-            'placed',
-            'confirmed',
-            'preparing',
-            'ready',
-            'picked_up',
-            'delivered',
-            'cancelled',
-          ].map((s) => (
-            <option key={s} value={s}>
-              {label(s)}
-            </option>
-          ))}
-        </select>
-        <button className="icon-button" aria-label="Refresh orders" onClick={refresh}>
-          <RefreshCw size={19} />
-        </button>
-      </div>
-      {error && <ErrorBox error={error} retry={refresh} />}{' '}
-      {loading && !data ? (
-        <Loading />
-      ) : !rows.length ? (
-        <Empty title={role === 'rider' ? 'No deliveries in this view.' : 'No orders in this view.'}>
-          New orders will appear automatically. Try another status filter.
-        </Empty>
-      ) : (
-        <div className="portal-order-grid">
-          {rows.map((o) => (
-            <button
-              className="dispatch-card"
-              key={o.id}
-              onClick={() => {
-                setSelected(o.id);
-                setOtp('');
-                setCash(false);
-              }}
-            >
-              <div className="section-head">
-                <strong>{o.reference}</strong>
-                <span className={'status ' + o.status}>{label(o.status)}</span>
-              </div>
-              <h3>{o.outlet.name}</h3>
-              <p>
-                <MapPin size={16} />
-                {o.address}
-              </p>
-              <div className="dispatch-bottom">
-                <span>
-                  {money(o.total)} <small>COD</small>
-                </span>
-                <small>
-                  <Countdown
-                    deadline={o.deliver_by}
-                    done={['delivered', 'cancelled'].includes(o.status)}
-                  />
-                </small>
-              </div>
-              <span className="text-button">
-                {role === 'rider' ? 'View delivery' : 'Manage order'} <ArrowUpRight size={17} />
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-      <Modal
-        open={!!current}
-        onClose={() => setSelected(null)}
-        title={current?.reference || 'Order'}
-      >
-        {current && (
-          <div className="form-stack">
-            <div className="section-head">
-              <span className={'status ' + current.status}>{label(current.status)}</span>
-              <strong>{money(current.total)} COD</strong>
-            </div>
-            <div className="route-address">
-              <span className="pickup-dot" />
-              <div>
-                <small>PICKUP</small>
-                <h3>{current.outlet.name}</h3>
-                <p>{current.outlet.address}</p>
-                <a className="accent" href={'tel:' + current.outlet.phone}>
-                  {current.outlet.phone}
-                </a>
-              </div>
-            </div>
-            <div className="route-address">
-              <span className="drop-dot" />
-              <div>
-                <small>DELIVER TO</small>
-                <h3>{current.name}</h3>
-                <p>{current.address}</p>
-                <a className="accent" href={'tel:' + current.phone}>
-                  {current.phone}
-                </a>
-                <p className="small-muted">{current.email}</p>
-              </div>
-            </div>
-            {current.notes && (
-              <div className="notes-box">
-                <strong>Customer notes</strong>
-                <p>{current.notes}</p>
-              </div>
-            )}
-            <div className="line-item">
-              <span>Time to deliver</span>
-              <strong>
-                <Countdown
-                  deadline={current.deliver_by}
-                  done={['delivered', 'cancelled'].includes(current.status)}
-                />
-              </strong>
-            </div>
-            {current.items.map((i) => (
-              <div className="line-item" key={i.id}>
-                <span>
-                  {i.quantity} × {i.name}
-                </span>
-                <strong>{money(i.unit_price * i.quantity)}</strong>
-              </div>
-            ))}
-            {role === 'admin' && (
-              <label>
-                Assigned rider
-                <select
-                  value={current.rider_id || ''}
-                  disabled={busy || ['delivered', 'cancelled'].includes(current.status)}
-                  onChange={(e) => assign(current.id, e.target.value)}
-                >
-                  <option value="">Awaiting assignment</option>
-                  {riders
-                    ?.filter((r) => r.location_id === current.location_id && r.active)
-                    .map((r) => (
-                      <option value={r.id} key={r.id}>
-                        {r.name} · {r.login_id}
-                      </option>
-                    ))}
-                </select>
-                <small>Only active riders in this delivery area are listed.</small>
-              </label>
-            )}
-            {role === 'rider' && (
-              <>
-                <DeliveryMap lat={current.lat} lng={current.lng} pickup={current.outlet} />
-                <a
-                  href={`https://www.google.com/maps/dir/?api=1&origin=${current.outlet.lat},${current.outlet.lng}&destination=${current.lat},${current.lng}&travelmode=driving`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="button secondary"
-                >
-                  <Navigation size={18} />
-                  Open navigation
-                </a>
-              </>
-            )}
-            {['admin', 'outlet'].includes(role) &&
-              ['placed', 'confirmed', 'preparing'].includes(current.status) && (
-                <button
-                  disabled={busy}
-                  className="button full"
-                  onClick={() =>
-                    change(
-                      current,
-                      (
-                        {
-                          placed: 'confirmed',
-                          confirmed: 'preparing',
-                          preparing: 'ready',
-                        } as Record<string, string>
-                      )[current.status],
-                    )
-                  }
-                >
-                  {
-                    (
-                      {
-                        placed: 'Accept order',
-                        confirmed: 'Start preparing',
-                        preparing: 'Mark ready for pickup',
-                      } as Record<string, string>
-                    )[current.status]
-                  }
-                </button>
-              )}
-            {['rider', 'admin'].includes(role) && current.status === 'ready' && (
-              <button
-                disabled={busy}
-                className="button full"
-                onClick={() => change(current, 'picked_up')}
-              >
-                Confirm pickup
-              </button>
-            )}
-            {role === 'rider' && current.status === 'picked_up' && (
-              <form onSubmit={verify} className="otp-form">
-                <h3>
-                  <ShieldCheck size={20} />
-                  Complete delivery
-                </h3>
-                <p>
-                  Collect {money(current.total)} and ask the customer for their six-digit delivery
-                  code.
-                </p>
-                <label className="check-label">
-                  <input
-                    required
-                    type="checkbox"
-                    checked={cash}
-                    onChange={(e) => setCash(e.target.checked)}
-                  />
-                  I collected {money(current.total)} in cash
-                </label>
-                <label>
-                  Customer delivery code
-                  <input
-                    required
-                    inputMode="numeric"
-                    pattern="[0-9]{6}"
-                    minLength={6}
-                    maxLength={6}
-                    value={otp}
-                    onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
-                    autoComplete="one-time-code"
-                    placeholder="000000"
-                  />
-                </label>
-                <button className="button full" disabled={busy}>
-                  Verify & complete delivery
-                </button>
-              </form>
-            )}
-            {role === 'admin' &&
-              ['placed', 'confirmed'].includes(current.status) &&
-              (!confirmCancel ? (
-                <button className="text-button" onClick={() => setConfirmCancel(true)}>
-                  Cancel order
-                </button>
-              ) : (
-                <div className="error-box">
-                  Cancel and restore reserved stock?
-                  <div className="form-actions">
-                    <button className="button secondary" onClick={() => setConfirmCancel(false)}>
-                      Keep order
-                    </button>
-                    <button
-                      className="button"
-                      disabled={busy}
-                      onClick={() => change(current, 'cancelled')}
-                    >
-                      Confirm cancellation
-                    </button>
-                  </div>
-                </div>
-              ))}
-          </div>
-        )}
-      </Modal>
-    </>
-  );
-}
-function ImageUpload({
+
+export function ImageUpload({
   value,
   onChange,
   multiple = false,
@@ -629,50 +302,84 @@ function ImageUpload({
   }
   return (
     <div className="image-upload">
-      <div className="upload-previews">
-        {value.map((url, i) => (
-          <div key={url + i}>
-            <img src={url} alt={'Uploaded image ' + (i + 1)} width="90" height="90" />
-            {multiple && value.length > 1 && (
-              <button
-                type="button"
-                onClick={() => onChange(value.filter((_, j) => i !== j))}
-                aria-label={'Remove image ' + (i + 1)}
-              >
-                ×
-              </button>
-            )}
-          </div>
-        ))}
-      </div>
-      <label className="upload-button">
-        <Upload size={17} />
-        {busy ? 'Converting to WebP…' : multiple ? 'Add product image' : 'Upload image'}
-        <input
-          type="file"
-          accept="image/png,image/jpeg,image/webp"
-          disabled={busy}
-          onChange={(e) => {
-            if (e.target.files?.[0]) upload(e.target.files[0]);
-            e.target.value = '';
-          }}
-        />
-      </label>
-      <small>PNG, JPEG or WebP · Up to 8 MB · Saved as WebP</small>
+      {value.map((url, i) => (
+        <div className="upload-preview" key={url + i}>
+          <img src={url} alt={'Image ' + (i + 1)} />
+          {(multiple ? value.length > 1 : true) && (
+            <button type="button" onClick={() => onChange(value.filter((_, j) => i !== j))} aria-label={'Remove image ' + (i + 1)}>
+              <X size={13} />
+            </button>
+          )}
+        </div>
+      ))}
+      {(multiple || !value.length) && (
+        <label className="upload-tile">
+          <Upload size={18} />
+          <span>{busy ? 'Uploading…' : 'Upload'}</span>
+          <input
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            disabled={busy}
+            hidden
+            onChange={(e) => {
+              if (e.target.files?.[0]) upload(e.target.files[0]);
+              e.target.value = '';
+            }}
+          />
+        </label>
+      )}
     </div>
   );
 }
+
+function FormModal({
+  open,
+  title,
+  onClose,
+  onSubmit,
+  busy,
+  error,
+  children,
+  submit = 'Save',
+}: {
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  onSubmit: (e: FormEvent) => void;
+  busy: boolean;
+  error?: string;
+  children: ReactNode;
+  submit?: string;
+}) {
+  return (
+    <Modal open={open} onClose={() => !busy && onClose()} title={title} size="lg">
+      <form className="stack" onSubmit={onSubmit}>
+        {children}
+        {error && <ErrorBox error={error} />}
+        <div className="form-foot">
+          <button type="button" className="button ghost" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="button" disabled={busy}>
+            {busy ? 'Saving…' : submit}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 const newProduct = {
   name: '',
   description: '',
-  category: 'Food',
+  category: '',
   price: 0,
   stock: 0,
   unit: '1 item',
   location_id: '',
   discount: 0,
   deal: '',
-  images: ['/images/food.webp'],
+  images: [] as string[],
   includes: '',
   excludes: '',
   delivery_minutes: 30,
@@ -680,15 +387,14 @@ const newProduct = {
   active: 1,
 };
 function ProductManager({ admin }: { admin: boolean }) {
+  const { data: categories } = useData<{ name: string }[]>('/categories');
   const { locations, notice } = useApp();
   const { data, loading, error, refresh } = useData<Product[]>('/manage/products');
-  const { data: outlets } = useData<Outlet[]>(admin ? '/admin/outlets' : null);
+  const { data: outlets } = useData<Outlet[]>(admin ? '/manage/product-outlets' : null);
   const { data: own } = useData<Outlet>(!admin ? '/manage/outlet' : null);
   const [edit, setEdit] = useState<(typeof newProduct & { id?: string }) | null>(null);
-  const [remove, setRemove] = useState<Product | null>(null);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState('');
-  const [q, setQ] = useState('');
   function start(p?: Product) {
     setFormError('');
     setEdit(
@@ -696,10 +402,19 @@ function ProductManager({ admin }: { admin: boolean }) {
         ? { ...p, price: p.price / 100 }
         : {
             ...newProduct,
+            category: categories?.[0]?.name || '',
             location_id: own?.location_id || locations[0]?.id || '',
             outlet_id: own?.id || outlets?.[0]?.id || '',
           },
     );
+  }
+  async function persist(p: typeof newProduct & { id?: string }, message: string) {
+    await api('/manage/products' + (p.id ? '/' + p.id : ''), {
+      method: p.id ? 'PUT' : 'POST',
+      body: JSON.stringify({ ...p, price: Math.round(p.price * 100) }),
+    });
+    refresh();
+    notice(message);
   }
   async function save(e: FormEvent) {
     e.preventDefault();
@@ -707,164 +422,171 @@ function ProductManager({ admin }: { admin: boolean }) {
     setBusy(true);
     setFormError('');
     try {
-      await api('/manage/products' + (edit.id ? '/' + edit.id : ''), {
-        method: edit.id ? 'PUT' : 'POST',
-        body: JSON.stringify({ ...edit, price: Math.round(edit.price * 100) }),
-      });
+      await persist(edit, 'Product saved.');
       setEdit(null);
-      refresh();
-      notice('Product saved.');
     } catch (e) {
       setFormError((e as Error).message);
     } finally {
       setBusy(false);
     }
   }
-  async function archive() {
-    if (!remove) return;
-    setBusy(true);
-    try {
-      await api('/manage/products/' + remove.id, { method: 'DELETE' });
-      setRemove(null);
-      refresh();
-      notice('Product removed from the shop.');
-    } catch (e) {
-      notice((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  const rows = data?.filter((p) =>
-    `${p.name} ${p.outlet_name}`.toLowerCase().includes(q.toLowerCase()),
-  );
+  const set = (k: string, v: unknown) => setEdit((e) => (e ? { ...e, [k]: v } : e));
   return (
     <>
-      <div className="manage-toolbar">
-        <div className="search-input">
-          <Search size={18} />
-          <input
-            aria-label="Search products"
-            placeholder="Find a product…"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-        </div>
-        <button className="button" onClick={() => start()}>
-          <Plus size={18} />
-          Add product
-        </button>
-      </div>
-      {loading ? (
-        <Loading />
-      ) : error ? (
-        <ErrorBox error={error} retry={refresh} />
-      ) : (
-        <div className="panel table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Product</th>
-                <th>Outlet / area</th>
-                <th>Price</th>
-                <th>Stock</th>
-                <th>Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows?.map((p) => (
-                <tr key={p.id}>
-                  <td>
-                    <div className="table-product">
-                      <img src={p.images[0]} alt="" width="48" height="48" />
-                      <span>
-                        <strong>{p.name}</strong>
-                        <small>
-                          {p.category} · {p.unit}
-                        </small>
-                      </span>
-                    </div>
-                  </td>
-                  <td>
-                    {p.outlet_name}
-                    <small>{locations.find((l) => l.id === p.location_id)?.name}</small>
-                  </td>
-                  <td>
-                    {money(p.effective_price)}
-                    {p.discount > 0 && <small>{p.discount}% off</small>}
-                  </td>
-                  <td>{p.stock}</td>
-                  <td>
-                    <span className={'status ' + (p.active ? 'confirmed' : 'cancelled')}>
-                      {p.active ? 'Listed' : 'Archived'}
-                    </span>
-                  </td>
-                  <td>
-                    <div className="table-actions">
-                      <button
-                        className="icon-button"
-                        aria-label={'Edit ' + p.name}
-                        onClick={() => start(p)}
-                      >
-                        <Edit3 size={17} />
-                      </button>
-                      {p.active === 1 && (
-                        <button
-                          className="icon-button"
-                          aria-label={'Archive ' + p.name}
-                          onClick={() => setRemove(p)}
-                        >
-                          <Trash2 size={17} />
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {!rows?.length && (
-            <Empty title="Your shelf is ready.">Add your first product to start selling.</Empty>
-          )}
-        </div>
-      )}
-      <Modal
+      <DataTable
+        rows={data}
+        loading={loading}
+        error={error}
+        onRetry={refresh}
+        rowKey={(p) => p.id}
+        search={(p) => `${p.name} ${p.outlet_name} ${p.category}`}
+        searchPlaceholder="Search products"
+        empty="No products yet. Add your first product."
+        toolbar={
+          <button className="button" onClick={() => start()}>
+            <Plus size={16} /> Add product
+          </button>
+        }
+        filters={[
+          {
+            key: 'category',
+            label: 'Categories',
+            options: (categories || []).map((c) => ({ value: c.name, label: c.name })),
+            test: (p, v) => p.category === v,
+          },
+          {
+            key: 'status',
+            label: 'Statuses',
+            options: [
+              { value: 'listed', label: 'Listed' },
+              { value: 'archived', label: 'Archived' },
+            ],
+            test: (p, v) => (v === 'listed' ? !!p.active : !p.active),
+          },
+          {
+            key: 'stock',
+            label: 'Stock levels',
+            options: [
+              { value: 'out', label: 'Out of stock' },
+              { value: 'low', label: 'Low (under 10)' },
+              { value: 'in', label: 'In stock' },
+            ],
+            test: (p, v) => (v === 'out' ? p.stock === 0 : v === 'low' ? p.stock > 0 && p.stock < 10 : p.stock > 0),
+          },
+          ...(admin
+            ? [
+                {
+                  key: 'outlet',
+                  label: 'Outlets',
+                  options: (outlets || []).map((o) => ({ value: o.id, label: o.name })),
+                  test: (p: Product, v: string) => p.outlet_id === v,
+                },
+              ]
+            : []),
+        ]}
+        columns={[
+          {
+            key: 'name',
+            header: 'Product',
+            sort: (p) => p.name.toLowerCase(),
+            render: (p) => (
+              <div className="cell-main">
+                <img className="cell-thumb" src={p.images[0]} alt="" />
+                <span className="cell-stack">
+                  <strong>{p.name}</strong>
+                  <small>
+                    {p.category} · {p.unit}
+                  </small>
+                </span>
+              </div>
+            ),
+          },
+          ...(admin ? [{ key: 'outlet', header: 'Outlet', render: (p: Product) => p.outlet_name }] : []),
+          { key: 'area', header: 'Area', render: (p) => locations.find((l) => l.id === p.location_id)?.name || '—' },
+          {
+            key: 'price',
+            header: 'Price',
+            sort: (p) => p.effective_price,
+            render: (p) => (
+              <span className="cell-stack">
+                <strong>{money(p.effective_price)}</strong>
+                {p.discount > 0 && <small className="success-text">{p.discount}% off</small>}
+              </span>
+            ),
+          },
+          {
+            key: 'stock',
+            header: 'Stock',
+            sort: (p) => p.stock,
+            render: (p) => <Badge tone={p.stock === 0 ? 'danger' : p.stock < 10 ? 'warn' : 'success'}>{p.stock}</Badge>,
+          },
+          {
+            key: 'active',
+            header: 'Listed',
+            render: (p) => (
+              <Toggle
+                checked={!!p.active}
+                onChange={(v) =>
+                  persist({ ...p, price: p.price / 100, active: v ? 1 : 0 }, v ? 'Product listed.' : 'Product archived.').catch((e) =>
+                    notice(e.message),
+                  )
+                }
+              />
+            ),
+          },
+        ]}
+        actions={(p) => (
+          <>
+            <IconAction label="Edit" onClick={() => start(p)}>
+              <Edit3 size={16} />
+            </IconAction>
+            {p.active ? (
+              <IconAction label="View in store" href={'/products/' + p.id}>
+                <ExternalLink size={16} />
+              </IconAction>
+            ) : null}
+            <IconAction
+              label={p.active ? 'Archive' : 'Restore'}
+              tone={p.active ? 'danger' : 'success'}
+              onClick={() =>
+                persist({ ...p, price: p.price / 100, active: p.active ? 0 : 1 }, p.active ? 'Product archived.' : 'Product restored.').catch(
+                  (e) => notice(e.message),
+                )
+              }
+            >
+              {p.active ? <Archive size={16} /> : <ArchiveRestore size={16} />}
+            </IconAction>
+          </>
+        )}
+      />
+      <FormModal
         open={!!edit}
+        title={edit?.id ? 'Edit product' : 'Add product'}
         onClose={() => setEdit(null)}
-        title={edit?.id ? 'Edit product' : 'Add a product'}
+        onSubmit={save}
+        busy={busy}
+        error={formError}
+        submit="Save product"
       >
         {edit && (
-          <form onSubmit={save} className="form-stack">
-            <ImageUpload
-              value={edit.images}
-              onChange={(images) => setEdit({ ...edit, images })}
-              multiple
-            />
+          <>
+            <div className="field">
+              <span className="field-label">Images (up to 6)</span>
+              <ImageUpload value={edit.images} onChange={(images) => set('images', images)} multiple />
+            </div>
             <div className="form-grid">
               <label className="span-2">
                 Product name
-                <input
-                  required
-                  value={edit.name}
-                  onChange={(e) => setEdit({ ...edit, name: e.target.value })}
-                />
+                <input required value={edit.name} onChange={(e) => set('name', e.target.value)} />
               </label>
               <label className="span-2">
                 Description
-                <textarea
-                  required
-                  value={edit.description}
-                  onChange={(e) => setEdit({ ...edit, description: e.target.value })}
-                />
+                <textarea required rows={3} value={edit.description} onChange={(e) => set('description', e.target.value)} />
               </label>
               {admin && (
                 <label>
                   Outlet
-                  <select
-                    required
-                    value={edit.outlet_id}
-                    onChange={(e) => setEdit({ ...edit, outlet_id: e.target.value })}
-                  >
+                  <select required value={edit.outlet_id} onChange={(e) => set('outlet_id', e.target.value)}>
                     {outlets?.map((o) => (
                       <option key={o.id} value={o.id}>
                         {o.name}
@@ -875,11 +597,7 @@ function ProductManager({ admin }: { admin: boolean }) {
               )}
               <label>
                 Delivery area
-                <select
-                  required
-                  value={edit.location_id}
-                  onChange={(e) => setEdit({ ...edit, location_id: e.target.value })}
-                >
+                <select required value={edit.location_id} onChange={(e) => set('location_id', e.target.value)}>
                   {locations.map((l) => (
                     <option value={l.id} key={l.id}>
                       {l.name}
@@ -889,121 +607,62 @@ function ProductManager({ admin }: { admin: boolean }) {
               </label>
               <label>
                 Category
-                <select
-                  value={edit.category}
-                  onChange={(e) => setEdit({ ...edit, category: e.target.value })}
-                >
-                  {['Food', 'Groceries', 'Parcels', 'More'].map((c) => (
-                    <option key={c}>{c}</option>
+                <select value={edit.category} onChange={(e) => set('category', e.target.value)}>
+                  {(categories || []).map((c) => (
+                    <option key={c.name}>{c.name}</option>
                   ))}
                 </select>
               </label>
               <label>
                 Price (PKR)
-                <input
-                  required
-                  type="number"
-                  min="1"
-                  step="0.01"
-                  value={edit.price}
-                  onChange={(e) => setEdit({ ...edit, price: Number(e.target.value) })}
-                />
-              </label>
-              <label>
-                Available quantity
-                <input
-                  required
-                  type="number"
-                  min="0"
-                  step="1"
-                  value={edit.stock}
-                  onChange={(e) => setEdit({ ...edit, stock: Number(e.target.value) })}
-                />
-              </label>
-              <label>
-                Unit / portion
-                <input
-                  required
-                  value={edit.unit}
-                  onChange={(e) => setEdit({ ...edit, unit: e.target.value })}
-                />
+                <input required type="number" min="1" step="0.01" value={edit.price} onChange={(e) => set('price', Number(e.target.value))} />
               </label>
               <label>
                 Discount (%)
-                <input
-                  required
-                  type="number"
-                  min="0"
-                  max="90"
-                  value={edit.discount}
-                  onChange={(e) => setEdit({ ...edit, discount: Number(e.target.value) })}
-                />
+                <input required type="number" min="0" max="90" value={edit.discount} onChange={(e) => set('discount', Number(e.target.value))} />
               </label>
               <label>
-                Delivery time (minutes)
+                Stock
+                <input required type="number" min="0" value={edit.stock} onChange={(e) => set('stock', Number(e.target.value))} />
+              </label>
+              <label>
+                Unit / portion
+                <input required value={edit.unit} onChange={(e) => set('unit', e.target.value)} />
+              </label>
+              <label>
+                Delivery time (min)
                 <input
                   required
                   type="number"
                   min="10"
                   max="240"
                   value={edit.delivery_minutes}
-                  onChange={(e) => setEdit({ ...edit, delivery_minutes: Number(e.target.value) })}
+                  onChange={(e) => set('delivery_minutes', Number(e.target.value))}
                 />
               </label>
-              <label className="span-2">
-                Deal label (optional)
-                <input
-                  value={edit.deal}
-                  onChange={(e) => setEdit({ ...edit, deal: e.target.value })}
-                />
+              <label>
+                Deal label <span className="muted">(optional)</span>
+                <input value={edit.deal} onChange={(e) => set('deal', e.target.value)} />
               </label>
-              <label className="span-2">
-                What is included
-                <textarea
-                  required
-                  value={edit.includes}
-                  onChange={(e) => setEdit({ ...edit, includes: e.target.value })}
-                />
+              <label>
+                Included <small>Comma separated</small>
+                <textarea required rows={2} value={edit.includes} onChange={(e) => set('includes', e.target.value)} />
               </label>
-              <label className="span-2">
-                What is not included
-                <textarea
-                  required
-                  value={edit.excludes}
-                  onChange={(e) => setEdit({ ...edit, excludes: e.target.value })}
-                />
-              </label>
-              <label className="check-label span-2">
-                <input
-                  type="checkbox"
-                  checked={!!edit.active}
-                  onChange={(e) => setEdit({ ...edit, active: e.target.checked ? 1 : 0 })}
-                />
-                Visible in shop
+              <label>
+                Not included <small>Comma separated</small>
+                <textarea required rows={2} value={edit.excludes} onChange={(e) => set('excludes', e.target.value)} />
               </label>
             </div>
-            {formError && <ErrorBox error={formError} />}
-            <button className="button full" disabled={busy}>
-              {busy ? 'Saving…' : 'Save product'}
-            </button>
-          </form>
+            <Toggle checked={!!edit.active} onChange={(v) => set('active', v ? 1 : 0)} label="Listed in the store" />
+          </>
         )}
-      </Modal>
-      <Modal open={!!remove} onClose={() => setRemove(null)} title="Remove this product?">
-        <p>{remove?.name} will be hidden from the shop. Existing order history is preserved.</p>
-        <div className="form-actions">
-          <button className="button secondary" onClick={() => setRemove(null)}>
-            Keep product
-          </button>
-          <button className="button" onClick={archive} disabled={busy}>
-            Remove product
-          </button>
-        </div>
-      </Modal>
+      </FormModal>
     </>
   );
 }
+
 function OutletManager() {
+  const { data: categories } = useData<{ name: string }[]>('/categories');
   const { locations, notice } = useApp();
   const { data, loading, error, refresh } = useData<Outlet[]>('/admin/outlets');
   const [edit, setEdit] = useState<Record<string, any> | null>(null);
@@ -1025,11 +684,19 @@ function OutletManager() {
             lng: locations[0]?.lng || 73.0713,
             customer_id: '',
             password: '',
-            image: '/images/food.webp',
-            category: 'Food',
+            image: '',
+            category: categories?.[0]?.name || '',
             active: 1,
+            commission_rate: 10,
           },
     );
+  }
+  async function persist(o: Record<string, any>) {
+    await api('/admin/outlets' + (o.id ? '/' + o.id : ''), {
+      method: o.id ? 'PUT' : 'POST',
+      body: JSON.stringify({ ...o, password: o.password || undefined }),
+    });
+    refresh();
   }
   async function save(e: FormEvent) {
     e.preventDefault();
@@ -1037,117 +704,169 @@ function OutletManager() {
     setBusy(true);
     setFormError('');
     try {
-      await api('/admin/outlets' + (edit.id ? '/' + edit.id : ''), {
-        method: edit.id ? 'PUT' : 'POST',
-        body: JSON.stringify({ ...edit, password: edit.password || undefined }),
-      });
+      await persist(edit);
       setEdit(null);
-      refresh();
-      notice('Outlet and its portal account saved.');
+      notice('Outlet saved.');
     } catch (e) {
       setFormError((e as Error).message);
     } finally {
       setBusy(false);
     }
   }
+  const set = (k: string, v: unknown) => setEdit((e) => (e ? { ...e, [k]: v } : e));
   return (
     <>
-      <div className="manage-toolbar">
-        <p className="muted">Local storefronts and their portal access.</p>
-        <button className="button" onClick={() => start()}>
-          <Plus size={18} />
-          Add outlet
-        </button>
-      </div>
-      {loading ? (
-        <Loading />
-      ) : error ? (
-        <ErrorBox error={error} retry={refresh} />
-      ) : (
-        <div className="admin-outlet-grid">
-          {data?.map((o) => (
-            <section className="panel" key={o.id}>
-              <div className="table-product">
-                <img src={o.image} alt="" width="68" height="68" />
-                <div>
-                  <span className="eyebrow accent">{o.customer_id}</span>
-                  <h3>{o.name}</h3>
-                </div>
+      <DataTable
+        rows={data}
+        loading={loading}
+        error={error}
+        onRetry={refresh}
+        rowKey={(o) => o.id}
+        search={(o) => `${o.name} ${o.customer_id} ${o.email} ${o.phone} ${o.address}`}
+        searchPlaceholder="Search outlets"
+        toolbar={
+          <button className="button" onClick={() => start()}>
+            <Plus size={16} /> Add outlet
+          </button>
+        }
+        filters={[
+          {
+            key: 'area',
+            label: 'Areas',
+            options: locations.map((l) => ({ value: l.id, label: l.name })),
+            test: (o, v) => o.location_id === v,
+          },
+          {
+            key: 'category',
+            label: 'Categories',
+            options: (categories || []).map((c) => ({ value: c.name, label: c.name })),
+            test: (o, v) => o.category === v,
+          },
+          {
+            key: 'status',
+            label: 'Statuses',
+            options: [
+              { value: 'active', label: 'Active' },
+              { value: 'disabled', label: 'Disabled' },
+            ],
+            test: (o, v) => (v === 'active' ? !!o.active : !o.active),
+          },
+        ]}
+        columns={[
+          {
+            key: 'name',
+            header: 'Outlet',
+            sort: (o) => o.name.toLowerCase(),
+            render: (o) => (
+              <div className="cell-main">
+                <img className="cell-thumb" src={o.image} alt="" />
+                <span className="cell-stack">
+                  <strong>{o.name}</strong>
+                  <small>{o.customer_id}</small>
+                </span>
               </div>
-              <p>{o.address}</p>
-              <p className="small-muted">
-                {o.email}
-                <br />
-                {o.phone}
-              </p>
-              <span className={'status ' + (o.active ? 'confirmed' : 'cancelled')}>
-                {o.active ? 'Active' : 'Disabled'}
+            ),
+          },
+          { key: 'category', header: 'Category', render: (o) => o.category },
+          { key: 'area', header: 'Area', render: (o) => locations.find((l) => l.id === o.location_id)?.name || '—' },
+          {
+            key: 'commission',
+            header: 'Commission',
+            sort: (o) => (o as Outlet & { commission_rate?: number }).commission_rate ?? 0,
+            render: (o) => {
+              const x = o as Outlet & { commission_rate?: number; accepting?: number };
+              return (
+                <span className="cell-stack">
+                  <span>{x.commission_rate ?? 10}%</span>
+                  {x.accepting === 0 && <small className="warn-text">Paused by outlet</small>}
+                </span>
+              );
+            },
+          },
+          {
+            key: 'contact',
+            header: 'Contact',
+            render: (o) => (
+              <span className="cell-stack">
+                <span>{o.phone}</span>
+                <small>{o.email}</small>
               </span>
-              <div className="form-actions">
-                <button className="button secondary" onClick={() => start(o)}>
-                  <Edit3 size={16} />
-                  Edit outlet
-                </button>
-                <button className="text-button" onClick={() => setDocs(o)}>
-                  <ShieldCheck size={16} />
-                  Documents
-                </button>
-              </div>
-            </section>
-          ))}
-        </div>
-      )}
-      <Modal
+            ),
+          },
+          {
+            key: 'active',
+            header: 'Active',
+            render: (o) => (
+              <Toggle
+                checked={!!o.active}
+                onChange={(v) =>
+                  persist({ ...o, active: v ? 1 : 0 })
+                    .then(() => notice(v ? 'Outlet enabled.' : 'Outlet disabled.'))
+                    .catch((e) => notice(e.message))
+                }
+              />
+            ),
+          },
+        ]}
+        actions={(o) => (
+          <>
+            <IconAction label="Edit" onClick={() => start(o)}>
+              <Edit3 size={16} />
+            </IconAction>
+            <IconAction label="Private documents" onClick={() => setDocs(o)}>
+              <FileText size={16} />
+            </IconAction>
+            <IconAction label="View storefront" href={'/outlets/' + o.id}>
+              <ExternalLink size={16} />
+            </IconAction>
+          </>
+        )}
+      />
+      <FormModal
         open={!!edit}
+        title={edit?.id ? 'Edit outlet' : 'Add outlet'}
         onClose={() => setEdit(null)}
-        title={edit?.id ? 'Edit outlet' : 'Add an outlet'}
+        onSubmit={save}
+        busy={busy}
+        error={formError}
+        submit="Save outlet"
       >
         {edit && (
-          <form onSubmit={save} className="form-stack">
-            <ImageUpload
-              value={[edit.image]}
-              onChange={(urls) => setEdit({ ...edit, image: urls[0] })}
-            />
+          <>
+            <div className="field">
+              <span className="field-label">Cover image</span>
+              <ImageUpload value={edit.image ? [edit.image] : []} onChange={(urls) => set('image', urls[0] || '')} />
+            </div>
             <div className="form-grid">
-              {[
-                ['name', 'Outlet name', 'text'],
-                ['phone', 'Phone number', 'tel'],
-                ['email', 'Email address', 'email'],
-                ['customer_id', 'Customer ID / login ID', 'text'],
-              ].map(([key, title, type]) => (
-                <label key={key}>
-                  {title}
-                  <input
-                    required
-                    type={type}
-                    value={edit[key]}
-                    onChange={(e) =>
-                      setEdit({
-                        ...edit,
-                        [key]:
-                          key === 'customer_id' ? e.target.value.toUpperCase() : e.target.value,
-                      })
-                    }
-                    pattern={key === 'customer_id' ? '[A-Z0-9-]{3,30}' : undefined}
-                  />
-                </label>
-              ))}
               <label>
-                Portal password
+                Outlet name
+                <input required value={edit.name} onChange={(e) => set('name', e.target.value)} />
+              </label>
+              <label>
+                Login ID
                 <input
-                  type="password"
-                  required={!edit.id}
-                  minLength={10}
-                  maxLength={100}
-                  autoComplete="new-password"
-                  value={edit.password}
-                  onChange={(e) => setEdit({ ...edit, password: e.target.value })}
+                  required
+                  pattern="[A-Z0-9-]{3,30}"
+                  value={edit.customer_id}
+                  onChange={(e) => set('customer_id', e.target.value.toUpperCase())}
+                  placeholder="DLV-006"
                 />
-                <small>
-                  {edit.id
-                    ? 'Leave blank to keep the current password.'
-                    : 'Minimum 10 characters. Share securely with the outlet.'}
-                </small>
+              </label>
+              <label>
+                Phone
+                <input required type="tel" value={edit.phone} onChange={(e) => set('phone', e.target.value)} />
+              </label>
+              <label>
+                Email
+                <input required type="email" value={edit.email} onChange={(e) => set('email', e.target.value)} />
+              </label>
+              <label>
+                Category
+                <select value={edit.category} onChange={(e) => set('category', e.target.value)}>
+                  {(categories || []).map((c) => (
+                    <option key={c.name}>{c.name}</option>
+                  ))}
+                </select>
               </label>
               <label>
                 Delivery area
@@ -1167,26 +886,14 @@ function OutletManager() {
               </label>
               <label className="span-2">
                 Pickup address
-                <textarea
-                  required
-                  value={edit.address}
-                  onChange={(e) => setEdit({ ...edit, address: e.target.value })}
-                />
+                <textarea required rows={2} value={edit.address} onChange={(e) => set('address', e.target.value)} />
               </label>
               <label>
-                Pickup latitude
-                <input
-                  type="number"
-                  step="any"
-                  required
-                  min="-90"
-                  max="90"
-                  value={edit.lat}
-                  onChange={(e) => setEdit({ ...edit, lat: Number(e.target.value) })}
-                />
+                Latitude
+                <input type="number" step="any" required min="-90" max="90" value={edit.lat} onChange={(e) => set('lat', Number(e.target.value))} />
               </label>
               <label>
-                Pickup longitude
+                Longitude
                 <input
                   type="number"
                   step="any"
@@ -1194,51 +901,52 @@ function OutletManager() {
                   min="-180"
                   max="180"
                   value={edit.lng}
-                  onChange={(e) => setEdit({ ...edit, lng: Number(e.target.value) })}
+                  onChange={(e) => set('lng', Number(e.target.value))}
                 />
               </label>
               <label>
-                Category
-                <select
-                  value={edit.category}
-                  onChange={(e) => setEdit({ ...edit, category: e.target.value })}
-                >
-                  {['Food', 'Groceries', 'Parcels', 'More'].map((c) => (
-                    <option key={c}>{c}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="check-label">
+                Dellvit commission (%)
                 <input
-                  type="checkbox"
-                  checked={!!edit.active}
-                  onChange={(e) => setEdit({ ...edit, active: e.target.checked ? 1 : 0 })}
+                  type="number"
+                  required
+                  min="0"
+                  max="100"
+                  step="0.1"
+                  value={edit.commission_rate ?? 10}
+                  onChange={(e) => set('commission_rate', Number(e.target.value))}
                 />
-                Outlet and portal active
+                <small>Deducted from item sales on every delivered order.</small>
+              </label>
+              <label>
+                {edit.id ? 'New password (optional)' : 'Portal password'}
+                <input
+                  type="password"
+                  required={!edit.id}
+                  minLength={10}
+                  maxLength={100}
+                  autoComplete="new-password"
+                  value={edit.password}
+                  onChange={(e) => set('password', e.target.value)}
+                />
+                <small>{edit.id ? 'Leave blank to keep the current password.' : 'At least 10 characters.'}</small>
               </label>
             </div>
-            {formError && <ErrorBox error={formError} />}
-            <button className="button full" disabled={busy}>
-              {busy ? 'Saving…' : 'Save outlet'}
-            </button>
-          </form>
+            <Toggle checked={!!edit.active} onChange={(v) => set('active', v ? 1 : 0)} label="Outlet and portal active" />
+          </>
         )}
-      </Modal>
-      <Modal
-        open={!!docs}
-        onClose={() => setDocs(null)}
-        title={'Private documents · ' + (docs?.name || '')}
-      >
+      </FormModal>
+      <Modal open={!!docs} onClose={() => setDocs(null)} title={'Documents · ' + (docs?.name || '')}>
         {docs && <DocumentManager outletId={docs.id} />}
       </Modal>
     </>
   );
 }
+
 function DocumentManager({ outletId }: { outletId: string }) {
   const { notice } = useApp();
-  const { data, error, loading, refresh } = useData<
-    { id: string; name: string; created_at: string }[]
-  >('/admin/outlets/' + outletId + '/documents');
+  const { data, error, loading, refresh } = useData<{ id: string; name: string; created_at: string }[]>(
+    '/admin/outlets/' + outletId + '/documents',
+  );
   const [busy, setBusy] = useState(false);
   const [remove, setRemove] = useState<string | null>(null);
   async function upload(file: File) {
@@ -1248,21 +956,7 @@ function DocumentManager({ outletId }: { outletId: string }) {
       form.append('file', file);
       await api('/admin/outlets/' + outletId + '/documents', { method: 'POST', body: form });
       refresh();
-      notice('Private document added.');
-    } catch (e) {
-      notice((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function del() {
-    if (!remove) return;
-    setBusy(true);
-    try {
-      await api('/admin/documents/' + remove, { method: 'DELETE' });
-      setRemove(null);
-      refresh();
-      notice('Document deleted.');
+      notice('Document uploaded.');
     } catch (e) {
       notice((e as Error).message);
     } finally {
@@ -1270,18 +964,17 @@ function DocumentManager({ outletId }: { outletId: string }) {
     }
   }
   return (
-    <div className="form-stack">
-      <p className="notes-box">
-        <ShieldCheck size={20} />
-        These documents are visible only to administrators. Outlets cannot view, upload or remove
-        them.
-      </p>
-      <label className="upload-button">
+    <div className="stack">
+      <div className="alert info">
+        <ShieldCheck size={16} /> Visible to administrators only.
+      </div>
+      <label className="upload-tile wide">
         <Upload size={18} />
-        {busy ? 'Uploading…' : 'Upload PDF document'}
+        <span>{busy ? 'Uploading…' : 'Upload PDF (max 8 MB)'}</span>
         <input
           type="file"
           accept="application/pdf"
+          hidden
           disabled={busy}
           onChange={(e) => {
             if (e.target.files?.[0]) upload(e.target.files[0]);
@@ -1289,64 +982,87 @@ function DocumentManager({ outletId }: { outletId: string }) {
           }}
         />
       </label>
-      <small>PDF only · Up to 8 MB</small>
-      {loading ? (
-        <Loading />
-      ) : error ? (
-        <ErrorBox error={error} retry={refresh} />
-      ) : !data?.length ? (
-        <p className="muted">No documents added yet.</p>
-      ) : (
-        data.map((d) => (
-          <div className="document-row" key={d.id}>
-            <div>
-              <strong>{d.name}</strong>
-              <small>{date(d.created_at)}</small>
-            </div>
-            <a
-              className="icon-button"
-              href={'/api/admin/documents/' + d.id}
-              aria-label={'Download ' + d.name}
-            >
-              <Download size={18} />
-            </a>
-            <button
-              className="icon-button"
-              onClick={() => setRemove(d.id)}
-              aria-label={'Delete ' + d.name}
-            >
-              <Trash2 size={18} />
-            </button>
-          </div>
-        ))
-      )}
-      {remove && (
-        <div className="error-box">
-          Permanently delete this document?
-          <div className="form-actions">
-            <button className="button secondary" onClick={() => setRemove(null)}>
-              Keep document
-            </button>
-            <button className="button" disabled={busy} onClick={del}>
-              Delete document
-            </button>
-          </div>
-        </div>
-      )}
+      <DataTable
+        rows={data}
+        loading={loading}
+        error={error}
+        rowKey={(d) => d.id}
+        pageSize={5}
+        empty="No documents yet."
+        columns={[
+          {
+            key: 'name',
+            header: 'Document',
+            render: (d) => (
+              <span className="cell-main">
+                <FileText size={16} /> {d.name}
+              </span>
+            ),
+          },
+          { key: 'date', header: 'Uploaded', render: (d) => date(d.created_at) },
+        ]}
+        actions={(d) => (
+          <>
+            <IconAction label="Download" href={'/api/admin/documents/' + d.id}>
+              <Download size={16} />
+            </IconAction>
+            <IconAction label="Delete" tone="danger" onClick={() => setRemove(d.id)}>
+              <Trash2 size={16} />
+            </IconAction>
+          </>
+        )}
+      />
+      <Confirm
+        open={!!remove}
+        title="Delete document?"
+        confirm="Delete"
+        danger
+        busy={busy}
+        onClose={() => setRemove(null)}
+        onConfirm={async () => {
+          setBusy(true);
+          try {
+            await api('/admin/documents/' + remove, { method: 'DELETE' });
+            setRemove(null);
+            refresh();
+          } catch (e) {
+            notice((e as Error).message);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        This permanently removes the file.
+      </Confirm>
     </div>
   );
 }
+
+type RiderRow = User & {
+  commission_type: string;
+  commission_value: number;
+  commission_base: string;
+  balance: number;
+  earned: number;
+  active_orders: number;
+  delivered: number;
+};
 function RiderManager() {
   const { locations, notice } = useApp();
-  const { data, loading, error, refresh } = useData<User[]>('/admin/riders');
+  const { data, loading, error, refresh } = useData<RiderRow[]>('/admin/riders', 30000);
   const [edit, setEdit] = useState<Record<string, any> | null>(null);
+  const [statement, setStatement] = useState<RiderRow | null>(null);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState('');
-  function start(r?: User) {
+  function start(r?: RiderRow) {
     setFormError('');
     setEdit(
       r
-        ? { ...r, password: '' }
+        ? {
+            ...r,
+            password: '',
+            commission_value: r.commission_type === 'fixed' ? r.commission_value / 100 : r.commission_value,
+          }
         : {
             name: '',
             email: '',
@@ -1356,127 +1072,187 @@ function RiderManager() {
             login_id: '',
             password: '',
             active: 1,
+            commission_type: 'fixed',
+            commission_value: 100,
+            commission_base: 'delivery_fee',
           },
     );
+  }
+  async function persist(r: Record<string, any>, displayValue = true) {
+    await api('/admin/riders' + (r.id ? '/' + r.id : ''), {
+      method: r.id ? 'PUT' : 'POST',
+      body: JSON.stringify({
+        ...r,
+        password: r.password || undefined,
+        commission_value:
+          r.commission_type === 'fixed' && displayValue ? Math.round(Number(r.commission_value) * 100) : Number(r.commission_value),
+      }),
+    });
+    refresh();
   }
   async function save(e: FormEvent) {
     e.preventDefault();
     if (!edit) return;
     setBusy(true);
+    setFormError('');
     try {
-      await api('/admin/riders' + (edit.id ? '/' + edit.id : ''), {
-        method: edit.id ? 'PUT' : 'POST',
-        body: JSON.stringify({ ...edit, password: edit.password || undefined }),
-      });
+      await persist(edit);
       setEdit(null);
-      refresh();
-      notice('Rider account saved.');
+      notice('Rider saved.');
     } catch (e) {
       setFormError((e as Error).message);
     } finally {
       setBusy(false);
     }
   }
+  const set = (k: string, v: unknown) => setEdit((e) => (e ? { ...e, [k]: v } : e));
   return (
-    <>
-      <div className="manage-toolbar">
-        <p className="muted">Riders are assigned automatically within their delivery area.</p>
-        <button className="button" onClick={() => start()}>
-          <Plus size={18} />
-          Add rider
-        </button>
-      </div>
-      {loading ? (
-        <Loading />
-      ) : error ? (
-        <ErrorBox error={error} retry={refresh} />
-      ) : (
-        <div className="panel table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Rider</th>
-                <th>Login ID</th>
-                <th>Delivery area</th>
-                <th>Phone</th>
-                <th>Status</th>
-                <th>Edit</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data?.map((r) => (
-                <tr key={r.id}>
-                  <td>
-                    <strong>{r.name}</strong>
-                    <small>{r.email}</small>
-                  </td>
-                  <td>{r.login_id}</td>
-                  <td>{locations.find((l) => l.id === r.location_id)?.name}</td>
-                  <td>{r.phone}</td>
-                  <td>
-                    <span className={'status ' + (r.active ? 'confirmed' : 'cancelled')}>
-                      {r.active ? 'Active' : 'Disabled'}
-                    </span>
-                  </td>
-                  <td>
-                    <button
-                      className="icon-button"
-                      aria-label={'Edit ' + r.name}
-                      onClick={() => start(r)}
-                    >
-                      <Edit3 size={18} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <Modal
+    <div className="stack">
+      <DataTable
+        title={<h3>Riders</h3>}
+        rows={data}
+        loading={loading}
+        error={error}
+        onRetry={refresh}
+        rowKey={(r) => r.id}
+        search={(r) => `${r.name} ${r.email} ${r.phone} ${r.login_id}`}
+        searchPlaceholder="Search riders"
+        toolbar={
+          <button className="button" onClick={() => start()}>
+            <Plus size={16} /> Add rider
+          </button>
+        }
+        filters={[
+          {
+            key: 'area',
+            label: 'Areas',
+            options: locations.map((l) => ({ value: l.id, label: l.name })),
+            test: (r, v) => r.location_id === v,
+          },
+          {
+            key: 'status',
+            label: 'Statuses',
+            options: [
+              { value: 'active', label: 'Active' },
+              { value: 'disabled', label: 'Disabled' },
+            ],
+            test: (r, v) => (v === 'active' ? !!r.active : !r.active),
+          },
+          {
+            key: 'commission',
+            label: 'Commission types',
+            options: [
+              { value: 'fixed', label: 'Fixed' },
+              { value: 'percent', label: 'Percentage' },
+            ],
+            test: (r, v) => r.commission_type === v,
+          },
+        ]}
+        columns={[
+          {
+            key: 'name',
+            header: 'Rider',
+            sort: (r) => r.name.toLowerCase(),
+            render: (r) => (
+              <div className="cell-main">
+                <span className="avatar sm">{r.name.slice(0, 1)}</span>
+                <span className="cell-stack">
+                  <strong>{r.name}</strong>
+                  <small>
+                    {r.login_id} · {r.phone}
+                  </small>
+                </span>
+              </div>
+            ),
+          },
+          { key: 'area', header: 'Area', render: (r) => locations.find((l) => l.id === r.location_id)?.name || '—' },
+          { key: 'commission', header: 'Commission', render: (r) => commissionText(r) },
+          {
+            key: 'deliveries',
+            header: 'Deliveries',
+            sort: (r) => r.delivered,
+            render: (r) => (
+              <span className="cell-stack">
+                <strong>{r.delivered}</strong>
+                <small>{r.active_orders} active</small>
+              </span>
+            ),
+          },
+          {
+            key: 'balance',
+            header: 'Balance',
+            sort: (r) => r.balance,
+            render: (r) => (
+              <span className="cell-stack">
+                <strong>{money(r.balance)}</strong>
+                <small>{money(r.earned)} earned</small>
+              </span>
+            ),
+          },
+          {
+            key: 'active',
+            header: 'Active',
+            render: (r) => (
+              <Toggle
+                checked={!!r.active}
+                onChange={(v) =>
+                  persist({ ...r, active: v ? 1 : 0 }, false)
+                    .then(() => notice(v ? 'Rider enabled.' : 'Rider disabled.'))
+                    .catch((e) => notice(e.message))
+                }
+              />
+            ),
+          },
+        ]}
+        actions={(r) => (
+          <>
+            <IconAction label="Edit rider" onClick={() => start(r)}>
+              <Edit3 size={16} />
+            </IconAction>
+            <IconAction label="Earnings & payouts" onClick={() => setStatement(r)}>
+              <Wallet size={16} />
+            </IconAction>
+          </>
+        )}
+      />
+      <FleetManager />
+      <FormModal
         open={!!edit}
+        title={edit?.id ? 'Edit rider' : 'Add rider'}
         onClose={() => setEdit(null)}
-        title={edit?.id ? 'Edit rider' : 'Add a rider'}
+        onSubmit={save}
+        busy={busy}
+        error={formError}
+        submit="Save rider"
       >
         {edit && (
-          <form className="form-stack" onSubmit={save}>
+          <>
             <div className="form-grid">
-              {[
-                ['name', 'Full name', 'text'],
-                ['email', 'Email address', 'email'],
-                ['phone', 'Phone number', 'tel'],
-                ['login_id', 'Rider ID', 'text'],
-              ].map(([key, title, type]) => (
-                <label key={key}>
-                  {title}
-                  <input
-                    required
-                    type={type}
-                    value={edit[key]}
-                    onChange={(e) =>
-                      setEdit({
-                        ...edit,
-                        [key]: key === 'login_id' ? e.target.value.toUpperCase() : e.target.value,
-                      })
-                    }
-                    pattern={key === 'login_id' ? '[A-Z0-9-]{3,30}' : undefined}
-                  />
-                </label>
-              ))}
-              <label className="span-2">
-                Address
-                <textarea
+              <label>
+                Full name
+                <input required value={edit.name} onChange={(e) => set('name', e.target.value)} />
+              </label>
+              <label>
+                Rider ID
+                <input
                   required
-                  value={edit.address}
-                  onChange={(e) => setEdit({ ...edit, address: e.target.value })}
+                  pattern="[A-Z0-9-]{3,30}"
+                  value={edit.login_id}
+                  onChange={(e) => set('login_id', e.target.value.toUpperCase())}
+                  placeholder="DRV-003"
                 />
               </label>
               <label>
+                Email
+                <input required type="email" value={edit.email} onChange={(e) => set('email', e.target.value)} />
+              </label>
+              <label>
+                Phone
+                <input required type="tel" value={edit.phone} onChange={(e) => set('phone', e.target.value)} />
+              </label>
+              <label>
                 Assigned area
-                <select
-                  value={edit.location_id}
-                  onChange={(e) => setEdit({ ...edit, location_id: e.target.value })}
-                >
+                <select value={edit.location_id} onChange={(e) => set('location_id', e.target.value)}>
                   {locations.map((l) => (
                     <option value={l.id} key={l.id}>
                       {l.name}
@@ -1493,125 +1269,217 @@ function RiderManager() {
                   required={!edit.id}
                   value={edit.password}
                   autoComplete="new-password"
-                  onChange={(e) => setEdit({ ...edit, password: e.target.value })}
+                  onChange={(e) => set('password', e.target.value)}
                 />
               </label>
-              <label className="check-label">
-                <input
-                  type="checkbox"
-                  checked={!!edit.active}
-                  onChange={(e) => setEdit({ ...edit, active: e.target.checked ? 1 : 0 })}
-                />
-                Account active
+              <label className="span-2">
+                Address
+                <textarea required rows={2} value={edit.address} onChange={(e) => set('address', e.target.value)} />
               </label>
             </div>
-            {formError && <ErrorBox error={formError} />}
-            <button className="button full" disabled={busy}>
-              {busy ? 'Saving…' : 'Save rider'}
-            </button>
-          </form>
+            <fieldset className="fieldset">
+              <legend>Commission per delivery</legend>
+              <div className="segmented">
+                {[
+                  ['fixed', 'Fixed amount'],
+                  ['percent', 'Percentage'],
+                ].map(([v, t]) => (
+                  <button
+                    type="button"
+                    key={v}
+                    className={edit.commission_type === v ? 'selected' : ''}
+                    onClick={() => setEdit({ ...edit, commission_type: v, commission_value: v === 'fixed' ? 100 : 80 })}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+              <div className="form-grid">
+                <label>
+                  {edit.commission_type === 'fixed' ? 'Amount per delivery (PKR)' : 'Percentage (%)'}
+                  <input
+                    required
+                    type="number"
+                    min="0"
+                    max={edit.commission_type === 'percent' ? 100 : undefined}
+                    step={edit.commission_type === 'percent' ? '0.1' : '1'}
+                    value={edit.commission_value}
+                    onChange={(e) => set('commission_value', e.target.value)}
+                  />
+                </label>
+                {edit.commission_type === 'percent' && (
+                  <label>
+                    Calculated on
+                    <select value={edit.commission_base} onChange={(e) => set('commission_base', e.target.value)}>
+                      <option value="delivery_fee">Delivery fee</option>
+                      <option value="subtotal">Items subtotal</option>
+                      <option value="total">Order total</option>
+                    </select>
+                  </label>
+                )}
+              </div>
+              <small className="muted">Earnings are added to the rider’s balance when a delivery is verified.</small>
+            </fieldset>
+            <Toggle checked={!!edit.active} onChange={(v) => set('active', v ? 1 : 0)} label="Account active" />
+          </>
         )}
-      </Modal>
-    </>
+      </FormModal>
+      {statement && (
+        <RiderStatementModal
+          rider={statement}
+          onClose={() => {
+            setStatement(null);
+            refresh();
+          }}
+        />
+      )}
+    </div>
   );
 }
+
 function LocationManager() {
   const { notice } = useApp();
-  const { data, error, refresh } = useData<Location[]>('/locations');
-  const [edit, setEdit] = useState<{ id?: string; name: string; lat: number; lng: number } | null>(
-    null,
+  const { data, error, loading, refresh } = useData<(Location & { radius: number; fee: number; active: number })[]>(
+    '/admin/area-settings',
   );
+  const [edit, setEdit] = useState<Record<string, any> | null>(null);
   const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState('');
+  async function saveCoverage(a: { id: string; active: boolean; radius: number; fee: number }) {
+    await api('/admin/area-settings/' + a.id, {
+      method: 'PUT',
+      body: JSON.stringify({ active: a.active, radius: Number(a.radius), fee: Math.round(Number(a.fee)) }),
+    });
+  }
   async function save(e: FormEvent) {
     e.preventDefault();
     if (!edit) return;
     setBusy(true);
+    setFormError('');
     try {
-      await api('/admin/locations' + (edit.id ? '/' + edit.id : ''), {
+      const saved = await api<{ id: string }>('/admin/locations' + (edit.id ? '/' + edit.id : ''), {
         method: edit.id ? 'PUT' : 'POST',
-        body: JSON.stringify(edit),
+        body: JSON.stringify({ name: edit.name, lat: Number(edit.lat), lng: Number(edit.lng) }),
       });
+      await saveCoverage({ id: saved.id, active: !!edit.active, radius: edit.radius, fee: Number(edit.fee) * 100 });
       setEdit(null);
       refresh();
-      notice('Delivery area saved. Reload the page to refresh area selectors.');
+      notice('Delivery area saved.');
     } catch (e) {
-      notice((e as Error).message);
+      setFormError((e as Error).message);
     } finally {
       setBusy(false);
     }
   }
+  const set = (k: string, v: unknown) => setEdit((e) => (e ? { ...e, [k]: v } : e));
   return (
     <>
-      <div className="manage-toolbar">
-        <p className="muted">Each delivery area serves pins within 8 km of its centre.</p>
-        <button
-          className="button"
-          onClick={() => setEdit({ name: '', lat: 33.6442, lng: 73.0713 })}
-        >
-          <Plus size={18} />
-          Add delivery area
-        </button>
-      </div>
-      {error && <ErrorBox error={error} />}
-      <div className="admin-outlet-grid">
-        {data?.map((l) => (
-          <section className="panel" key={l.id}>
-            <MapPin className="accent" />
-            <h3>{l.name}</h3>
-            <p>
-              {l.lat}, {l.lng}
-            </p>
-            <button className="text-button" onClick={() => setEdit(l)}>
-              <Edit3 size={17} />
-              Edit area
-            </button>
-          </section>
-        ))}
-      </div>
-      <Modal open={!!edit} onClose={() => setEdit(null)} title="Delivery area">
-        {edit && (
-          <form className="form-stack" onSubmit={save}>
-            <label>
-              Area name
-              <input
-                required
-                value={edit.name}
-                onChange={(e) => setEdit({ ...edit, name: e.target.value })}
+      <DataTable
+        rows={data}
+        loading={loading}
+        error={error}
+        onRetry={refresh}
+        rowKey={(l) => l.id}
+        search={(l) => l.name}
+        searchPlaceholder="Search areas"
+        toolbar={
+          <button className="button" onClick={() => setEdit({ name: '', lat: 33.6442, lng: 73.0713, radius: 8, fee: 150, active: true })}>
+            <Plus size={16} /> Add area
+          </button>
+        }
+        filters={[
+          {
+            key: 'status',
+            label: 'Statuses',
+            options: [
+              { value: 'on', label: 'Accepting orders' },
+              { value: 'off', label: 'Paused' },
+            ],
+            test: (l, v) => (v === 'on' ? !!l.active : !l.active),
+          },
+        ]}
+        columns={[
+          {
+            key: 'name',
+            header: 'Area',
+            sort: (l) => l.name,
+            render: (l) => (
+              <span className="cell-main">
+                <span className="n-icon order">
+                  <MapPin size={15} />
+                </span>
+                <strong>{l.name}</strong>
+              </span>
+            ),
+          },
+          { key: 'coords', header: 'Centre', render: (l) => <small>{l.lat.toFixed(4)}, {l.lng.toFixed(4)}</small> },
+          { key: 'radius', header: 'Radius', sort: (l) => l.radius, render: (l) => `${l.radius} km` },
+          { key: 'fee', header: 'Delivery fee', sort: (l) => l.fee, render: (l) => money(l.fee) },
+          {
+            key: 'active',
+            header: 'Accepting',
+            render: (l) => (
+              <Toggle
+                checked={!!l.active}
+                onChange={(v) =>
+                  saveCoverage({ id: l.id, active: v, radius: l.radius, fee: l.fee })
+                    .then(() => {
+                      refresh();
+                      notice(v ? 'Area resumed.' : 'Area paused.');
+                    })
+                    .catch((e) => notice(e.message))
+                }
               />
-            </label>
-            <label>
-              Centre latitude
-              <input
-                type="number"
-                required
-                min="-90"
-                max="90"
-                step="any"
-                value={edit.lat}
-                onChange={(e) => setEdit({ ...edit, lat: Number(e.target.value) })}
-              />
-            </label>
-            <label>
-              Centre longitude
-              <input
-                type="number"
-                required
-                min="-180"
-                max="180"
-                step="any"
-                value={edit.lng}
-                onChange={(e) => setEdit({ ...edit, lng: Number(e.target.value) })}
-              />
-            </label>
-            <button className="button" disabled={busy}>
-              Save area
-            </button>
-          </form>
+            ),
+          },
+        ]}
+        actions={(l) => (
+          <IconAction label="Edit area" onClick={() => setEdit({ ...l, fee: l.fee / 100, active: !!l.active })}>
+            <Edit3 size={16} />
+          </IconAction>
         )}
-      </Modal>
+      />
+      <FormModal
+        open={!!edit}
+        title={edit?.id ? 'Edit delivery area' : 'Add delivery area'}
+        onClose={() => setEdit(null)}
+        onSubmit={save}
+        busy={busy}
+        error={formError}
+      >
+        {edit && (
+          <>
+            <div className="form-grid">
+              <label className="span-2">
+                Area name
+                <input required value={edit.name} onChange={(e) => set('name', e.target.value)} />
+              </label>
+              <label>
+                Centre latitude
+                <input type="number" required min="-90" max="90" step="any" value={edit.lat} onChange={(e) => set('lat', e.target.value)} />
+              </label>
+              <label>
+                Centre longitude
+                <input type="number" required min="-180" max="180" step="any" value={edit.lng} onChange={(e) => set('lng', e.target.value)} />
+              </label>
+              <label>
+                Radius (km)
+                <input type="number" required min="0.1" max="100" step="0.1" value={edit.radius} onChange={(e) => set('radius', e.target.value)} />
+              </label>
+              <label>
+                Delivery fee (PKR)
+                <input type="number" required min="0" step="1" value={edit.fee} onChange={(e) => set('fee', e.target.value)} />
+              </label>
+            </div>
+            <DeliveryMap lat={Number(edit.lat)} lng={Number(edit.lng)} onChange={(lat, lng) => setEdit({ ...edit, lat, lng })} />
+            <Toggle checked={!!edit.active} onChange={(v) => set('active', v)} label="Accepting orders" />
+          </>
+        )}
+      </FormModal>
     </>
   );
 }
+
 function AdManager() {
   const { notice } = useApp();
   const { data, error, loading, refresh } = useData<Ad>('/ad');
@@ -1625,7 +1493,7 @@ function AdManager() {
       await api('/admin/ad', { method: 'PUT', body: JSON.stringify(edit) });
       refresh();
       setEdit(null);
-      notice('Homepage advertisement updated.');
+      notice('Advertisement updated.');
     } catch (e) {
       notice((e as Error).message);
     } finally {
@@ -1634,74 +1502,152 @@ function AdManager() {
   }
   if (loading) return <Loading />;
   if (error) return <ErrorBox error={error} retry={refresh} />;
-  const ad = edit || data;
+  const ad = edit || data || { title: '', description: '', label: '', link: '/search', image: '', active: false };
   return (
-    <section className="panel">
-      <h2>Homepage advertising space</h2>
-      <p className="muted">
-        This replaces the app-download promotion until the mobile app is ready.
-      </p>
-      {ad && (
-        <form className="form-stack" onSubmit={save}>
-          <ImageUpload value={[ad.image]} onChange={(urls) => setEdit({ ...ad, image: urls[0] })} />
-          {(['label', 'title', 'description', 'link'] as const).map((key) => (
-            <label key={key}>
-              {key === 'link' ? 'Destination link' : label(key)}
-              <input
-                required
-                value={ad[key]}
-                onChange={(e) => setEdit({ ...ad, [key]: e.target.value })}
-              />
+    <div className="grid-2">
+      <section className="card">
+        <div className="card-head">
+          <h3>Homepage banner</h3>
+          <Toggle checked={ad.active} onChange={(v) => setEdit({ ...ad, active: v })} label={ad.active ? 'Live' : 'Hidden'} />
+        </div>
+        <form className="stack" onSubmit={save}>
+          <div className="field">
+            <span className="field-label">Image</span>
+            <ImageUpload value={ad.image ? [ad.image] : []} onChange={(urls) => setEdit({ ...ad, image: urls[0] || '' })} />
+          </div>
+          <div className="form-grid">
+            <label>
+              Label
+              <input required value={ad.label} onChange={(e) => setEdit({ ...ad, label: e.target.value })} />
             </label>
-          ))}
-          <label className="check-label">
-            <input
-              type="checkbox"
-              checked={ad.active}
-              onChange={(e) => setEdit({ ...ad, active: e.target.checked })}
-            />
-            Show on homepage
-          </label>
-          <button disabled={busy || !edit} className="button">
-            {busy ? 'Saving…' : 'Save advertisement'}
-          </button>
+            <label>
+              Link
+              <input required value={ad.link} onChange={(e) => setEdit({ ...ad, link: e.target.value })} placeholder="/search" />
+            </label>
+            <label className="span-2">
+              Title
+              <input required value={ad.title} onChange={(e) => setEdit({ ...ad, title: e.target.value })} />
+            </label>
+            <label className="span-2">
+              Description
+              <textarea required rows={2} value={ad.description} onChange={(e) => setEdit({ ...ad, description: e.target.value })} />
+            </label>
+          </div>
+          <div className="form-foot">
+            {edit && (
+              <button type="button" className="button ghost" onClick={() => setEdit(null)}>
+                Discard
+              </button>
+            )}
+            <button disabled={busy || !edit} className="button">
+              {busy ? 'Saving…' : 'Save banner'}
+            </button>
+          </div>
         </form>
-      )}
-    </section>
+      </section>
+      <section className="card">
+        <div className="card-head">
+          <h3>Preview</h3>
+        </div>
+        <div className="ad preview">
+          <div className="ad-copy">
+            <span className="eyebrow light">{ad.label || 'Label'}</span>
+            <h2>{ad.title || 'Your headline'}</h2>
+            <p>{ad.description}</p>
+            <span className="button white small">Explore now</span>
+          </div>
+          {ad.image && <img src={ad.image} alt="" />}
+        </div>
+      </section>
+    </div>
   );
 }
+
+type Message = { id: string; name: string; email: string; message: string; created_at: string };
 function Messages() {
-  const { data, error, loading, refresh } =
-    useData<{ id: string; name: string; email: string; message: string; created_at: string }[]>(
-      '/admin/messages',
-    );
+  const { notice } = useApp();
+  const { data, error, loading, refresh } = useData<Message[]>('/admin/messages', 30000);
+  const [view, setView] = useState<Message | null>(null);
+  const [remove, setRemove] = useState<Message | null>(null);
   return (
     <>
-      {loading ? (
-        <Loading />
-      ) : error ? (
-        <ErrorBox error={error} retry={refresh} />
-      ) : !data?.length ? (
-        <Empty title="Your inbox is clear.">Contact form enquiries will appear here.</Empty>
-      ) : (
-        <div className="form-stack">
-          {data.map((m) => (
-            <article key={m.id} className="panel">
-              <div className="section-head">
-                <h3>{m.name}</h3>
-                <small>{date(m.created_at)}</small>
-              </div>
-              <a className="accent" href={'mailto:' + m.email}>
-                {m.email}
-              </a>
-              <p className="message-body">{m.message}</p>
-              <a className="button secondary" href={'mailto:' + m.email}>
-                Reply by email <ArrowUpRight size={16} />
-              </a>
-            </article>
-          ))}
-        </div>
-      )}
+      <DataTable
+        rows={data}
+        loading={loading}
+        error={error}
+        onRetry={refresh}
+        rowKey={(m) => m.id}
+        onRowClick={setView}
+        search={(m) => `${m.name} ${m.email} ${m.message}`}
+        searchPlaceholder="Search messages"
+        empty="Your inbox is clear."
+        columns={[
+          {
+            key: 'from',
+            header: 'From',
+            sort: (m) => m.name,
+            render: (m) => (
+              <span className="cell-stack">
+                <strong>{m.name}</strong>
+                <small>{m.email}</small>
+              </span>
+            ),
+          },
+          { key: 'message', header: 'Message', render: (m) => <span className="truncate wide">{m.message}</span> },
+          { key: 'date', header: 'Received', sort: (m) => m.created_at, render: (m) => date(m.created_at) },
+        ]}
+        actions={(m) => (
+          <>
+            <IconAction label="Open" onClick={() => setView(m)}>
+              <Eye size={16} />
+            </IconAction>
+            <IconAction label="Reply by email" href={'mailto:' + m.email}>
+              <Reply size={16} />
+            </IconAction>
+            <IconAction label="Delete" tone="danger" onClick={() => setRemove(m)}>
+              <Trash2 size={16} />
+            </IconAction>
+          </>
+        )}
+      />
+      <Modal
+        open={!!view}
+        onClose={() => setView(null)}
+        title={view?.name || 'Message'}
+        footer={
+          view && (
+            <a className="button" href={'mailto:' + view.email}>
+              <Reply size={16} /> Reply
+            </a>
+          )
+        }
+      >
+        {view && (
+          <div className="stack">
+            <small className="muted">
+              {view.email} · {date(view.created_at)}
+            </small>
+            <p className="message-body">{view.message}</p>
+          </div>
+        )}
+      </Modal>
+      <Confirm
+        open={!!remove}
+        title="Delete message?"
+        danger
+        confirm="Delete"
+        onClose={() => setRemove(null)}
+        onConfirm={async () => {
+          try {
+            await api('/admin/messages/' + remove!.id, { method: 'DELETE' });
+            setRemove(null);
+            refresh();
+            notice('Message deleted.');
+          } catch (e) {
+            notice((e as Error).message);
+          }
+        }}
+      />
     </>
   );
 }

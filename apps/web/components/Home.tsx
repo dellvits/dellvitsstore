@@ -1,317 +1,345 @@
 'use client';
 import Link from 'next/link';
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRef } from 'react';
 import {
   ArrowRight,
-  ArrowUpRight,
-  MapPin,
-  Zap,
-  ShieldCheck,
-  Package,
+  ChevronLeft,
+  ChevronRight,
+  Crosshair,
   Headphones,
+  LoaderCircle,
+  MapPin,
+  ShieldCheck,
   ShoppingBag,
   Truck,
-  Tag,
-  Navigation,
-  Wallet,
-  Heart,
+  Zap,
+  Package,
+  Store,
 } from 'lucide-react';
 import { useApp } from './Provider';
-import { api } from '@/lib/api';
-import type { Product, Ad } from '@/lib/types';
-import { ProductCard, ErrorBox } from './UI';
-const categories = [
-  {
-    name: 'Food delivery',
-    category: 'Food',
-    text: 'Your cravings. Your favourite local kitchens.',
-    img: 'food',
-    color: 'rose',
-  },
-  {
-    name: 'Groceries',
-    category: 'Groceries',
-    text: 'Fresh picks and pantry staples, sorted.',
-    img: 'groceries',
-    color: 'green',
-  },
-  {
-    name: 'Parcels',
-    category: 'Parcels',
-    text: 'Send a little something across town.',
-    img: 'parcel',
-    color: 'orange',
-  },
-  {
-    name: 'More services',
-    category: 'More',
-    text: 'The essentials that keep your day going.',
-    img: 'essentials',
-    color: 'purple',
-  },
-];
+import { useData } from '@/lib/useData';
+import type { Product, Ad, Outlet } from '@/lib/types';
+import { ProductCard, OutletCard, ErrorBox, Skeleton, Empty } from './UI';
+
+type Site = {
+  settings: Record<string, any> | null;
+  content: {
+    id: string;
+    name: string;
+    type: string;
+    description: string;
+    image: string;
+    link: string;
+    button: string;
+  }[];
+};
+type Feed = {
+  nearby: Product[];
+  categories: { id: string; name: string; description: string; products: Product[] }[];
+  outlets: Outlet[];
+};
+
+function SectionHead({
+  eyebrow,
+  title,
+  href,
+  action = 'Explore all',
+  children,
+}: {
+  eyebrow?: string;
+  title: string;
+  href?: string;
+  action?: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="section-head">
+      <div>
+        {eyebrow && <span className="eyebrow">{eyebrow}</span>}
+        <h2>{title}</h2>
+      </div>
+      <div className="section-tools">
+        {children}
+        {href && (
+          <Link href={href} className="button ghost small">
+            {action} <ArrowRight size={15} />
+          </Link>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ChooseLocation() {
+  const { openLocation, detectArea, areaStatus } = useApp();
+  return (
+    <div className="location-cta">
+      <span className="location-cta-icon">
+        <MapPin size={24} />
+      </span>
+      <div>
+        <strong>
+          {areaStatus === 'outside'
+            ? 'We don’t deliver to your location yet'
+            : 'Choose your location to see what’s nearby'}
+        </strong>
+        <p>Products and outlets are shown for your delivery area.</p>
+      </div>
+      <div className="location-cta-actions">
+        <button className="button ghost" onClick={() => detectArea()} disabled={areaStatus === 'detecting'}>
+          {areaStatus === 'detecting' ? <LoaderCircle className="spin" size={16} /> : <Crosshair size={16} />}
+          Detect
+        </button>
+        <button className="button" onClick={() => openLocation(true)}>
+          Select location
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function OutletRail({ outlets }: { outlets: Outlet[] }) {
+  const rail = useRef<HTMLDivElement>(null);
+  const scroll = (dir: number) =>
+    rail.current?.scrollBy({ left: dir * rail.current.clientWidth * 0.8, behavior: 'smooth' });
+  return (
+    <section className="section container">
+      <SectionHead eyebrow="Shops & kitchens" title="Outlets near you" href="/outlets" action="Explore more">
+        {outlets.length > 3 && (
+          <div className="rail-arrows">
+            <button className="round-btn" onClick={() => scroll(-1)} aria-label="Scroll outlets left">
+              <ChevronLeft size={18} />
+            </button>
+            <button className="round-btn" onClick={() => scroll(1)} aria-label="Scroll outlets right">
+              <ChevronRight size={18} />
+            </button>
+          </div>
+        )}
+      </SectionHead>
+      <div className="rail" ref={rail}>
+        {outlets.map((o) => (
+          <OutletCard outlet={o} key={o.id} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function Home() {
-  const { area, locations, setArea, openLocation } = useApp();
-  const router = useRouter();
-  const [products, setProducts] = useState<Product[]>([]);
-  const [ad, setAd] = useState<Ad | null>(null);
-  const [error, setError] = useState('');
-  useEffect(() => {
-    api<Ad>('/ad')
-      .then(setAd)
-      .catch(() => {});
-  }, []);
-  useEffect(() => {
-    if (!area) return;
-    let alive = true;
-    api<Product[]>('/products?location=' + area.id)
-      .then((p) => {
-        if (alive) {
-          setProducts(p);
-          setError('');
-        }
-      })
-      .catch((e) => {
-        if (alive) setError(e.message);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [area]);
+  const { data: site, error: siteError } = useData<Site>('/site');
+  const { data: ad } = useData<Ad>('/ad');
+  const { area, areaStatus, openLocation } = useApp();
+  const { data: feed, loading, error, refresh } = useData<Feed>(area ? '/home?location=' + area.id : null);
+  const show = (k: string) => site?.settings?.['show_' + k] !== false;
+  const hero = site?.content.find((c) => c.type === 'hero');
+  const waiting = areaStatus === 'loading' || areaStatus === 'detecting' || (area && loading && !feed);
   return (
     <div className="home">
-      <section className="hero container">
-        <div className="hero-copy">
-          <div className="eyebrow hero-kicker">
-            <span />A little local. A lot to love.
-          </div>
-          <h1>
-            Food, groceries
-            <br />
-            and more,
-            <br />
-            <span>delivered to you.</span>
-          </h1>
-          <p>
-            From your favourite meals to everyday essentials
-            <br className="desktop-break" /> and beyond — we deliver goodness, faster.
-          </p>
-          <form
-            className="location-search"
-            onSubmit={(e) => {
-              e.preventDefault();
-              router.push('/search');
-            }}
-          >
-            <MapPin size={22} />
-            <select
-              aria-label="Your delivery location"
-              value={area?.id || ''}
-              onChange={(e) => {
-                const a = locations.find((l) => l.id === e.target.value);
-                if (a) setArea(a);
-              }}
-            >
-              <option value="" disabled>
-                Enter your delivery location
-              </option>
-              {locations.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.name}
-                </option>
-              ))}
-            </select>
-            <button type="submit" className="button">
-              Find nearby <ArrowRight size={17} />
-            </button>
-          </form>
-          <div className="popular-chips">
-            <span>In the mood for</span>
-            {categories.slice(0, 3).map((c) => (
-              <Link key={c.category} href={'/search?category=' + c.category}>
-                <img src={'/images/' + c.img + '.webp'} alt="" width="27" height="27" />
-                {c.category}
-              </Link>
-            ))}
-          </div>
-        </div>
-        <div className="hero-visual">
-          <img
-            className="hero-art"
-            src="/images/hero-phone.webp"
-            alt="Dellvit delivery app concept surrounded by food, fresh groceries and a parcel"
-            width="1536"
-            height="1024"
-            fetchPriority="high"
-          />
-          <div className="delivery-note">
-            <span>
-              <ShieldCheck size={22} />
+      <section className="hero">
+        <div className="container hero-grid">
+          <div className="hero-copy">
+            <span className="hero-tag">
+              <Zap size={14} /> Fast local delivery
             </span>
-            <div>
-              <strong>A good day, delivered.</strong>
-              <small>From your neighbourhood to your door</small>
+            <h1>
+              {hero?.name || (
+                <>
+                  Everything you need, <span>delivered fast.</span>
+                </>
+              )}
+            </h1>
+            <p>{hero?.description || 'Meals, groceries and essentials from outlets near you.'}</p>
+            <div className="hero-actions">
+              <button className="hero-location" onClick={() => openLocation(true)}>
+                <MapPin size={18} />
+                <span>
+                  <small>Delivering to</small>
+                  <strong>
+                    {areaStatus === 'detecting' ? 'Detecting your location…' : area?.name || 'Select your location'}
+                  </strong>
+                </span>
+              </button>
+              <Link href="/search" className="button large">
+                Start shopping <ArrowRight size={18} />
+              </Link>
             </div>
-          </div>
-        </div>
-      </section>
-      <section className="trust-bar container" aria-label="Dellvit service benefits">
-        {[
-          [Zap, 'Fast delivery', 'Less waiting. More living.'],
-          [ShieldCheck, 'Safe & reliable', 'Care in every delivery.'],
-          [Package, 'Local coverage', 'Your neighbourhood, connected.'],
-          [Headphones, 'Here to help', 'Support when you need it.'],
-        ].map(([Icon, title, desc]) => {
-          const I = Icon as typeof Zap;
-          return (
-            <div key={String(title)}>
-              <I size={30} />
+            <div className="hero-stats">
               <span>
-                <strong>{String(title)}</strong>
-                <small>{String(desc)}</small>
+                <strong>30 min</strong> avg. delivery
+              </span>
+              <span>
+                <strong>COD</strong> & online payments
+              </span>
+              <span>
+                <strong>OTP</strong> secured handover
               </span>
             </div>
-          );
-        })}
-      </section>
-      <section className="section container">
-        <div className="section-head">
-          <h2>
-            More than food.
-            <br />
-            We deliver <em>it all.</em>
-          </h2>
-          <span className="section-note">What can we bring you today?</span>
-        </div>
-        <div className="category-grid">
-          {categories.map((c) => (
-            <Link
-              className={'category-card ' + c.color}
-              href={'/search?category=' + c.category}
-              key={c.name}
-            >
-              <img
-                src={'/images/' + c.img + '.webp'}
-                alt={c.name}
-                width="400"
-                height="300"
-                loading="lazy"
-              />
-              <div>
-                <h3>{c.name}</h3>
-                <p>{c.text}</p>
-                <span className="category-arrow">
-                  <ArrowUpRight size={20} />
-                </span>
-              </div>
-            </Link>
-          ))}
-        </div>
-      </section>
-      <section className="section container nearby-section">
-        <div className="section-head">
-          <div>
-            <div className="eyebrow accent">Made nearby. Loved locally.</div>
-            <h2>Good things near you.</h2>
-            <button className="area-inline" onClick={() => openLocation(true)}>
-              <MapPin size={15} />
-              {area?.name || 'Choose an area'}
-            </button>
           </div>
-          <Link href="/search" className="text-button">
-            Explore all <ArrowRight size={18} />
-          </Link>
-        </div>
-        {error ? (
-          <ErrorBox error={error} />
-        ) : products.length ? (
-          <div className="product-grid">
-            {products.slice(0, 4).map((p) => (
-              <ProductCard key={p.id} product={p} />
-            ))}
+          <div className="hero-visual">
+            <img
+              src={hero?.image || '/images/hero-phone.webp'}
+              alt="Dellvit delivery app with food, groceries and parcels"
+              width="1536"
+              height="1024"
+              fetchPriority="high"
+            />
           </div>
-        ) : (
-          <p className="muted">Choose your delivery area to discover local favourites.</p>
-        )}
+        </div>
       </section>
-      <section className="how-section container">
-        <h2>
-          How <span className="accent">Dellvit</span> works
-        </h2>
-        <div className="how-grid">
+
+      {show('trust') && (
+        <section className="container trust">
           {[
-            [MapPin, '01', 'Choose', 'Set your location and find something you love.'],
-            [ShoppingBag, '02', 'Order', 'Add to your basket and tell us where to go.'],
-            [Truck, '03', 'Delivered', 'We bring it to your door. You enjoy your day.'],
-          ].map(([Icon, n, title, desc]) => {
-            const I = Icon as typeof MapPin;
+            [Zap, 'Fast delivery', 'Riders close to you'],
+            [ShieldCheck, 'Secure handover', 'OTP-verified delivery'],
+            [Package, 'Local outlets', 'Shops you already love'],
+            [Headphones, 'Real support', 'We’re here to help'],
+          ].map(([Icon, title, desc]) => {
+            const I = Icon as typeof Zap;
             return (
-              <div key={String(n)}>
-                <span className="how-icon">
-                  <I size={30} />
+              <div key={String(title)}>
+                <span>
+                  <I size={20} />
                 </span>
-                <div>
-                  <small>STEP {String(n)}</small>
-                  <h3>{String(title)}</h3>
-                  <p>{String(desc)}</p>
-                </div>
+                <p>
+                  <strong>{String(title)}</strong>
+                  <small>{String(desc)}</small>
+                </p>
               </div>
             );
           })}
+        </section>
+      )}
+
+      {siteError && (
+        <div className="container">
+          <ErrorBox error={siteError} />
         </div>
-      </section>
-      {ad?.active && (
-        <section className="ad-banner container">
-          <div className="ad-copy">
-            <span className="eyebrow">{ad.label} · ADVERTISEMENT</span>
-            <h2>{ad.title}</h2>
-            <p>{ad.description}</p>
-            <Link className="button white" href={ad.link}>
-              Explore now <ArrowRight size={18} />
-            </Link>
-          </div>
-          <img
-            src={ad.image}
-            alt="Dellvit rider bringing an order to your neighbourhood"
-            width="600"
-            height="400"
-            loading="lazy"
-          />
-          <div className="ad-side">
-            <img src="/images/app-logo.webp" alt="Dellvit app logo" width="100" height="100" />
-            <h3>
-              A little more local.
-              <br />A little more Dellvit.
-            </h3>
-            <Link href="/contact">
-              Advertise with us <ArrowUpRight size={17} />
-            </Link>
+      )}
+
+      {show('nearby') && (
+        <section className="section container">
+          <SectionHead
+            eyebrow="Made nearby. Loved locally."
+            title="Good things near you"
+            href={area && feed?.nearby.length ? '/search' : undefined}
+          >
+            {area && (
+              <button className="area-link" onClick={() => openLocation(true)}>
+                <MapPin size={14} /> {area.name}
+              </button>
+            )}
+          </SectionHead>
+          {waiting ? (
+            <Skeleton count={4} />
+          ) : !area ? (
+            <ChooseLocation />
+          ) : error ? (
+            <ErrorBox error={error} retry={refresh} />
+          ) : !feed?.nearby.length ? (
+            <div className="location-cta">
+              <span className="location-cta-icon">
+                <Store size={24} />
+              </span>
+              <div>
+                <strong>Nothing available in {area.name} yet</strong>
+                <p>Try another delivery area to discover products.</p>
+              </div>
+              <div className="location-cta-actions">
+                <button className="button" onClick={() => openLocation(true)}>
+                  Change location
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="product-grid">
+              {feed.nearby.map((p) => (
+                <ProductCard key={p.id} product={p} />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {show('category_products') &&
+        feed?.categories.map((c) => (
+          <section className="section container" key={c.id}>
+            <SectionHead
+              eyebrow={c.description || 'Category'}
+              title={c.name}
+              href={'/search?category=' + encodeURIComponent(c.name)}
+            />
+            <div className="product-rows">
+              {c.products.map((p) => (
+                <ProductCard key={p.id} product={p} layout="row" />
+              ))}
+            </div>
+          </section>
+        ))}
+
+      {show('outlets') && area && !!feed?.outlets.length && <OutletRail outlets={feed.outlets} />}
+
+      {site?.content
+        .filter((c) => c.type !== 'hero')
+        .map((c) => (
+          <section key={c.id} className={'container promo ' + c.type}>
+            <div>
+              <h2>{c.name}</h2>
+              {c.description && <p>{c.description}</p>}
+              {c.link && (
+                <Link className="button" href={c.link}>
+                  {c.button || 'Explore'} <ArrowRight size={16} />
+                </Link>
+              )}
+            </div>
+            {c.image && <img src={c.image} alt="" loading="lazy" />}
+          </section>
+        ))}
+
+      {show('how') && (
+        <section className="section container">
+          <SectionHead eyebrow="Simple as 1-2-3" title="How Dellvit works" />
+          <div className="steps">
+            {[
+              [MapPin, 'Set your location', 'We show outlets that deliver to you.'],
+              [ShoppingBag, 'Fill your cart', 'Pay cash on delivery or online.'],
+              [Truck, 'Track & receive', 'Share your code when it arrives.'],
+            ].map(([Icon, title, desc], i) => {
+              const I = Icon as typeof MapPin;
+              return (
+                <div className="step" key={String(title)}>
+                  <span className="step-no">0{i + 1}</span>
+                  <span className="step-icon">
+                    <I size={22} />
+                  </span>
+                  <strong>{String(title)}</strong>
+                  <small>{String(desc)}</small>
+                </div>
+              );
+            })}
           </div>
         </section>
       )}
-      <section className="why-section container">
-        <h2>
-          Everyday reasons to choose <span className="accent">Dellvit.</span>
-        </h2>
-        <div>
-          {[
-            [Tag, 'Local deals'],
-            [Navigation, 'Order updates'],
-            [Wallet, 'Cash on delivery'],
-            [ShieldCheck, 'Delivery verification'],
-            [Heart, 'Neighbourhood favourites'],
-          ].map(([Icon, title]) => {
-            const I = Icon as typeof Tag;
-            return (
-              <span key={String(title)}>
-                <I size={23} />
-                {String(title)}
-              </span>
-            );
-          })}
+
+      {show('ad') && ad?.active && (
+        <section className="container ad">
+          <div className="ad-copy">
+            <span className="eyebrow light">{ad.label}</span>
+            <h2>{ad.title}</h2>
+            <p>{ad.description}</p>
+            <Link className="button white" href={ad.link}>
+              Explore now <ArrowRight size={16} />
+            </Link>
+          </div>
+          <img src={ad.image} alt="" loading="lazy" />
+        </section>
+      )}
+
+      {!area && areaStatus !== 'detecting' && areaStatus !== 'loading' && !show('nearby') && (
+        <div className="container section">
+          <Empty title="Select your delivery location" />
         </div>
-      </section>
+      )}
     </div>
   );
 }

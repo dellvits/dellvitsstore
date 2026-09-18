@@ -1,3 +1,5 @@
+import './platform.js';
+import './riders.js';
 import { randomUUID } from 'node:crypto';
 import { db, one, run, transaction } from './db.js';
 import { hashPassword } from './security.js';
@@ -32,9 +34,55 @@ export function seed() {
         new Date().toISOString(),
       );
     createUser('admin-1', 'Dellvit Admin', 'admin@dellvit.local', 'admin', null);
+    run("INSERT OR IGNORE INTO admin_access VALUES('admin-1',1,'[]')");
+    for (const name of ['Food', 'Groceries', 'Parcels', 'More'])
+      run(
+        'INSERT OR IGNORE INTO platform_records VALUES(?,?,?)',
+        'categories',
+        name,
+        JSON.stringify({
+          name,
+          description: '',
+          image: '',
+          active: true,
+          position: 0,
+          show_on_home: true,
+        }),
+      );
+    for (const [id, method] of Object.entries({
+      'demo-bank': {
+        name: 'Bank transfer (demo)',
+        type: 'bank',
+        bank_name: 'Meezan Bank',
+        account_title: 'Dellvit Demo',
+        account_number: '0123456789012',
+        iban: 'PK36MEZN0000000123456789',
+        instructions: 'Transfer the order total, then enter the transaction ID from your receipt.',
+        require_proof: false,
+        position: 1,
+      },
+      'demo-wallet': {
+        name: 'Easypaisa (demo)',
+        type: 'wallet',
+        provider: 'Easypaisa',
+        account_title: 'Dellvit Demo',
+        mobile_number: '03001234567',
+        instructions: 'Send money to this Easypaisa account and enter the TID.',
+        require_proof: false,
+        position: 2,
+      },
+    }))
+      run(
+        'INSERT OR IGNORE INTO platform_records VALUES(?,?,?)',
+        'payments',
+        id,
+        JSON.stringify({ active: true, ...method }),
+      );
     createUser('customer-1', 'Ayesha Khan', 'customer@dellvit.local', 'customer', null);
     createUser('rider-1', 'Ali Hassan', 'rider@dellvit.local', 'rider', 'DRV-001');
     createUser('rider-2', 'Bilal Ahmed', 'rider2@dellvit.local', 'rider', 'DRV-002', 'islamabad');
+    run("INSERT INTO rider_settings VALUES('rider-1','fixed',10000,'delivery_fee')");
+    run("INSERT INTO rider_settings VALUES('rider-2','percent',80,'delivery_fee')");
     const outlets = [
       [
         'outlet-1',

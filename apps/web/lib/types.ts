@@ -1,4 +1,12 @@
-export type Location = { id: string; name: string; lat: number; lng: number };
+export type Location = {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  fee?: number;
+  radius?: number;
+  active?: number;
+};
 export type User = {
   id: string;
   name: string;
@@ -7,6 +15,8 @@ export type User = {
   address: string;
   location_id: string;
   role: 'customer' | 'admin' | 'outlet' | 'rider';
+  is_super_admin?: boolean;
+  permissions?: string[];
   login_id?: string;
   active: number;
 };
@@ -29,6 +39,7 @@ export type Product = {
   excludes: string;
   delivery_minutes: number;
   active: number;
+  pickup_address?: string;
 };
 export type Outlet = {
   id: string;
@@ -43,6 +54,49 @@ export type Outlet = {
   lat: number;
   lng: number;
   active: number;
+  products?: number;
+  delivery_minutes?: number | null;
+};
+export type Category = {
+  id: string;
+  name: string;
+  description: string;
+  image: string;
+  active?: boolean;
+  show_on_home?: boolean;
+};
+export type PaymentType = 'cod' | 'bank' | 'wallet' | 'raast' | 'card';
+export type PaymentMethod = {
+  id: string;
+  name: string;
+  type: PaymentType | 'manual';
+  logo?: string;
+  instructions: string;
+  bank_name?: string;
+  account_title?: string;
+  account_number?: string;
+  iban?: string;
+  branch_code?: string;
+  provider?: string;
+  mobile_number?: string;
+  raast_id?: string;
+  card_networks?: string[];
+  gateway?: string;
+  environment?: 'sandbox' | 'live';
+  merchant_id?: string;
+  public_key?: string;
+  /** Always blank when read back; `secret_key_set` tells whether one is saved. */
+  secret_key?: string;
+  secret_key_set?: boolean;
+  webhook_secret?: string;
+  webhook_secret_set?: boolean;
+  api_base_url?: string;
+  three_d_secure?: boolean;
+  /** Admin only: whether a gateway adapter exists in the code for `gateway`. */
+  gateway_connected?: boolean;
+  require_proof?: boolean;
+  active?: boolean;
+  position?: number;
 };
 export type CartItem = { product: Product; quantity: number };
 export type Order = {
@@ -60,6 +114,19 @@ export type Order = {
   lng: number;
   notes: string;
   payment_method: string;
+  discount?: number;
+  coupon_code?: string;
+  payment_name?: string;
+  payment_type?: string;
+  payment_status?: string;
+  payment_instructions?: string;
+  payment_note?: string;
+  payment_details?: Partial<PaymentMethod>;
+  transaction_id?: string;
+  payer_name?: string;
+  payer_account?: string;
+  proof_url?: string | null;
+  rider_location?: { lat: number; lng: number; accuracy: number; updated_at: string } | null;
   subtotal: number;
   delivery_fee: number;
   total: number;
@@ -71,7 +138,124 @@ export type Order = {
   outlet: { name: string; address: string; lat: number; lng: number; phone: string };
   rider: { name: string; phone: string } | null;
   items: { id: string; name: string; quantity: number; unit_price: number; image: string }[];
-  events: { status: string; created_at: string }[];
+  events: { status: string; created_at: string; note?: string; actor?: string }[];
+  flow: OrderFlow;
+  /** Whether the signed-in user may cancel this order at its current stage. */
+  can_cancel: boolean;
+  /** Delivered orders cannot be changed. */
+  locked: boolean;
+};
+export type ResponseStatus = 'unsent' | 'pending' | 'accepted' | 'rejected';
+export type OrderFlow = {
+  sent_at: string | null;
+  outlet_status: ResponseStatus;
+  outlet_note: string;
+  outlet_responded_at: string | null;
+  rider_status: ResponseStatus;
+  rider_note: string;
+  rider_responded_at: string | null;
+  rider_rejections: number;
+  payment_verified_at: string | null;
+  cancel_reason: string;
+  cancelled_by: string | null;
+  cancel_request: string;
+  cancel_request_at: string | null;
+  reminders: number;
+  last_reminder_at: string | null;
+};
+export type AdminSummary = {
+  orders: number;
+  cancelled: number;
+  active_orders: number;
+  delivered: number;
+  sales: number;
+  outlet_deducted: number;
+  outlet_commission: number;
+  rider_commission: number;
+  coupon_deductions: number;
+  store_sales: number;
+  delivery_fees: number;
+  outlets: number;
+  statuses: Record<string, number>;
+  attention: {
+    dispatch: number;
+    payments: number;
+    refunds: number;
+    cancel_requests: number;
+    payout_requests: number;
+    cod_deposits: number;
+  };
+};
+export type OutletSummary = {
+  outlet: Outlet & { commission_rate: number; accepting: number };
+  statuses: Record<string, number>;
+  orders: number;
+  awaiting_response: number;
+  in_kitchen: number;
+  awaiting_pickup: number;
+  delivered: number;
+  sales: number;
+  commission: number;
+  payable: number;
+  average_order: number;
+  top_products: { product_id: string; name: string; image: string; quantity: number; revenue: number }[];
+  low_stock: { id: string; name: string; stock: number; image: string }[];
+  daily: { day: string; orders: number; sales: number }[];
+};
+export type CashDeposit = {
+  id: string;
+  rider_id: string;
+  rider_name?: string;
+  login_id?: string;
+  amount: number;
+  method: string;
+  reference: string;
+  note: string;
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled';
+  created_at: string;
+  reviewed_at: string | null;
+  reviewer_name: string | null;
+  review_note: string;
+};
+export type CashStatement = {
+  collected: number;
+  approved: number;
+  pending: number;
+  in_hand: number;
+  collected_range: number;
+  submitted_range: number;
+  collections: { order_id: string; reference: string; customer: string; amount: number; created_at: string }[];
+  deposits: CashDeposit[];
+};
+export type Payout = {
+  id: string;
+  rider_id: string;
+  rider_name?: string;
+  login_id?: string;
+  amount: number;
+  note: string;
+  method: string;
+  reference: string;
+  type: 'manual' | 'request';
+  status: string;
+  issued_by: string | null;
+  created_at: string;
+};
+export type PayoutRequest = {
+  id: string;
+  rider_id: string;
+  rider_name?: string;
+  login_id?: string;
+  amount: number;
+  method: string;
+  account: string;
+  note: string;
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled';
+  created_at: string;
+  reviewed_at: string | null;
+  reviewer_name: string | null;
+  review_note: string;
+  balance?: number;
 };
 export type Ad = {
   title: string;
@@ -80,4 +264,43 @@ export type Ad = {
   link: string;
   image: string;
   active: boolean;
+};
+export type AppNotification = {
+  id: string;
+  type: string;
+  title: string;
+  body: string;
+  link: string;
+  read: number;
+  created_at: string;
+};
+export type RiderStatement = {
+  settings: { commission_type: string; commission_value: number; commission_base: string };
+  earned: number;
+  paid: number;
+  balance: number;
+  pending_requests: number;
+  available: number;
+  earned_range: number;
+  paid_range: number;
+  deliveries_range: number;
+  today: number;
+  week: number;
+  deliveries: number;
+  cash_collected: number;
+  earnings: {
+    id: string;
+    order_id: string;
+    reference: string;
+    amount: number;
+    commission_type: string;
+    commission_value: number;
+    commission_base: string;
+    base_amount: number;
+    cash_collected: number;
+    order_total: number;
+    created_at: string;
+  }[];
+  payouts: Payout[];
+  requests: PayoutRequest[];
 };

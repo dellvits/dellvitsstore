@@ -1,3 +1,44 @@
+import {
+  installPlatform,
+  areaSettings,
+  couponDiscount,
+  paymentMethods,
+  records,
+  isOnline,
+} from './platform.js';
+import { installNotifications, notify, adminsWith, outletUser } from './notifications.js';
+import {
+  installRiders,
+  commissionSchema,
+  riderSettings,
+  saveRiderSettings,
+  recordEarning,
+  riderBalance,
+} from './riders.js';
+import {
+  installPayments,
+  paymentSnapshot,
+  paymentSubmission,
+  validateSubmission,
+  chargeCardOrder,
+} from './payments.js';
+import {
+  installWorkflow,
+  addEvent,
+  createFlow,
+  flow,
+  markPaymentVerified,
+  serializeFlow,
+  canCancel,
+  cancelOrder,
+  notifyCancelled,
+} from './workflow.js';
+import {
+  installFinance,
+  recordSettlement,
+  outletSettings,
+  saveOutletSettings,
+} from './finance.js';
 import express, { type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -27,11 +68,25 @@ if (process.env.TRUST_PROXY === '1') app.set('trust proxy', 1);
 app.disable('x-powered-by');
 app.use(helmet());
 app.use(cors({ origin, credentials: true }));
-app.use(express.json({ limit: '100kb' }));
+app.use(
+  express.json({
+    limit: '100kb',
+    // Card gateway adapters verify webhook signatures against the exact bytes received.
+    verify: (req, _res, buf) => {
+      if (req.url?.startsWith('/api/payments/card/webhook'))
+        (req as typeof req & { rawBody?: Buffer }).rawBody = buf;
+    },
+  }),
+);
 app.use(cookieParser());
 app.use(session);
 app.use('/api', (req, res, next) => {
-  if (/^\/(session|auth|profile|orders|manage|admin)(\/|$)/.test(req.path)) res.setHeader('Cache-Control', 'no-store');
+  if (
+    /^\/(session|auth|profile|orders|manage|admin|rider|notifications|payment-proofs)(\/|$)/.test(
+      req.path,
+    )
+  )
+    res.setHeader('Cache-Control', 'no-store');
   next();
 });
 app.use('/api', (req: AuthRequest, res, next) => {
@@ -50,6 +105,7 @@ app.use('/api', (req: AuthRequest, res, next) => {
     return res.status(403).json({ error: 'Browser requests require an Origin header.' });
   next();
 });
+installPlatform(app);
 const authLimit = rateLimit({
   windowMs: 15 * 60000,
   limit: 30,
@@ -68,6 +124,12 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024, files: 1 },
 });
+installNotifications(app);
+installRiders(app);
+installPayments(app, { uploadDir, upload: upload.single('file') });
+installWorkflow(app);
+installFinance(app);
+const money = (paisa: number) => 'PKR ' + (paisa / 100).toLocaleString('en-PK');
 const id = () => randomUUID();
 const now = () => new Date().toISOString();
 const str = (n = 200) => z.string().trim().min(1).max(n);
@@ -106,13 +168,12 @@ function allowedProduct(req: AuthRequest, p: Row) {
   if (req.user!.role === 'outlet' && myOutlet(req)?.id !== p.outlet_id)
     fail('This product belongs to another outlet.', 403);
 }
-function addEvent(orderId: string, status: string) {
-  run('INSERT INTO order_events VALUES(?,?,?,?)', id(), orderId, status, now());
-}
 function orderVisible(req: AuthRequest, o: Row) {
   if (req.user?.role === 'admin') return true;
-  if (req.user?.role === 'rider') return o.rider_id === req.user.id;
-  if (req.user?.role === 'outlet') return o.outlet_id === myOutlet(req)?.id;
+  // Outlets and riders see an order only once an administrator has sent it to them.
+  if (req.user?.role === 'rider') return o.rider_id === req.user.id && !!flow(o.id).sent_at;
+  if (req.user?.role === 'outlet')
+    return o.outlet_id === myOutlet(req)?.id && !!flow(o.id).sent_at;
   return (
     (req.user && o.user_id === req.user.id) || (!o.user_id && o.guest_session === req.sessionHash)
   );
@@ -124,20 +185,60 @@ function serializeOrder(o: Row, req: AuthRequest) {
     (!o.user_id && o.guest_session === req.sessionHash);
   const outlet = one('SELECT name,address,lat,lng,phone FROM outlets WHERE id=?', o.outlet_id);
   const rider = o.rider_id ? one('SELECT name,phone FROM users WHERE id=?', o.rider_id) : null;
+  const d = one('SELECT * FROM order_details WHERE order_id=?', o.id);
+  const privatePayment = own || req.user?.role === 'admin';
+  const payment = d
+    ? {
+        discount: d.discount,
+        coupon_code: d.coupon_code,
+        payment_name: d.payment_name,
+        payment_type: d.payment_type === 'manual' ? 'bank' : d.payment_type,
+        payment_instructions: d.payment_instructions,
+        payment_status: d.payment_status,
+        payment_note: d.payment_note,
+        payment_updated_at: d.payment_updated_at,
+        payment_details: JSON.parse(d.payment_details || '{}'),
+        ...(privatePayment
+          ? {
+              transaction_id: d.transaction_id,
+              payer_name: d.payer_name,
+              payer_account: d.payer_account,
+              proof_url: d.proof_id ? '/api/payment-proofs/' + d.proof_id : null,
+            }
+          : {}),
+      }
+    : {};
+  const staff = req.user?.role && req.user.role !== 'customer';
   return {
     ...safe,
+    ...payment,
+    ...serializeFlow(o, req.user?.role || 'customer'),
+    outlet_id: o.outlet_id,
+    rider_location:
+      !['delivered', 'cancelled'].includes(o.status) && o.rider_id
+        ? one(
+            'SELECT lat,lng,accuracy,updated_at FROM rider_state WHERE user_id=? AND lat IS NOT NULL',
+            o.rider_id,
+          ) || null
+        : null,
     ...(own ? { otp } : {}),
     outlet,
     rider,
     items: all('SELECT * FROM order_items WHERE order_id=?', o.id),
     events: all(
-      'SELECT status,created_at FROM order_events WHERE order_id=? ORDER BY created_at',
+      'SELECT status,created_at,note,actor FROM order_events WHERE order_id=? ORDER BY created_at,rowid',
       o.id,
-    ),
+    ).filter((e) => staff || !['rider_rejected', 'cancel_requested', 'cancel_request_dismissed', 'reminder'].includes(e.status)),
   };
 }
 app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'dellvit-api' }));
-app.get('/api/locations', (_req, res) => res.json(all('SELECT * FROM locations')));
+app.get('/api/locations', (_req, res) =>
+  res.json(
+    all('SELECT * FROM locations')
+      .map((l) => ({ ...l, ...areaSettings(l.id) }))
+      .filter((l) => l.active),
+  ),
+);
 app.get('/api/session', (req: AuthRequest, res) => {
   if (!req.sessionHash) newSession(req, res, null);
   res.json({ user: req.user ? publicUser(req.user) : null });
@@ -176,18 +277,18 @@ app.post('/api/auth/register', authLimit, (req: AuthRequest, res) => {
     );
   if (req.sessionHash) run('DELETE FROM sessions WHERE token_hash=?', req.sessionHash);
   const token = newSession(req, res, uid);
-  res
-    .status(201)
-    .json({
-      user: publicUser(one('SELECT * FROM users WHERE id=?', uid)!),
-      ...(req.headers['x-client'] === 'mobile' ? { token } : {}),
-    });
+  res.status(201).json({
+    user: publicUser(one('SELECT * FROM users WHERE id=?', uid)!),
+    ...(req.headers['x-client'] === 'mobile' ? { token } : {}),
+  });
 });
-app.post('/api/auth/login', authLimit, (req: AuthRequest, res) => {
+app.post(['/api/auth/login', '/api/auth/admin-login'], authLimit, (req: AuthRequest, res) => {
   const p = z.object({ login: str(), password: z.string().max(100) }).parse(req.body);
   const u = one('SELECT * FROM users WHERE email=? OR login_id=?', p.login.toLowerCase(), p.login);
   if (!u || !verifyPassword(p.password, u.password_hash) || !u.active)
     fail('Email / ID or password is incorrect.', 401);
+  if (req.path.endsWith('/admin-login') !== (u.role === 'admin'))
+    fail('Use the separate sign-in page for your account type.', 403);
   if (req.sessionHash) {
     if (u.role === 'customer')
       run(
@@ -295,7 +396,44 @@ app.get('/api/ad', (_req, res) =>
 app.post('/api/contact', writeLimit, (req, res) => {
   const p = z.object({ name: str(100), email, message: str(3000) }).parse(req.body);
   run('INSERT INTO messages VALUES(?,?,?,?,?)', id(), p.name, p.email, p.message, now());
+  notify(adminsWith('messages'), {
+    type: 'message',
+    title: 'New contact message',
+    body: `${p.name}: ${p.message.slice(0, 120)}`,
+    link: '/admin?tab=messages',
+  });
   res.status(201).json({ ok: true });
+});
+/** Homepage feed for one delivery area: nearby picks, home categories and outlets. */
+app.get('/api/home', (req, res) => {
+  const loc = String(req.query.location || '');
+  if (!loc || !one('SELECT id FROM locations WHERE id=?', loc))
+    return res.json({ nearby: [], categories: [], outlets: [] });
+  const base =
+    'SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.active=1 AND o.active=1 AND p.location_id=?';
+  res.json({
+    nearby: all(base + ' ORDER BY p.stock>0 DESC,p.discount DESC,p.rowid DESC LIMIT 8', loc).map(
+      product,
+    ),
+    categories: records('categories', true)
+      .filter((c) => c.show_on_home !== false)
+      .map((c) => ({
+        id: c.id,
+        name: c.name,
+        description: c.description,
+        image: c.image,
+        products: all(
+          base + ' AND p.category=? ORDER BY p.stock>0 DESC,p.rowid DESC LIMIT 8',
+          loc,
+          c.name,
+        ).map(product),
+      }))
+      .filter((c) => c.products.length),
+    outlets: all(
+      'SELECT o.id,o.name,o.location_id,o.address,o.phone,o.image,o.category,(SELECT COUNT(*) FROM products p WHERE p.outlet_id=o.id AND p.active=1) products,(SELECT MIN(delivery_minutes) FROM products p WHERE p.outlet_id=o.id AND p.active=1) delivery_minutes FROM outlets o WHERE o.active=1 AND o.location_id=? ORDER BY products DESC',
+      loc,
+    ),
+  });
 });
 const delivery = z.object({
   name: str(100),
@@ -313,14 +451,17 @@ const cart = z.object({
     .min(1)
     .max(50),
   delivery,
-  payment_method: z.literal('cod').default('cod'),
+  payment_method: str(100).default('cod'),
+  payment: paymentSubmission.optional(),
+  coupon_code: z.string().max(30).default(''),
   idempotency_key: z.string().uuid(),
 });
-app.post('/api/orders', writeLimit, (req: AuthRequest, res) => {
+app.post('/api/orders', writeLimit, async (req: AuthRequest, res) => {
+  if (!req.user) fail('Please log in or create an account to place an order.', 401);
+  if (req.user.role !== 'customer') fail('Use a customer account to place an order.', 403);
   const p = cart.parse(req.body);
-  if (req.user && req.user.role !== 'customer')
-    fail('Use a customer account to place an order.', 403);
-  if (!req.sessionHash) newSession(req, res, null);
+  let created = false;
+  let cardMethod: Row | undefined;
   const result = transaction(() => {
     const prior = one('SELECT * FROM orders WHERE idempotency_key=?', p.idempotency_key);
     if (prior) {
@@ -342,17 +483,26 @@ app.post('/api/orders', writeLimit, (req: AuthRequest, res) => {
     });
     if (new Set(lines.map((x) => x.outlet_id)).size !== 1)
       fail('Please order from one outlet at a time.');
+    if (!outletSettings(lines[0].outlet_id).accepting)
+      fail('This outlet is not accepting orders right now. Please try again later.');
     const center = one('SELECT * FROM locations WHERE id=?', p.delivery.location_id)!;
     const km = Math.hypot((p.delivery.lat - center.lat) * 111, (p.delivery.lng - center.lng) * 92);
-    if (km > 8) fail('Delivery pin is outside the selected area (8 km).');
+    const area = areaSettings(center.id);
+    if (!area.active) fail('Delivery is paused in this area.');
+    if (km > area.radius) fail(`Delivery pin must be within ${area.radius} km of the area centre.`);
+    const payment = paymentMethods().find((m) => m.id === p.payment_method);
+    if (!payment) fail('Choose an enabled payment method.');
+    validateSubmission(payment, p.payment, req.user!.id);
     const outlet = lines[0].outlet_id;
     const subtotal = lines.reduce((s, x) => s + x.effective_price * x.quantity, 0);
-    const fee = 15000;
+    const siteSettings = records('settings', true)[0];
+    if (siteSettings?.checkout_enabled === false)
+      fail('Ordering is temporarily paused. Please try again later.');
+    if (siteSettings && subtotal < siteSettings.minimum_order)
+      fail(`The minimum order subtotal is PKR ${(siteSettings.minimum_order / 100).toFixed(2)}.`);
+    const fee = area.fee;
+    const { discount, coupon } = couponDiscount(p.coupon_code, subtotal);
     const oid = id();
-    const rider = one(
-      "SELECT u.id,COUNT(o.id) load FROM users u LEFT JOIN orders o ON o.rider_id=u.id AND o.status NOT IN ('delivered','cancelled') WHERE u.role='rider' AND u.active=1 AND u.location_id=? GROUP BY u.id ORDER BY load ASC LIMIT 1",
-      p.delivery.location_id,
-    );
     const ref = 'DLV-' + Date.now().toString(36).toUpperCase() + '-' + randomInt(100, 1000);
     const otp = String(randomInt(100000, 1000000));
     const due = new Date(
@@ -362,10 +512,11 @@ app.post('/api/orders', writeLimit, (req: AuthRequest, res) => {
       'INSERT INTO orders(id,reference,user_id,guest_session,outlet_id,rider_id,name,email,phone,address,location_id,lat,lng,notes,payment_method,subtotal,delivery_fee,total,status,otp,created_at,deliver_by,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       oid,
       ref,
-      req.user?.id || null,
-      req.user ? null : req.sessionHash!,
+      req.user!.id,
+      null,
       outlet,
-      rider?.id || null,
+      // Riders are assigned by an administrator when the order is sent for confirmation.
+      null,
       p.delivery.name,
       p.delivery.email,
       p.delivery.phone,
@@ -374,16 +525,38 @@ app.post('/api/orders', writeLimit, (req: AuthRequest, res) => {
       p.delivery.lat,
       p.delivery.lng,
       p.delivery.notes,
-      'cod',
+      p.payment_method,
       subtotal,
       fee,
-      subtotal + fee,
+      subtotal + fee - discount,
       'placed',
       otp,
       now(),
       due,
       p.idempotency_key,
     );
+    const online = isOnline(payment.type);
+    const card = payment.type === 'card';
+    // The adapter needs the full record with its secret keys, not the customer-safe copy.
+    if (card) cardMethod = records('payments').find((m) => m.id === payment.id);
+    run(
+      'INSERT INTO order_details(order_id,discount,coupon_code,payment_name,payment_type,payment_instructions,payment_status,transaction_id,payer_name,payer_account,proof_id,payment_details,payment_updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      oid,
+      discount,
+      coupon?.code || '',
+      payment.name,
+      payment.type,
+      payment.instructions || '',
+      card ? 'pending' : online ? 'submitted' : 'due',
+      online && !card ? p.payment!.transaction_id : '',
+      online && !card ? p.payment!.payer_name : '',
+      online && !card ? p.payment!.payer_account : '',
+      online && !card ? p.payment!.proof_id || null : null,
+      JSON.stringify(paymentSnapshot(payment)),
+      online ? now() : null,
+    );
+    created = true;
+    if (coupon) run('INSERT INTO coupon_uses VALUES(?,?)', oid, coupon.id);
     for (const x of lines) {
       run('UPDATE products SET stock=stock-? WHERE id=?', x.quantity, x.id);
       run(
@@ -397,21 +570,70 @@ app.post('/api/orders', writeLimit, (req: AuthRequest, res) => {
         x.images[0],
       );
     }
-    addEvent(oid, 'placed');
+    createFlow(oid);
+    addEvent(oid, 'placed', '', 'customer');
+    // Cash on delivery needs no upfront check; online payments are verified separately.
+    if (!online) markPaymentVerified(oid);
     return one('SELECT * FROM orders WHERE id=?', oid)!;
   });
-  res.status(201).json(serializeOrder(result, req));
+  // Card orders are charged after the order (and its stock) is reserved; a decline cancels it again.
+  let redirectUrl: string | undefined;
+  if (created && cardMethod)
+    redirectUrl = (await chargeCardOrder(result, cardMethod, p.payment!.card_token!)).redirect_url;
+  if (created) {
+    const o = result;
+    const d = one(
+      'SELECT payment_type,payment_name,payment_status FROM order_details WHERE order_id=?',
+      o.id,
+    )!;
+    const amount = money(o.total);
+    const pendingNote =
+      d.payment_type === 'card'
+        ? d.payment_status === 'paid'
+          ? ' · paid by card'
+          : ' · card payment pending'
+        : isOnline(d.payment_type)
+          ? ' · payment under review'
+          : '';
+    notify([o.user_id], {
+      type: 'order',
+      title: 'Order placed',
+      body: `${o.reference} · ${amount}${pendingNote}`,
+      link: '/orders/' + o.id,
+    });
+    const verified = !!flow(o.id).payment_verified_at;
+    notify(adminsWith('orders'), {
+      type: 'order',
+      title: 'New order',
+      body: `${o.reference} from ${o.name} · ${amount} · ${verified ? 'assign a rider and send it' : 'awaiting payment verification'}`,
+      link: '/admin?tab=orders',
+    });
+    if (isOnline(d.payment_type) && d.payment_type !== 'card')
+      notify(adminsWith('payments'), {
+        type: 'payment',
+        title: 'Payment to verify',
+        body: `${o.reference} · ${d.payment_name} · ${amount}`,
+        link: '/admin?tab=payments',
+      });
+  }
+  res.status(201).json({
+    ...serializeOrder(result, req),
+    ...(redirectUrl ? { payment_redirect_url: redirectUrl } : {}),
+  });
 });
 app.get('/api/orders', (req: AuthRequest, res) => {
   let rows: Row[] = [];
   if (req.user?.role === 'admin') rows = all('SELECT * FROM orders ORDER BY created_at DESC');
   else if (req.user?.role === 'outlet')
     rows = all(
-      'SELECT * FROM orders WHERE outlet_id=? ORDER BY created_at DESC',
+      'SELECT o.* FROM orders o JOIN order_flow f ON f.order_id=o.id WHERE o.outlet_id=? AND f.sent_at IS NOT NULL ORDER BY o.created_at DESC',
       myOutlet(req)?.id || '',
     );
   else if (req.user?.role === 'rider')
-    rows = all('SELECT * FROM orders WHERE rider_id=? ORDER BY created_at DESC', req.user.id);
+    rows = all(
+      'SELECT o.* FROM orders o JOIN order_flow f ON f.order_id=o.id WHERE o.rider_id=? AND f.sent_at IS NOT NULL ORDER BY o.created_at DESC',
+      req.user.id,
+    );
   else if (req.user)
     rows = all('SELECT * FROM orders WHERE user_id=? ORDER BY created_at DESC', req.user.id);
   else if (req.sessionHash)
@@ -430,37 +652,81 @@ app.patch(
   '/api/orders/:id/status',
   requireRole('admin', 'outlet', 'rider', 'customer'),
   (req: AuthRequest, res) => {
-    const { status } = z
-      .object({ status: z.enum(['confirmed', 'preparing', 'ready', 'picked_up', 'cancelled']) })
+    const { status, reason } = z
+      .object({
+        status: z.enum(['confirmed', 'preparing', 'ready', 'picked_up', 'cancelled']),
+        reason: z.string().trim().max(300).default(''),
+      })
       .parse(req.body);
     const o = one('SELECT * FROM orders WHERE id=?', String(req.params.id));
     if (!o || !orderVisible(req, o)) fail('Order not found.', 404);
-    const transitions: Record<string, string> = {
-      placed: 'confirmed',
-      confirmed: 'preparing',
-      preparing: 'ready',
-      ready: 'picked_up',
-    };
     const role = req.user!.role;
+    if (o.status === 'delivered') fail('A completed order cannot be modified.');
     if (status === 'cancelled') {
-      if (!['placed', 'confirmed'].includes(o.status) || !['admin', 'customer'].includes(role))
-        fail('This order can no longer be cancelled.');
-    } else {
-      if (transitions[o.status] !== status) fail('Invalid order status transition.');
-      if (
-        status === 'picked_up'
-          ? !['admin', 'rider'].includes(role)
-          : !['admin', 'outlet'].includes(role)
-      )
-        fail('You cannot make this status change.', 403);
+      if (o.status === 'cancelled') fail('This order is already cancelled.');
+      if (!canCancel(o.status, role))
+        fail(
+          role === 'outlet' && o.status === 'preparing'
+            ? 'Send a cancellation request to Dellvit instead.'
+            : 'This order can no longer be cancelled.',
+          ['admin', 'customer'].includes(role) ? 400 : 403,
+        );
+      if (role === 'admin' && !reason) fail('Enter a reason for the cancellation.');
+      const why = reason || (role === 'customer' ? 'Cancelled at the customer’s request.' : '');
+      transaction(() => cancelOrder(o, role, why));
+      notifyCancelled(o, role, why);
+      return res.json(serializeOrder(one('SELECT * FROM orders WHERE id=?', o.id)!, req));
     }
+    // Every step has exactly one owner: the outlet prepares, the rider picks up.
+    const steps: Record<string, { from: string; role: string }> = {
+      preparing: { from: 'confirmed', role: 'outlet' },
+      ready: { from: 'preparing', role: 'outlet' },
+      picked_up: { from: 'ready', role: 'rider' },
+    };
+    if (status === 'confirmed')
+      fail('Orders are confirmed automatically once the outlet and rider accept them.');
+    const step = steps[status];
+    if (role !== step.role)
+      fail(
+        step.role === 'outlet'
+          ? 'Only the outlet can update preparation.'
+          : 'Only the assigned rider can confirm pickup.',
+        403,
+      );
+    if (o.status !== step.from) fail('Invalid order status transition.');
+    if (status === 'picked_up' && flow(o.id).rider_status !== 'accepted')
+      fail('Accept the delivery before confirming pickup.');
     transaction(() => {
       run('UPDATE orders SET status=? WHERE id=?', status, o.id);
-      if (status === 'cancelled')
-        for (const item of all('SELECT * FROM order_items WHERE order_id=?', o.id))
-          run('UPDATE products SET stock=stock+? WHERE id=?', item.quantity, item.product_id);
-      addEvent(o.id, status);
+      if (status === 'ready')
+        run("UPDATE order_flow SET cancel_request='',cancel_request_at=NULL WHERE order_id=?", o.id);
+      addEvent(o.id, status, '', role);
     });
+    const messages: Record<string, [string, string]> = {
+      preparing: ['Being prepared', 'Your order is being prepared.'],
+      ready: ['Ready for pickup', 'Your order is packed and waiting for the rider.'],
+      picked_up: ['On the way', 'Your rider has picked up your order.'],
+    };
+    notify([o.user_id], {
+      type: 'order',
+      title: messages[status][0],
+      body: `${o.reference} · ${messages[status][1]}`,
+      link: '/orders/' + o.id,
+    });
+    if (status === 'ready' && o.rider_id)
+      notify([o.rider_id], {
+        type: 'delivery',
+        title: 'Order ready for pickup',
+        body: `${o.reference} is ready at the outlet.`,
+        link: '/portal/rider',
+      });
+    if (status === 'picked_up')
+      notify([outletUser(o.outlet_id)], {
+        type: 'order',
+        title: 'Order picked up',
+        body: `${o.reference} was collected by ${req.user!.name}.`,
+        link: '/portal/outlet?tab=orders',
+      });
     res.json(serializeOrder(one('SELECT * FROM orders WHERE id=?', o.id)!, req));
   },
 );
@@ -474,6 +740,9 @@ app.post('/api/orders/:id/verify', requireRole('rider'), authLimit, (req: AuthRe
     req.user!.id,
   );
   if (!o) fail('Order not found.', 404);
+  const payment = one('SELECT * FROM order_details WHERE order_id=?', o.id);
+  if (isOnline(payment?.payment_type) && payment!.payment_status !== 'paid')
+    fail('An administrator must confirm the online payment before delivery.');
   if (o.status !== 'picked_up') fail('Pick up the order before verifying delivery.');
   if (o.otp_locked_until && o.otp_locked_until > now())
     fail('Too many incorrect codes. Try again in 15 minutes.', 429);
@@ -489,10 +758,36 @@ app.post('/api/orders/:id/verify', requireRole('rider'), authLimit, (req: AuthRe
   }
   transaction(() => {
     run("UPDATE orders SET status='delivered',delivered_at=? WHERE id=?", now(), o.id);
-    addEvent(o.id, 'delivered');
+    run("UPDATE order_details SET payment_status='paid' WHERE order_id=?", o.id);
+    addEvent(o.id, 'delivered', '', 'rider');
+    recordEarning(o, isOnline(payment?.payment_type) ? 0 : o.total);
+    recordSettlement(one('SELECT * FROM orders WHERE id=?', o.id)!);
   });
+  notify([o.user_id], {
+    type: 'order',
+    title: 'Delivered',
+    body: `${o.reference} has been delivered. Enjoy!`,
+    link: '/orders/' + o.id,
+  });
+  notify([outletUser(o.outlet_id)], {
+    type: 'order',
+    title: 'Order delivered',
+    body: `${o.reference} reached the customer.`,
+    link: '/portal/outlet',
+  });
+  const earned = one('SELECT amount FROM rider_earnings WHERE order_id=?', o.id);
+  if (earned)
+    notify([o.rider_id], {
+      type: 'earning',
+      title: 'Commission earned',
+      body: `${money(earned.amount)} for ${o.reference}.`,
+      link: '/portal/rider?tab=earnings',
+    });
   res.json({ ok: true });
 });
+app.get('/api/manage/product-outlets', requireRole('admin'), (_req, res) =>
+  res.json(all('SELECT id,name,location_id FROM outlets WHERE active=1')),
+);
 app.get('/api/manage/products', requireRole('admin', 'outlet'), (req: AuthRequest, res) =>
   res.json(
     (req.user!.role === 'admin'
@@ -507,7 +802,10 @@ app.get('/api/manage/products', requireRole('admin', 'outlet'), (req: AuthReques
 const productSchema = z.object({
   name: str(150),
   description: str(2000),
-  category: z.enum(['Food', 'Groceries', 'Parcels', 'More']),
+  category: str(100).refine(
+    (v) => records('categories', true).some((c) => c.name === v),
+    'Choose an active category.',
+  ),
   price: z.number().int().min(100).max(100000000),
   stock: z.number().int().min(0).max(100000),
   unit: str(100),
@@ -596,9 +894,10 @@ app.get('/api/media/:name', (req, res) => {
   res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
   res.sendFile(resolve(uploadDir, name));
 });
-app.get('/api/manage/outlet', requireRole('outlet'), (req: AuthRequest, res) =>
-  res.json(myOutlet(req)),
-);
+app.get('/api/manage/outlet', requireRole('outlet'), (req: AuthRequest, res) => {
+  const o = myOutlet(req);
+  res.json(o ? { ...o, ...outletSettings(o.id) } : null);
+});
 app.use('/api/admin', requireRole('admin'));
 const locationSchema = z.object({
   name: str(150),
@@ -624,17 +923,9 @@ app.put('/api/admin/locations/:id', (req, res) => {
   );
   res.json({ id: String(req.params.id), ...p });
 });
-app.get('/api/admin/summary', (_req, res) =>
-  res.json({
-    orders: one('SELECT COUNT(*) n FROM orders')!.n,
-    revenue: one("SELECT COALESCE(SUM(total),0) n FROM orders WHERE status='delivered'")!.n,
-    active_orders: one(
-      "SELECT COUNT(*) n FROM orders WHERE status NOT IN ('delivered','cancelled')",
-    )!.n,
-    outlets: one('SELECT COUNT(*) n FROM outlets WHERE active=1')!.n,
-  }),
+app.get('/api/admin/outlets', (_req, res) =>
+  res.json(all('SELECT * FROM outlets').map((o) => ({ ...o, ...outletSettings(o.id) }))),
 );
-app.get('/api/admin/outlets', (_req, res) => res.json(all('SELECT * FROM outlets')));
 const outletSchema = z.object({
   name: str(150),
   phone,
@@ -646,8 +937,12 @@ const outletSchema = z.object({
   customer_id: z.string().regex(/^[A-Z0-9-]{3,30}$/),
   password: z.string().min(10).max(100).optional(),
   image: z.string().refine(safeImage),
-  category: z.enum(['Food', 'Groceries', 'Parcels', 'More']),
+  category: str(100).refine(
+    (v) => records('categories', true).some((c) => c.name === v),
+    'Choose an active category.',
+  ),
   active: z.number().int().min(0).max(1).default(1),
+  commission_rate: z.number().min(0).max(100).optional(),
 });
 function saveOutlet(req: AuthRequest, res: Response, edit: boolean) {
   const p = outletSchema.parse(req.body);
@@ -718,16 +1013,27 @@ function saveOutlet(req: AuthRequest, res: Response, edit: boolean) {
         p.category,
       );
     }
+    if (p.commission_rate !== undefined)
+      saveOutletSettings(oid, { commission_rate: p.commission_rate });
   });
-  res.json(one('SELECT * FROM outlets WHERE id=?', oid));
+  res.json({ ...one('SELECT * FROM outlets WHERE id=?', oid), ...outletSettings(oid) });
 }
 app.post('/api/admin/outlets', (req: AuthRequest, res) => saveOutlet(req, res, false));
 app.put('/api/admin/outlets/:id', (req: AuthRequest, res) => saveOutlet(req, res, true));
 app.get('/api/admin/riders', (_req, res) =>
   res.json(
     all(
-      "SELECT id,name,email,phone,address,location_id,login_id,active FROM users WHERE role='rider'",
-    ),
+      "SELECT u.id,u.name,u.email,u.phone,u.address,u.location_id,u.login_id,u.active,u.created_at,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status NOT IN ('delivered','cancelled')) active_orders,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status='delivered') delivered FROM users u WHERE u.role='rider' ORDER BY u.created_at DESC",
+    ).map((r) => {
+      const s = riderSettings(r.id);
+      return {
+        ...r,
+        commission_type: s.commission_type,
+        commission_value: s.commission_value,
+        commission_base: s.commission_base,
+        ...riderBalance(r.id),
+      };
+    }),
   ),
 );
 const riderSchema = z.object({
@@ -739,6 +1045,7 @@ const riderSchema = z.object({
   login_id: z.string().regex(/^[A-Z0-9-]{3,30}$/),
   password: z.string().min(10).max(100).optional(),
   active: z.number().int().min(0).max(1).default(1),
+  ...commissionSchema,
 });
 function saveRider(req: AuthRequest, res: Response, edit: boolean) {
   const p = riderSchema.parse(req.body);
@@ -746,6 +1053,12 @@ function saveRider(req: AuthRequest, res: Response, edit: boolean) {
   if (edit && !one("SELECT id FROM users WHERE id=? AND role='rider'", uid))
     fail('Rider not found.', 404);
   if (!edit && !p.password) fail('Set a rider password.');
+  if (p.commission_type === 'percent' && p.commission_value > 100)
+    fail('A percentage commission must be 100 or less.');
+  transaction(() => saveRiderAccount(p, uid, edit));
+  res.json(publicUser(one('SELECT * FROM users WHERE id=?', uid)!));
+}
+function saveRiderAccount(p: z.infer<typeof riderSchema>, uid: string, edit: boolean) {
   if (edit) {
     run(
       'UPDATE users SET name=?,email=?,phone=?,address=?,location_id=?,login_id=?,active=? WHERE id=?',
@@ -775,21 +1088,10 @@ function saveRider(req: AuthRequest, res: Response, edit: boolean) {
       p.active,
       now(),
     );
-  res.json(publicUser(one('SELECT * FROM users WHERE id=?', uid)!));
+  saveRiderSettings(uid, p);
 }
 app.post('/api/admin/riders', (req: AuthRequest, res) => saveRider(req, res, false));
 app.put('/api/admin/riders/:id', (req: AuthRequest, res) => saveRider(req, res, true));
-app.patch('/api/admin/orders/:id/assign', (req, res) => {
-  const { rider_id } = z.object({ rider_id: uuid }).parse(req.body);
-  const o = one('SELECT * FROM orders WHERE id=?', String(req.params.id));
-  if (!o) fail('Order not found.', 404);
-  if (['delivered', 'cancelled'].includes(o.status))
-    fail('A completed order cannot be reassigned.');
-  const r = one("SELECT * FROM users WHERE id=? AND role='rider' AND active=1", rider_id);
-  if (!r || r.location_id !== o.location_id) fail('Choose an active rider in the delivery area.');
-  run('UPDATE orders SET rider_id=? WHERE id=?', rider_id, o.id);
-  res.json({ ok: true });
-});
 app.get('/api/admin/outlets/:id/documents', (req, res) =>
   res.json(
     all('SELECT id,name,mime,created_at FROM documents WHERE outlet_id=?', String(req.params.id)),
@@ -826,6 +1128,10 @@ app.delete('/api/admin/documents/:id', (req, res) => {
   if (!d) fail('Document not found.', 404);
   if (existsSync(resolve(uploadDir, d.filename))) unlinkSync(resolve(uploadDir, d.filename));
   run('DELETE FROM documents WHERE id=?', d.id);
+  res.json({ ok: true });
+});
+app.delete('/api/admin/messages/:id', (req, res) => {
+  run('DELETE FROM messages WHERE id=?', String(req.params.id));
   res.json({ ok: true });
 });
 app.get('/api/admin/messages', (_req, res) =>

@@ -2,40 +2,66 @@
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useState, type FormEvent } from 'react';
-import { ArrowRight, ShieldCheck, LogOut } from 'lucide-react';
+import {
+  ArrowRight,
+  Bell,
+  Clock,
+  Eye,
+  EyeOff,
+  KeyRound,
+  LogOut,
+  Package,
+  ShieldCheck,
+  Truck,
+  UserRound,
+  Wallet,
+} from 'lucide-react';
 import { useApp } from './Provider';
-import { api } from '@/lib/api';
-import type { User } from '@/lib/types';
-import { ErrorBox, Loading } from './UI';
-export function Auth({ signup = false }: { signup?: boolean }) {
+import { api, money } from '@/lib/api';
+import { useData } from '@/lib/useData';
+import type { Order, User } from '@/lib/types';
+import { ErrorBox, Loading, Stat, Empty } from './UI';
+import { NotificationSettings } from './Notifications';
+import { portalPath } from './Shell';
+
+function Password({ name, autoComplete, minLength }: { name: string; autoComplete: string; minLength?: number }) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="password">
+      <input
+        name={name}
+        type={show ? 'text' : 'password'}
+        required
+        minLength={minLength}
+        maxLength={100}
+        autoComplete={autoComplete}
+      />
+      <button type="button" onClick={() => setShow(!show)} aria-label={show ? 'Hide password' : 'Show password'}>
+        {show ? <EyeOff size={16} /> : <Eye size={16} />}
+      </button>
+    </div>
+  );
+}
+
+export function Auth({ signup = false, admin = false }: { signup?: boolean; admin?: boolean }) {
   const { setUser, locations, area } = useApp();
   const router = useRouter();
   const search = useSearchParams();
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const next = search.get('next');
+  const safeNext = next && next.startsWith('/') && !next.startsWith('//') ? next : '';
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setBusy(true);
     setError('');
-    const f = Object.fromEntries(new FormData(e.currentTarget));
     try {
-      const { user } = await api<{ user: User }>(signup ? '/auth/register' : '/auth/login', {
-        method: 'POST',
-        body: JSON.stringify(f),
-      });
-      setUser(user);
-      const target = search.get('next');
-      router.push(
-        target && target.startsWith('/') && !target.startsWith('//')
-          ? target
-          : user.role === 'admin'
-            ? '/admin'
-            : user.role === 'outlet'
-              ? '/portal/outlet'
-              : user.role === 'rider'
-                ? '/portal/rider'
-                : '/account',
+      const { user } = await api<{ user: User }>(
+        signup ? '/auth/register' : admin ? '/auth/admin-login' : '/auth/login',
+        { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(e.currentTarget))) },
       );
+      setUser(user);
+      router.push(safeNext || portalPath(user.role));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -43,137 +69,141 @@ export function Auth({ signup = false }: { signup?: boolean }) {
     }
   }
   return (
-    <div className="container auth-page">
-      <div className="auth-art">
-        <span className="eyebrow accent">Your everyday, delivered</span>
-        <h1>
-          A little closer
-          <br />
-          to the things
-          <br />
-          <em>you love.</em>
-        </h1>
-        <img
-          src="/images/rider.webp"
-          alt="Dellvit delivery rider on a red scooter"
-          width="720"
-          height="480"
-        />
-        <div>
-          <ShieldCheck size={22} />
-          Your next good thing is just a few taps away.
+    <div className="auth">
+      <div className="auth-panel">
+        <div className="auth-card">
+          <span className="eyebrow">{admin ? 'Administration' : signup ? 'New here?' : 'Welcome back'}</span>
+          <h1>{admin ? 'Admin sign in' : signup ? 'Create your account' : 'Log in to Dellvit'}</h1>
+          {safeNext === '/checkout' && (
+            <div className="alert info">
+              <ShieldCheck size={16} /> Sign in to finish your order — your cart is saved.
+            </div>
+          )}
+          <form onSubmit={submit} className="stack">
+            {signup ? (
+              <>
+                <label>
+                  Full name
+                  <input name="name" required autoComplete="name" maxLength={100} />
+                </label>
+                <div className="form-grid">
+                  <label>
+                    Email
+                    <input name="email" type="email" required autoComplete="email" />
+                  </label>
+                  <label>
+                    Phone
+                    <input name="phone" type="tel" required autoComplete="tel" placeholder="03XX XXXXXXX" />
+                  </label>
+                </div>
+              </>
+            ) : (
+              <label>
+                {admin ? 'Email' : 'Email, outlet ID or rider ID'}
+                <input
+                  name="login"
+                  required
+                  autoComplete="username"
+                  placeholder={admin ? 'admin@example.com' : 'you@example.com or DLV-001'}
+                />
+              </label>
+            )}
+            <label>
+              Password
+              <Password
+                name="password"
+                minLength={signup ? 10 : 1}
+                autoComplete={signup ? 'new-password' : 'current-password'}
+              />
+              {signup && <small>At least 10 characters.</small>}
+            </label>
+            {signup && (
+              <>
+                <label>
+                  Delivery area
+                  <select name="location_id" required defaultValue={area?.id || ''}>
+                    <option value="" disabled>
+                      Choose your area
+                    </option>
+                    {locations.map((l) => (
+                      <option key={l.id} value={l.id}>
+                        {l.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Address
+                  <textarea
+                    name="address"
+                    required
+                    rows={2}
+                    autoComplete="street-address"
+                    placeholder="House, street and landmark"
+                    maxLength={500}
+                  />
+                </label>
+              </>
+            )}
+            {error && <ErrorBox error={error} />}
+            <button disabled={busy} className="button large full">
+              {busy ? 'Please wait…' : signup ? 'Create account' : 'Log in'}
+              <ArrowRight size={18} />
+            </button>
+          </form>
+          {!admin && (
+            <p className="auth-switch">
+              {signup ? 'Already have an account?' : 'New to Dellvit?'}{' '}
+              <Link href={(signup ? '/login' : '/signup') + (safeNext ? '?next=' + encodeURIComponent(safeNext) : '')}>
+                {signup ? 'Log in' : 'Create an account'}
+              </Link>
+            </p>
+          )}
+          {!admin && !signup && (
+            <Link className="auth-admin" href="/admin/login">
+              <KeyRound size={14} /> Administrator sign in
+            </Link>
+          )}
         </div>
       </div>
-      <div className="auth-form">
-        <h2>{signup ? 'Make yourself at home.' : 'Good to see you again.'}</h2>
-        <p>
-          {signup
-            ? 'Create your Dellvit account for an easier everyday.'
-            : 'Log in to order, manage your shop or head out for delivery.'}
-        </p>
-        <form onSubmit={submit} className="form-stack">
-          {signup ? (
-            <>
-              <label>
-                Full name
-                <input name="name" required autoComplete="name" maxLength={100} />
-              </label>
-              <label>
-                Email address
-                <input name="email" type="email" required autoComplete="email" />
-              </label>
-              <label>
-                Phone number
-                <input
-                  name="phone"
-                  type="tel"
-                  required
-                  autoComplete="tel"
-                  placeholder="03XX XXXXXXX"
-                />
-              </label>
-            </>
-          ) : (
-            <label>
-              Email address or outlet / rider ID
-              <input
-                name="login"
-                required
-                autoComplete="username"
-                placeholder="you@example.com or DLV-001"
-              />
-            </label>
-          )}
-          <label>
-            Password
-            <input
-              name="password"
-              type="password"
-              required
-              minLength={signup ? 10 : 1}
-              maxLength={100}
-              autoComplete={signup ? 'new-password' : 'current-password'}
-            />
-            {signup && <small>Use at least 10 characters.</small>}
-          </label>
-          {signup && (
-            <>
-              <label>
-                Delivery area
-                <select name="location_id" required defaultValue={area?.id || ''}>
-                  <option value="" disabled>
-                    Choose your area
-                  </option>
-                  {locations.map((l) => (
-                    <option key={l.id} value={l.id}>
-                      {l.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Delivery address
-                <textarea
-                  name="address"
-                  required
-                  autoComplete="street-address"
-                  placeholder="House, street and landmark"
-                  maxLength={500}
-                />
-              </label>
-            </>
-          )}
-          {error && <ErrorBox error={error} />}
-          <button disabled={busy} className="button full">
-            {busy ? 'Please wait…' : signup ? 'Create account' : 'Log in'}
-            <ArrowRight size={18} />
-          </button>
-        </form>
-        <p className="center">
-          {signup ? 'Already part of the neighbourhood?' : 'New to Dellvit?'}{' '}
-          <Link className="accent" href={signup ? '/login' : '/signup'}>
-            {signup ? 'Log in' : 'Sign up'}
-          </Link>
-        </p>
+      <div className="auth-art">
+        <img src="/images/rider.webp" alt="" />
+        <div className="auth-art-copy">
+          <h2>{admin ? 'Run your delivery business.' : 'Your neighbourhood, delivered.'}</h2>
+          <ul>
+            <li>
+              <Truck size={16} /> Live order tracking
+            </li>
+            <li>
+              <ShieldCheck size={16} /> OTP-protected handover
+            </li>
+            <li>
+              <Bell size={16} /> Instant notifications
+            </li>
+          </ul>
+        </div>
       </div>
     </div>
   );
 }
+
 export function Account() {
   const { user, setUser, ready, locations, logout, notice } = useApp();
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const { data: orders } = useData<Order[]>(user?.role === 'customer' ? '/orders' : null, 30000);
   async function save(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setBusy(true);
+    setError('');
     try {
       const u = await api<User>('/profile', {
         method: 'PATCH',
         body: JSON.stringify(Object.fromEntries(new FormData(e.currentTarget))),
       });
       setUser(u);
-      notice('Your profile has been updated.');
+      notice('Profile updated.');
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -184,13 +214,11 @@ export function Account() {
     e.preventDefault();
     const form = e.currentTarget;
     setBusy(true);
+    setError('');
     try {
-      await api('/auth/password', {
-        method: 'POST',
-        body: JSON.stringify(Object.fromEntries(new FormData(form))),
-      });
+      await api('/auth/password', { method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(form))) });
       form.reset();
-      notice('Password updated. Other sessions have been signed out.');
+      notice('Password updated. Other sessions were signed out.');
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -201,98 +229,125 @@ export function Account() {
   if (!user)
     return (
       <div className="container page">
-        <h1>Your Dellvit account</h1>
-        <p>Log in to view your saved details.</p>
-        <Link href="/login?next=/account" className="button">
-          Log in
-        </Link>
+        <Empty title="Log in to view your account" href="/login?next=/account" action="Log in" />
       </div>
     );
+  const active = orders?.filter((o) => !['delivered', 'cancelled'].includes(o.status)).length ?? 0;
+  const spent = orders?.filter((o) => o.status === 'delivered').reduce((s, o) => s + o.total, 0) ?? 0;
   return (
     <div className="container page">
-      <div className="section-head">
+      <div className="profile-head card">
+        <span className="avatar xl">{user.name.slice(0, 1).toUpperCase()}</span>
         <div>
-          <div className="eyebrow accent">Your corner of Dellvit</div>
-          <h1>Hello, {user.name.split(' ')[0]}.</h1>
+          <h1>{user.name}</h1>
+          <small className="muted">
+            {user.email} · {user.phone}
+          </small>
         </div>
-        <button
-          className="button secondary"
-          onClick={async () => {
-            await logout();
-            router.push('/');
-          }}
-        >
-          <LogOut size={17} />
-          Log out
-        </button>
+        <div className="page-actions">
+          {user.role !== 'customer' && (
+            <Link href={portalPath(user.role)} className="button">
+              Open portal
+            </Link>
+          )}
+          <button
+            className="button ghost"
+            onClick={async () => {
+              await logout();
+              router.push('/');
+            }}
+          >
+            <LogOut size={16} /> Log out
+          </button>
+        </div>
       </div>
-      <div className="account-grid">
-        <section className="panel">
-          <h2>Your delivery details</h2>
-          <p className="muted">
-            Saved for future orders. Checkout changes apply to one order only.
-          </p>
-          <form className="form-stack" onSubmit={save}>
-            <label>
-              Full name
-              <input name="name" defaultValue={user.name} required />
-            </label>
-            <label>
-              Email
-              <input value={user.email} disabled />
-            </label>
-            <label>
-              Phone
-              <input name="phone" type="tel" defaultValue={user.phone} required />
-            </label>
-            <label>
-              Delivery area
-              <select name="location_id" defaultValue={user.location_id}>
-                {locations.map((l) => (
-                  <option value={l.id} key={l.id}>
-                    {l.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Address
-              <textarea name="address" defaultValue={user.address} required />
-            </label>
-            <button disabled={busy} className="button">
-              Save details
-            </button>
-          </form>
-        </section>
-        <section className="panel">
-          <h2>Account security</h2>
-          <form className="form-stack" onSubmit={password}>
-            <label>
-              Current password
-              <input name="current" type="password" autoComplete="current-password" required />
-            </label>
-            <label>
-              New password
-              <input
-                name="password"
-                type="password"
-                autoComplete="new-password"
-                minLength={10}
-                maxLength={100}
-                required
-              />
-            </label>
-            <button className="button secondary" disabled={busy}>
-              Update password
-            </button>
-          </form>
-          <hr />
-          <Link className="button full" href="/orders">
-            Your orders <ArrowRight size={17} />
+      {user.role === 'customer' && (
+        <div className="stats">
+          <Link href="/orders">
+            <Stat icon={<Package size={20} />} label="Total orders" value={orders?.length ?? 0} />
           </Link>
-        </section>
-      </div>
+          <Link href="/orders">
+            <Stat icon={<Clock size={20} />} label="In progress" value={active} tone="orange" />
+          </Link>
+          <Stat icon={<Wallet size={20} />} label="Delivered spend" value={money(spent)} tone="green" />
+        </div>
+      )}
       {error && <ErrorBox error={error} />}
+      <div className="grid-2">
+        <section className="card">
+          <div className="card-head">
+            <h3>
+              <UserRound size={18} /> Profile
+            </h3>
+          </div>
+          <form className="stack" onSubmit={save}>
+            <div className="form-grid">
+              <label>
+                Full name
+                <input name="name" defaultValue={user.name} required />
+              </label>
+              <label>
+                Phone
+                <input name="phone" type="tel" defaultValue={user.phone} required />
+              </label>
+              <label>
+                Email
+                <input value={user.email} disabled />
+              </label>
+              <label>
+                Delivery area
+                <select name="location_id" defaultValue={user.location_id}>
+                  {locations.map((l) => (
+                    <option value={l.id} key={l.id}>
+                      {l.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="span-2">
+                Address
+                <textarea name="address" rows={2} defaultValue={user.address} required />
+              </label>
+            </div>
+            <button disabled={busy} className="button">
+              Save changes
+            </button>
+          </form>
+        </section>
+        <div className="stack">
+          <section className="card">
+            <div className="card-head">
+              <h3>
+                <KeyRound size={18} /> Password
+              </h3>
+            </div>
+            <form className="stack" onSubmit={password}>
+              <label>
+                Current password
+                <Password name="current" autoComplete="current-password" />
+              </label>
+              <label>
+                New password
+                <Password name="password" autoComplete="new-password" minLength={10} />
+              </label>
+              <button className="button ghost" disabled={busy}>
+                Update password
+              </button>
+            </form>
+          </section>
+          <section className="card">
+            <div className="card-head">
+              <h3>
+                <Bell size={18} /> Notifications
+              </h3>
+              <Link className="link" href="/notifications">
+                View all
+              </Link>
+            </div>
+            <NotificationSettings />
+          </section>
+        </div>
+      </div>
     </div>
   );
 }

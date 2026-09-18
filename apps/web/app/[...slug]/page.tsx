@@ -7,6 +7,7 @@ import { Orders, OrderDetail } from '@/components/Orders';
 import { About, Contact } from '@/components/Info';
 import Portal from '@/components/Portals';
 import { Loading } from '@/components/UI';
+import { NotificationsPage } from '@/components/Notifications';
 export async function generateMetadata({ params }: { params: Promise<{ slug: string[] }> }) {
   const { slug } = await params;
   const titles: Record<string, string> = {
@@ -21,12 +22,13 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
     orders: 'Your orders',
     about: 'About us',
     contact: 'Contact us',
+    notifications: 'Notifications',
     admin: 'Administration',
     portal: 'Your portal',
   };
   return {
     title: titles[slug[0]] || 'Dellvit',
-    ...(['account', 'cart', 'checkout', 'orders', 'admin', 'portal'].includes(slug[0])
+    ...(['account', 'cart', 'checkout', 'orders', 'admin', 'portal', 'notifications'].includes(slug[0])
       ? { robots: { index: false, follow: false } }
       : {}),
   };
@@ -42,6 +44,7 @@ export default async function Page({ params }: { params: Promise<{ slug: string[
   else if (s === 'orders' && slug.length === 2) content = <OrderDetail id={id} />;
   else if (s === 'portal' && slug.length === 2 && (id === 'outlet' || id === 'rider'))
     content = <Portal role={id} />;
+  else if (s === 'admin' && id === 'login' && slug.length === 2) content = <Auth admin />;
   else if (slug.length === 1) {
     switch (s) {
       case 'login':
@@ -67,6 +70,9 @@ export default async function Page({ params }: { params: Promise<{ slug: string[
         break;
       case 'contact':
         content = <Contact />;
+        break;
+      case 'notifications':
+        content = <NotificationsPage />;
         break;
       case 'admin':
         content = <Portal role="admin" />;

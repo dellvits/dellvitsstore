@@ -60,5 +60,7 @@ export function requireRole(...roles: string[]) {
 }
 export function publicUser(user: Row) {
   const { password_hash, ...safe } = user;
-  return safe;
+  const a =
+    user.role === 'admin' ? one('SELECT * FROM admin_access WHERE user_id=?', user.id) : undefined;
+  return { ...safe, is_super_admin: !!a?.super, permissions: a ? JSON.parse(a.permissions) : [] };
 }

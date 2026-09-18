@@ -5,17 +5,28 @@ export default function DeliveryMap({
   lat,
   lng,
   pickup,
+  rider,
   onChange,
 }: {
   lat: number;
   lng: number;
   pickup?: { lat: number; lng: number };
+  rider?: { lat: number; lng: number };
   onChange?: (lat: number, lng: number) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [routeState, setRouteState] = useState('');
   const changeRef = useRef(onChange);
   changeRef.current = onChange;
+  const riderRef = useRef(rider);
+  riderRef.current = rider;
+  const mapRef = useRef<import('leaflet').Map | null>(null);
+  const riderMarker = useRef<import('leaflet').CircleMarker | null>(null);
+  useEffect(() => {
+    if (!riderMarker.current || !mapRef.current) return;
+    if (rider) riderMarker.current.setLatLng([rider.lat, rider.lng]).addTo(mapRef.current);
+    else riderMarker.current.remove();
+  }, [rider?.lat, rider?.lng]);
   useEffect(() => {
     let disposed = false;
     let map: import('leaflet').Map | undefined;
@@ -24,6 +35,7 @@ export default function DeliveryMap({
       const L = await import('leaflet');
       if (disposed || !ref.current) return;
       map = L.map(ref.current, { scrollWheelZoom: false }).setView([lat, lng], 14);
+      mapRef.current = map;
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution:
           '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
@@ -43,6 +55,17 @@ export default function DeliveryMap({
           marker.setLatLng(e.latlng);
           changeRef.current?.(e.latlng.lat, e.latlng.lng);
         });
+      riderMarker.current = L.circleMarker(
+        [riderRef.current?.lat ?? lat, riderRef.current?.lng ?? lng],
+        {
+          radius: 10,
+          color: '#fff',
+          weight: 3,
+          fillColor: '#207d68',
+          fillOpacity: 1,
+        },
+      ).bindTooltip('Rider position');
+      if (riderRef.current) riderMarker.current.addTo(map);
       if (pickup) {
         L.circleMarker([pickup.lat, pickup.lng], {
           radius: 9,
@@ -94,6 +117,8 @@ export default function DeliveryMap({
       disposed = true;
       controller.abort();
       map?.remove();
+      mapRef.current = null;
+      riderMarker.current = null;
     };
   }, [lat, lng, pickup?.lat, pickup?.lng]);
   return (
