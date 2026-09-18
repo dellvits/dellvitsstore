@@ -91,6 +91,8 @@ Riders can enable GPS sharing during active deliveries. The browser asks for loc
 
 ## Configuration and commands
 
+For Vercel storefront settings and backend hosting requirements, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
 The API defaults to port 4000 and the web app to port 3000. Browser requests use the Next.js `/api` proxy. Environment examples are in the two app workspaces.
 
 | Variable           | Purpose                                                        |
