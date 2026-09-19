@@ -4,14 +4,14 @@
     "web": {
       "root": "apps/web",
       "framework": "nextjs",
-      "installCommand": "npm ci --include=dev --include-workspace-root",
+      "installCommand": "npm ci --include=dev --prefix ../..",
       "buildCommand": "npm run build"
     },
     "api": {
       "root": "apps/api",
       "framework": "express",
       "entrypoint": "src/app.ts",
-      "installCommand": "npm ci --include=dev --include-workspace-root",
+      "installCommand": "npm ci --include=dev --prefix ../..",
       "buildCommand": "npm run build"
     }
   },
