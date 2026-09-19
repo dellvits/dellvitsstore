@@ -4,20 +4,35 @@
     "web": {
       "root": "apps/web",
       "framework": "nextjs",
-      "installCommand": "npm ci --include=dev --prefix ../..",
+      "installCommand": "echo CWD=$(pwd); ls package-lock.json 2>/dev/null && npm ci --include=dev || npm ci --include=dev --prefix ../..",
       "buildCommand": "npm run build"
     },
     "api": {
       "root": "apps/api",
       "framework": "express",
       "entrypoint": "src/app.ts",
-      "installCommand": "npm ci --include=dev --prefix ../..",
+      "installCommand": "echo CWD=$(pwd); ls package-lock.json 2>/dev/null && npm ci --include=dev || npm ci --include=dev --prefix ../..",
       "buildCommand": "npm run build"
     }
   },
   "rewrites": [
-    { "source": "/api", "destination": { "service": "api" } },
-    { "source": "/api/(.*)", "destination": { "service": "api" } },
-    { "source": "/(.*)", "destination": { "service": "web" } }
+    {
+      "source": "/api",
+      "destination": {
+        "service": "api"
+      }
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": {
+        "service": "api"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "web"
+      }
+    }
   ]
 }
