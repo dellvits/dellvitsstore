@@ -9,3 +9,6 @@ data/
 .next-review/
 .test-build/
 .npm-cache/
+
+.vercel
+.env*

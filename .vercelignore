@@ -1,0 +1,9 @@
+node_modules
+.next
+.next-review
+.test-build
+.npm-cache
+dist
+data
+.git
+*.tsbuildinfo
