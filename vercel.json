@@ -4,14 +4,14 @@
     "web": {
       "root": "apps/web",
       "framework": "nextjs",
-      "installCommand": "echo CWD=$(pwd); ls package-lock.json 2>/dev/null && npm ci --include=dev || npm ci --include=dev --prefix ../..",
+      "installCommand": "d=$(pwd); while [ ! -f \"$d/package-lock.json\" ] && [ \"$d\" != \"/\" ]; do d=$(dirname \"$d\"); done; echo WORKSPACE_ROOT=$d; npm ci --include=dev --prefix \"$d\"",
       "buildCommand": "npm run build"
     },
     "api": {
       "root": "apps/api",
       "framework": "express",
       "entrypoint": "src/app.ts",
-      "installCommand": "echo CWD=$(pwd); ls package-lock.json 2>/dev/null && npm ci --include=dev || npm ci --include=dev --prefix ../..",
+      "installCommand": "d=$(pwd); while [ ! -f \"$d/package-lock.json\" ] && [ \"$d\" != \"/\" ]; do d=$(dirname \"$d\"); done; echo WORKSPACE_ROOT=$d; npm ci --include=dev --prefix \"$d\"",
       "buildCommand": "npm run build"
     }
   },
