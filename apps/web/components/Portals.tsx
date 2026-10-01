@@ -469,7 +469,8 @@ function ProductManager({ admin }: { admin: boolean }) {
   const [edit, setEdit] = useState<(typeof newProduct & { id?: string }) | null>(null);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState('');
-  const enabledIds = new Set((methods || []).filter((m) => m.active).map((m) => m.id));
+  const [remove, setRemove] = useState<Product | null>(null);
+  const enabledIds =new Set((methods || []).filter((m) => m.active).map((m) => m.id));
   function start(p?: Product) {
     setFormError('');
     const outlet = own || outlets?.[0];
@@ -668,6 +669,11 @@ function ProductManager({ admin }: { admin: boolean }) {
             >
               {p.active ? <Archive size={16} /> : <ArchiveRestore size={16} />}
             </IconAction>
+            {admin && (
+              <IconAction label="Delete" tone="danger" onClick={() => setRemove(p)}>
+                <Trash2 size={16} />
+              </IconAction>
+            )}
           </>
         )}
       />
@@ -851,6 +857,30 @@ function ProductManager({ admin }: { admin: boolean }) {
           </>
         )}
       </FormModal>
+      <Confirm
+        open={!!remove}
+        title="Delete product?"
+        confirm="Delete"
+        danger
+        busy={busy}
+        onClose={() => setRemove(null)}
+        onConfirm={async () => {
+          setBusy(true);
+          try {
+            await api('/admin/products/' + remove!.id, { method: 'DELETE' });
+            setRemove(null);
+            refresh();
+            notice('Product deleted.');
+          } catch (e) {
+            notice((e as Error).message);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        “{remove?.name}” will be removed permanently and cannot be restored. Past orders keep the name, price and picture
+        they were placed with. To hide it for a while instead, archive it.
+      </Confirm>
     </>
   );
 }
@@ -861,6 +891,7 @@ function OutletManager() {
   const { data, setData, loading, error, refresh } = useData<AdminOutlet[]>('/admin/outlets');
   const [edit, setEdit] = useState<Record<string, any> | null>(null);
   const [docs, setDocs] = useState<Outlet | null>(null);
+  const [remove, setRemove] = useState<AdminOutlet | null>(null);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState('');
   function start(o?: AdminOutlet) {
@@ -1137,6 +1168,9 @@ function OutletManager() {
             <IconAction label="View storefront" href={'/outlets/' + o.id}>
               <ExternalLink size={16} />
             </IconAction>
+            <IconAction label="Delete" tone="danger" onClick={() => setRemove(o)}>
+              <Trash2 size={16} />
+            </IconAction>
           </>
         )}
       />
@@ -1347,6 +1381,31 @@ function OutletManager() {
       <Modal open={!!docs} onClose={() => setDocs(null)} title={'Documents · ' + (docs?.name || '')}>
         {docs && <DocumentManager outletId={docs.id} />}
       </Modal>
+      <Confirm
+        open={!!remove}
+        title="Delete outlet?"
+        confirm="Delete"
+        danger
+        busy={busy}
+        onClose={() => setRemove(null)}
+        onConfirm={async () => {
+          setBusy(true);
+          try {
+            await api('/admin/outlets/' + remove!.id, { method: 'DELETE' });
+            setRemove(null);
+            refresh();
+            notice('Outlet deleted.');
+          } catch (e) {
+            notice((e as Error).message);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        “{remove?.name}” will be removed permanently with its products, its sign-in account, its private documents and its
+        support chat. This cannot be undone. Past orders and their payment records are kept. An outlet with an order in
+        progress cannot be deleted; to close it for a while instead, turn off “Active”.
+      </Confirm>
     </div>
   );
 }

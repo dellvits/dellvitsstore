@@ -15,7 +15,7 @@ import {
   isOnline,
   adDay,
 } from './platform.js';
-import { installSupport } from './support.js';
+import { installSupport, deleteSupport } from './support.js';
 import { installNotifications, notify, adminsWith, outletUser } from './notifications.js';
 import {
   installRiders,
@@ -976,10 +976,10 @@ app.get('/api/manage/products', requireRole('admin', 'outlet'), async (req: Auth
     await Promise.all(
       (req.user!.role === 'admin'
         ? await all(
-            'SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id',
+            'SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.deleted_at IS NULL',
           )
         : await all(
-            'SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.outlet_id=?',
+            'SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.outlet_id=? AND p.deleted_at IS NULL',
             (await myOutlet(req))?.id || '',
           )
       ).map(product),
@@ -1039,12 +1039,13 @@ async function saveProduct(req: AuthRequest, res: Response, editing: boolean) {
   const p = await productSchema.parseAsync(req.body);
   const pid = editing ? String(req.params.id) : id();
   if (editing) {
-    const old = await one('SELECT * FROM products WHERE id=?', pid);
+    const old = await one('SELECT * FROM products WHERE id=? AND deleted_at IS NULL', pid);
     if (!old) fail('Product not found.', 404);
     await allowedProduct(req, old);
   }
   await allowedProduct(req, p);
-  if (!(await one('SELECT id FROM outlets WHERE id=?', p.outlet_id))) fail('Outlet not found.');
+  if (!(await one('SELECT id FROM outlets WHERE id=? AND deleted_at IS NULL', p.outlet_id)))
+    fail('Outlet not found.');
   if (
     p.sku &&
     (await one(
@@ -1121,7 +1122,10 @@ app.delete(
   '/api/manage/products/:id',
   requireRole('admin', 'outlet'),
   atomicRoute(async (req: AuthRequest, res) => {
-    const p = await one('SELECT * FROM products WHERE id=?', String(req.params.id));
+    const p = await one(
+      'SELECT * FROM products WHERE id=? AND deleted_at IS NULL',
+      String(req.params.id),
+    );
     if (!p) fail('Product not found.', 404);
     await allowedProduct(req, p);
     await run('UPDATE products SET active=0 WHERE id=?', p.id);
@@ -1225,7 +1229,7 @@ app.get('/api/admin/outlets', async (_req, res) => {
   res.json(
     (
       await all(
-        'SELECT o.*,(SELECT COUNT(*) FROM products p WHERE p.outlet_id=o.id AND p.active=1) products,(SELECT COUNT(*) FROM orders x WHERE x.outlet_id=o.id) orders,(SELECT COALESCE(SUM(subtotal),0) FROM order_settlements t WHERE t.outlet_id=o.id) sales,(SELECT COALESCE(SUM(outlet_payable),0) FROM order_settlements t WHERE t.outlet_id=o.id) payable FROM outlets o ORDER BY o.name',
+        'SELECT o.*,(SELECT COUNT(*) FROM products p WHERE p.outlet_id=o.id AND p.active=1) products,(SELECT COUNT(*) FROM orders x WHERE x.outlet_id=o.id) orders,(SELECT COALESCE(SUM(subtotal),0) FROM order_settlements t WHERE t.outlet_id=o.id) sales,(SELECT COALESCE(SUM(outlet_payable),0) FROM order_settlements t WHERE t.outlet_id=o.id) payable FROM outlets o WHERE o.deleted_at IS NULL ORDER BY o.name',
       )
     ).map((o) => {
       const s = { ...outletDefaults, ...settings.get(o.id) };
@@ -1268,7 +1272,9 @@ const outletSchema = z.object({
 async function saveOutlet(req: AuthRequest, res: Response, edit: boolean) {
   const p = await outletSchema.parseAsync(req.body);
   const oid = edit ? String(req.params.id) : id();
-  const old = edit ? await one('SELECT * FROM outlets WHERE id=?', oid) : null;
+  const old = edit
+    ? await one('SELECT * FROM outlets WHERE id=? AND deleted_at IS NULL', oid)
+    : null;
   if (edit && !old) fail('Outlet not found.', 404);
   if (!edit && !p.password) fail('Set a password for the outlet account.');
   const before = await outletSettings(oid);
@@ -1379,7 +1385,7 @@ app.patch(
       .object({ active: flag.optional(), accepting: flag.optional(), featured: flag.optional() })
       .parse(req.body);
     const oid = String(req.params.id);
-    const o = await one('SELECT user_id FROM outlets WHERE id=?', oid);
+    const o = await one('SELECT user_id FROM outlets WHERE id=? AND deleted_at IS NULL', oid);
     if (!o) fail('Outlet not found.', 404);
     if (p.active !== undefined) {
       await run('UPDATE outlets SET active=? WHERE id=?', p.active, oid);
@@ -1389,6 +1395,96 @@ app.patch(
       await saveOutletSettings(oid, { accepting: p.accepting, featured: p.featured });
     const s = await outletSettings(oid);
     res.json({ ok: true, accepting: s.accepting, featured: s.featured, open: outletOpen(s) });
+  }),
+);
+/**
+ * Deleting a product never loses an order. A product nobody ordered is removed outright. One with
+ * past orders is taken off sale and hidden for good; its orders keep the name, price and picture
+ * they were placed with.
+ */
+app.delete(
+  '/api/admin/products/:id',
+  atomicRoute(async (req, res) => {
+    const p = await one(
+      'SELECT id FROM products WHERE id=? AND deleted_at IS NULL',
+      String(req.params.id),
+    );
+    if (!p) fail('Product not found.', 404);
+    const kept = !!(await one('SELECT 1 FROM order_items WHERE product_id=? LIMIT 1', p.id));
+    if (kept)
+      await run("UPDATE products SET active=0,sku='',deleted_at=? WHERE id=?", now(), p.id);
+    else await run('DELETE FROM products WHERE id=?', p.id);
+    res.json({ ok: true, kept });
+  }),
+);
+/**
+ * Deleting an outlet never loses an order either. Its sign-in, private documents, support chat and
+ * unordered products always go. With no orders the outlet is removed outright; with past orders it
+ * is closed and hidden for good, and the orders keep their history. An outlet with an order in
+ * progress cannot be deleted.
+ */
+app.delete(
+  '/api/admin/outlets/:id',
+  atomicRoute(async (req, res) => {
+    const o = await one(
+      'SELECT id,user_id FROM outlets WHERE id=? AND deleted_at IS NULL',
+      String(req.params.id),
+    );
+    if (!o) fail('Outlet not found.', 404);
+    const orders = (await one(
+      "SELECT COUNT(*) total,(SELECT COUNT(*) FROM orders WHERE outlet_id=? AND status NOT IN ('delivered','cancelled')) active FROM orders WHERE outlet_id=?",
+      o.id,
+      o.id,
+    ))!;
+    const active = Number(orders.active);
+    if (active)
+      fail(
+        `This outlet has ${active} order${active === 1 ? '' : 's'} in progress. Finish or cancel ${active === 1 ? 'it' : 'them'} first.`,
+        409,
+      );
+    const documents = await all('SELECT filename FROM documents WHERE outlet_id=?', o.id);
+    await run('DELETE FROM documents WHERE outlet_id=?', o.id);
+    for (const table of ['sessions', 'notifications', 'push_subscriptions', 'email_codes'])
+      await run(`DELETE FROM ${table} WHERE user_id=?`, o.user_id);
+    await deleteSupport(o.user_id);
+    await run(
+      'DELETE FROM products WHERE outlet_id=? AND id NOT IN (SELECT product_id FROM order_items)',
+      o.id,
+    );
+    await afterCommit(async () => {
+      for (const d of documents) await objects.delete('documents/' + d.filename);
+    });
+    const kept =
+      Number(orders.total) > 0 ||
+      !!(await one('SELECT 1 FROM products WHERE outlet_id=? LIMIT 1', o.id));
+    if (kept) {
+      const at = now();
+      await run(
+        "UPDATE products SET active=0,sku='',deleted_at=? WHERE outlet_id=? AND deleted_at IS NULL",
+        at,
+        o.id,
+      );
+      // The outlet ID and the sign-in email are freed so a new outlet can use them.
+      await run(
+        'UPDATE outlets SET active=0,customer_id=?,deleted_at=? WHERE id=?',
+        'deleted-' + o.id,
+        at,
+        o.id,
+      );
+      await run(
+        "UPDATE users SET name='Deleted outlet',email=?,phone='',address='',login_id=NULL,password_hash=?,active=0,deleted_at=? WHERE id=?",
+        `deleted-${o.user_id}@deleted.invalid`,
+        hashPassword(randomUUID()),
+        at,
+        o.user_id,
+      );
+    } else {
+      await run('DELETE FROM outlet_settings WHERE outlet_id=?', o.id);
+      await run('DELETE FROM outlets WHERE id=?', o.id);
+      await run('DELETE FROM payment_proofs WHERE user_id=?', o.user_id);
+      await run('DELETE FROM users WHERE id=?', o.user_id);
+    }
+    res.json({ ok: true, kept });
   }),
 );
 /** Every rider with settings, duty state, load and balances: one query however many riders. */
@@ -1546,7 +1642,12 @@ app.post(
   writeLimit,
   upload.single('file'),
   atomicRoute(async (req, res) => {
-    if (!(await one('SELECT id FROM outlets WHERE id=?', String(req.params.id))))
+    if (
+      !(await one(
+        'SELECT id FROM outlets WHERE id=? AND deleted_at IS NULL',
+        String(req.params.id),
+      ))
+    )
       fail('Outlet not found.', 404);
     if (!req.file) fail('Choose a PDF document.');
     if (req.file.buffer.subarray(0, 5).toString() !== '%PDF-')

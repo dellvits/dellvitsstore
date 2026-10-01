@@ -873,7 +873,7 @@ export function installPlatform(app: Express) {
       if (
         kind === 'categories' &&
         (await one(
-          'SELECT 1 FROM products WHERE category=? UNION SELECT 1 FROM outlets WHERE category=?',
+          'SELECT 1 FROM products WHERE category=? AND deleted_at IS NULL UNION SELECT 1 FROM outlets WHERE category=? AND deleted_at IS NULL',
           record.name,
           record.name,
         ))
