@@ -17,3 +17,5 @@ data/
 # Keep the placeholder templates tracked
 !.env.example
 !**/.env.example
+
+#this is testing and for the deployment
