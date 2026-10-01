@@ -319,20 +319,31 @@ export function ImageUpload({
   value,
   onChange,
   multiple = false,
+  feature = false,
+  max = 6,
 }: {
   value: string[];
   onChange: (urls: string[]) => void;
   multiple?: boolean;
+  /** The first image is the feature image; any other image can be made the feature image. */
+  feature?: boolean;
+  max?: number;
 }) {
   const { notice } = useApp();
   const [busy, setBusy] = useState(false);
-  async function upload(file: File) {
+  async function upload(files: File[]) {
     setBusy(true);
+    let urls = value;
     try {
-      const data = new FormData();
-      data.append('file', file);
-      const r = await api<{ url: string }>('/manage/images', { method: 'POST', body: data });
-      onChange(multiple ? [...value, r.url].slice(-6) : [r.url]);
+      const room = multiple ? max - value.length : 1;
+      if (files.length > room) notice(`Only ${max} images are allowed, so some were not added.`);
+      for (const file of files.slice(0, room)) {
+        const data = new FormData();
+        data.append('file', file);
+        const r = await api<{ url: string }>('/manage/images', { method: 'POST', body: data });
+        urls = multiple ? [...urls, r.url] : [r.url];
+        onChange(urls);
+      }
     } catch (e) {
       notice((e as Error).message);
     } finally {
@@ -342,8 +353,24 @@ export function ImageUpload({
   return (
     <div className="image-upload">
       {value.map((url, i) => (
-        <div className="upload-preview" key={url + i}>
+        <div className={'upload-preview' + (feature && i === 0 ? ' feature' : '')} key={url + i}>
           <img src={url} alt={'Image ' + (i + 1)} />
+          {feature &&
+            (i === 0 ? (
+              <span className="upload-feature">
+                <Star size={11} /> Feature
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="upload-star"
+                onClick={() => onChange([url, ...value.filter((_, j) => i !== j)])}
+                aria-label={'Use image ' + (i + 1) + ' as the feature image'}
+                title="Use as feature image"
+              >
+                <Star size={12} />
+              </button>
+            ))}
           {(multiple ? value.length > 1 : true) && (
             <button type="button" onClick={() => onChange(value.filter((_, j) => i !== j))} aria-label={'Remove image ' + (i + 1)}>
               <X size={13} />
@@ -351,17 +378,18 @@ export function ImageUpload({
           )}
         </div>
       ))}
-      {(multiple || !value.length) && (
+      {(multiple ? value.length < max : !value.length) && (
         <label className="upload-tile">
           <Upload size={18} />
           <span>{busy ? 'Uploading…' : 'Upload'}</span>
           <input
             type="file"
             accept="image/png,image/jpeg,image/webp"
+            multiple={multiple}
             disabled={busy}
             hidden
             onChange={(e) => {
-              if (e.target.files?.[0]) upload(e.target.files[0]);
+              if (e.target.files?.length) upload([...e.target.files]);
               e.target.value = '';
             }}
           />
@@ -655,8 +683,12 @@ function ProductManager({ admin }: { admin: boolean }) {
         {edit && (
           <>
             <div className="field">
-              <span className="field-label">Images (up to 6)</span>
-              <ImageUpload value={edit.images} onChange={(images) => set('images', images)} multiple />
+              <span className="field-label">Product images (up to 6)</span>
+              <ImageUpload value={edit.images} onChange={(images) => set('images', images)} multiple feature />
+              <small className="muted">
+                The feature image is shown on product cards and first in the gallery. Press the star on another image
+                to make it the feature image. All images are shown in the gallery on the product page.
+              </small>
             </div>
             <div className="form-grid">
               <label className="span-2">

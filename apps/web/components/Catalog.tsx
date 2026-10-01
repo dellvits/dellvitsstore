@@ -266,6 +266,15 @@ export function ProductDetail({ id }: { id: string }) {
   const router = useRouter();
   const [qty, setQty] = useState(1);
   const [img, setImg] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const imageCount = p?.images.length || 0;
+  // With two or more images the gallery moves on by itself. Choosing an image restarts the wait,
+  // and it holds still while the pointer is over the gallery.
+  useEffect(() => {
+    if (imageCount < 2 || paused) return;
+    const timer = setTimeout(() => setImg((i) => (i + 1) % imageCount), 4000);
+    return () => clearTimeout(timer);
+  }, [img, imageCount, paused]);
   const { data: related } = useData<Product[]>(p ? `/products?location=${p.location_id}&outlet=${p.outlet_id}` : null);
   const { data: payments } = useData<PaymentMethod[]>('/payments?products=' + encodeURIComponent(id));
   if (loading && !p)
@@ -296,9 +305,9 @@ export function ProductDetail({ id }: { id: string }) {
         <span>{p.name}</span>
       </nav>
       <div className="detail">
-        <div className="gallery">
+        <div className="gallery" onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}>
           <div className="gallery-main">
-            <img src={p.images[img] || p.images[0]} alt={p.name} />
+            <img key={img} className="gallery-slide" src={p.images[img] || p.images[0]} alt={p.name} />
             {p.discount > 0 && <span className="badge-offer large">-{p.discount}%</span>}
           </div>
           {p.images.length > 1 && (

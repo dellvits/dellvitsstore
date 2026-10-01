@@ -2055,6 +2055,46 @@ fieldset {
 .drawer nav .button {
   margin-top: 8px;
 }
+.drawer-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--soft);
+  color: var(--ink);
+}
+.drawer-user > span:last-child {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+}
+.drawer-user small {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drawer-theme {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.drawer-theme .segmented {
+  align-self: stretch;
+}
+.drawer-theme .segmented button {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding-inline: 8px;
+}
 
 /* ============ Footer ============ */
 .footer {
@@ -2755,6 +2795,9 @@ fieldset {
   height: 100%;
   object-fit: cover;
 }
+.gallery-slide {
+  animation: fade 0.35s ease-out;
+}
 .gallery-thumbs {
   display: flex;
   gap: 10px;
@@ -3373,6 +3416,37 @@ fieldset {
   display: grid;
   place-items: center;
   background: var(--inverse);
+  color: #fff;
+}
+.upload-preview.feature img {
+  border: 2px solid var(--brand);
+}
+.upload-preview .upload-feature {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--brand);
+  color: #fff;
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+.upload-preview .upload-star {
+  top: auto;
+  right: auto;
+  left: 4px;
+  bottom: 4px;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+.upload-preview .upload-star:hover {
+  background: var(--brand);
+  border-color: var(--brand);
   color: #fff;
 }
 .upload-tile {
@@ -5413,6 +5487,14 @@ button.stat:focus-visible {
   .auth-links,
   .avatar-name {
     display: none;
+  }
+  /* The theme switch and the profile live in the side menu here, so the logo has room. */
+  .site-header .header-actions .theme-menu,
+  .site-header .header-actions .account-menu {
+    display: none;
+  }
+  .brand {
+    flex-shrink: 0;
   }
   .hero-grid {
     grid-template-columns: 1fr;
@@ -7725,21 +7807,6 @@ a.adu:focus-visible {
 }
 .theme-option svg:last-child {
   margin-left: auto;
-}
-/* The logo's small print is dark; on a dark page it gets a soft light plate. */
-:root[data-theme='dark'] .brand img,
-:root[data-theme='dark'] .drawer-head img {
-  padding: 2px 6px;
-  border-radius: 10px;
-  background: rgb(255 255 255 / 92%);
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) .brand img,
-  :root:not([data-theme='light']) .drawer-head img {
-    padding: 2px 6px;
-    border-radius: 10px;
-    background: rgb(255 255 255 / 92%);
-  }
 }
 
 /* ---------- Small screens ---------- */

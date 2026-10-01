@@ -95,7 +95,7 @@ export default function Provider({ children }: { children: ReactNode }) {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [unread, setUnread] = useState(0);
   const [supportUnread, setSupportUnread] = useState(0);
-  const [theme, setThemeState] = useState<Theme>('system');
+  const [theme, setThemeState] = useState<Theme>('light');
   const [sound, setSoundState] = useState(true);
   const seen = useRef<Set<string> | null>(null);
   const soundRef = useRef(true);
@@ -139,7 +139,7 @@ export default function Provider({ children }: { children: ReactNode }) {
       if (c && typeof c.lat === 'number') setCoords(c);
     } catch {}
     const savedTheme = read('dellvit-theme');
-    if (savedTheme === 'light' || savedTheme === 'dark') setThemeState(savedTheme);
+    if (savedTheme === 'system' || savedTheme === 'dark') setThemeState(savedTheme);
     setSoundState(read('dellvit-sound') !== 'off');
     soundRef.current = read('dellvit-sound') !== 'off';
     setHydrated(true);

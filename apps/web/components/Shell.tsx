@@ -185,7 +185,7 @@ function AccountMenu() {
 
 export function Header() {
   const path = usePathname();
-  const { cart, user, area, openLocation, areaStatus, logout } = useApp();
+  const { cart, user, area, openLocation, areaStatus, logout, theme, setTheme } = useApp();
   const [menu, setMenu] = useState(false);
   const router = useRouter();
   const count = cart.reduce((n, i) => n + i.quantity, 0);
@@ -267,6 +267,15 @@ export function Header() {
                 <X size={20} />
               </button>
             </div>
+            {user && (
+              <Link href={portalPath(user.role)} className="drawer-user">
+                <span className="avatar">{user.name.slice(0, 1).toUpperCase()}</span>
+                <span>
+                  <strong>{user.name}</strong>
+                  <small>{user.email}</small>
+                </span>
+              </Link>
+            )}
             <button className="area-pill wide" onClick={() => openLocation(true)}>
               <MapPin size={16} />
               <span>
@@ -325,6 +334,22 @@ export function Header() {
                 </>
               )}
             </nav>
+            <div className="drawer-theme">
+              <span className="field-label">Colour theme</span>
+              <div className="segmented" role="radiogroup" aria-label="Colour theme">
+                {themes.map(([key, title, Icon]) => (
+                  <button
+                    key={key}
+                    role="radio"
+                    aria-checked={theme === key}
+                    className={theme === key ? 'selected' : ''}
+                    onClick={() => setTheme(key)}
+                  >
+                    <Icon size={15} /> {key === 'system' ? 'Device' : title}
+                  </button>
+                ))}
+              </div>
+            </div>
           </aside>
         </div>
       )}

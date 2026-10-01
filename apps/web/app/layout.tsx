@@ -21,8 +21,9 @@ export const viewport: Viewport = {
   ],
 };
 // Runs before the page is painted, so a chosen theme never flashes the other one first. With no
-// choice saved, the device's own light or dark setting applies through CSS.
-const themeScript = `try{var t=localStorage.getItem('dellvit-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}`;
+// choice saved the site is light; the device's own setting applies only when "Device default"
+// was chosen.
+const themeScript = `var t='light';try{var s=localStorage.getItem('dellvit-theme');if(s==='dark'||s==='system')t=s}catch(e){}if(t!=='system')document.documentElement.dataset.theme=t`;
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={sans.variable} suppressHydrationWarning>
