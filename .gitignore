@@ -17,3 +17,6 @@ data/
 # Keep the placeholder templates tracked
 !.env.example
 !**/.env.example
+
+#admin dellvit 
+#this is testing and for the deployment
