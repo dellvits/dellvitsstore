@@ -6,6 +6,23 @@ export type Location = {
   fee?: number;
   radius?: number;
   active?: number;
+  /** Paisa; 0 when the area sets no minimum. */
+  minimum_order?: number;
+  /** Paisa; orders with at least this subtotal are delivered free. 0 when the fee always applies. */
+  free_delivery_over?: number;
+  /** Delivery hours in Pakistan time as HH:MM; both empty when delivery runs around the clock. */
+  opens_at?: string;
+  closes_at?: string;
+};
+/** A delivery area as the admin panel lists it; orders and sales are for the chosen time frame. */
+export type AdminArea = Required<Location> & {
+  outlets: number;
+  products: number;
+  riders: number;
+  riders_on_duty: number;
+  active_orders: number;
+  orders: number;
+  sales: number;
 };
 export type User = {
   id: string;
@@ -16,9 +33,16 @@ export type User = {
   location_id: string;
   role: 'customer' | 'admin' | 'outlet' | 'rider';
   is_super_admin?: boolean;
+  /** The store owner's administrator account, which nobody else can change. */
+  is_owner?: boolean;
   permissions?: string[];
   login_id?: string;
   active: number;
+  created_at?: string;
+  last_login_at?: string | null;
+  email_verified_at?: string | null;
+  /** Notification types the account has silenced. */
+  notify_muted?: string[];
 };
 export type Product = {
   id: string;
@@ -30,7 +54,10 @@ export type Product = {
   price: number;
   effective_price: number;
   stock: number;
+  /** Most a customer can buy in one order. */
+  max_per_order: number;
   unit: string;
+  sku: string;
   location_id: string;
   discount: number;
   deal: string;
@@ -38,6 +65,8 @@ export type Product = {
   includes: string;
   excludes: string;
   delivery_minutes: number;
+  /** Ids of the payment methods checkout offers for this product. */
+  payment_methods: string[];
   active: number;
   pickup_address?: string;
 };
@@ -56,6 +85,30 @@ export type Outlet = {
   active: number;
   products?: number;
   delivery_minutes?: number | null;
+  description?: string;
+  featured?: number;
+  /** Paisa; 0 when the outlet sets no minimum of its own. */
+  minimum_order?: number;
+  /** Opening hours in Pakistan time as HH:MM; both empty when open around the clock. */
+  opens_at?: string;
+  closes_at?: string;
+  /** 0 while new orders are paused. */
+  accepting?: number;
+  /** Whether the outlet takes orders right now: not paused and inside its hours. */
+  open?: boolean;
+};
+/** An outlet as the admin panel lists it, with its private settings and totals. */
+export type AdminOutlet = Outlet & {
+  commission_rate: number;
+  owner_name: string;
+  payout_bank: string;
+  payout_title: string;
+  payout_account: string;
+  notes: string;
+  orders: number;
+  /** Item sales and the outlet's share of them on delivered orders, in paisa. */
+  sales: number;
+  payable: number;
 };
 export type Category = {
   id: string;
@@ -64,8 +117,10 @@ export type Category = {
   image: string;
   active?: boolean;
   show_on_home?: boolean;
+  home_limit?: number;
+  show_in_filters?: boolean;
 };
-export type PaymentType = 'cod' | 'bank' | 'wallet' | 'raast' | 'card';
+export type PaymentType = 'cod' | 'bank' | 'wallet' | 'raast';
 export type PaymentMethod = {
   id: string;
   name: string;
@@ -80,23 +135,10 @@ export type PaymentMethod = {
   provider?: string;
   mobile_number?: string;
   raast_id?: string;
-  card_networks?: string[];
-  gateway?: string;
-  environment?: 'sandbox' | 'live';
-  merchant_id?: string;
-  public_key?: string;
-  /** Always blank when read back; `secret_key_set` tells whether one is saved. */
-  secret_key?: string;
-  secret_key_set?: boolean;
-  webhook_secret?: string;
-  webhook_secret_set?: boolean;
-  api_base_url?: string;
-  three_d_secure?: boolean;
-  /** Admin only: whether a gateway adapter exists in the code for `gateway`. */
-  gateway_connected?: boolean;
   require_proof?: boolean;
   active?: boolean;
-  position?: number;
+  /** Admin list only: how many products accept this method. */
+  products?: number;
 };
 export type CartItem = { product: Product; quantity: number };
 export type Order = {
@@ -177,14 +219,36 @@ export type AdminSummary = {
   delivery_fees: number;
   outlets: number;
   statuses: Record<string, number>;
-  attention: {
-    dispatch: number;
-    payments: number;
-    refunds: number;
-    cancel_requests: number;
-    payout_requests: number;
-    cod_deposits: number;
-  };
+};
+/** Live queues for the admin dashboard; counts are all-time, amounts in paisa. */
+export type AdminAttention = {
+  dispatch: number;
+  cancel_requests: number;
+  outlet_declined: number;
+  awaiting_outlet: number;
+  awaiting_rider: number;
+  rider_needed: number;
+  late: number;
+  active: number;
+  ready: number;
+  on_the_road: number;
+  payments: number;
+  payments_amount: number;
+  refunds: number;
+  refunds_amount: number;
+  payout_requests: number;
+  payout_amount: number;
+  cod_deposits: number;
+  cod_amount: number;
+  riders_available: number;
+  riders_busy: number;
+  riders_total: number;
+  out_of_stock: number;
+  low_stock: number;
+  outlets_paused: number;
+  outlets_total: number;
+  messages: number;
+  checked_at: string;
 };
 export type OutletSummary = {
   outlet: Outlet & { commission_rate: number; accepting: number };
@@ -193,6 +257,10 @@ export type OutletSummary = {
   awaiting_response: number;
   in_kitchen: number;
   awaiting_pickup: number;
+  late: number;
+  out_of_stock: number;
+  low_stock_count: number;
+  checked_at: string;
   delivered: number;
   sales: number;
   commission: number;
@@ -256,14 +324,6 @@ export type PayoutRequest = {
   reviewer_name: string | null;
   review_note: string;
   balance?: number;
-};
-export type Ad = {
-  title: string;
-  description: string;
-  label: string;
-  link: string;
-  image: string;
-  active: boolean;
 };
 export type AppNotification = {
   id: string;

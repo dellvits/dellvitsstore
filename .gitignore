@@ -1,8 +1,6 @@
 node_modules/
 .next/
 dist/
-.env
-.env.local
 data/
 *.tsbuildinfo
 
@@ -11,4 +9,11 @@ data/
 .npm-cache/
 
 .vercel
-.env*
+
+# Environment files (any folder) — never commit secrets
+.env
+.env.*
+*.env
+# Keep the placeholder templates tracked
+!.env.example
+!**/.env.example

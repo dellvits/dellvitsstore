@@ -159,10 +159,11 @@ await test('Cloud persistence and concurrent requests', async (t) => {
         assert.equal(response.rawPayload.subarray(8, 12).toString(), 'WEBP');
       }
       await run(
-        "INSERT INTO users(id,name,email,password_hash,role,created_at) VALUES(?,'Other',?,?,'customer',?)",
+        "INSERT INTO users(id,name,email,password_hash,role,created_at,email_verified_at) VALUES(?,'Other',?,?,'customer',?,?)",
         'other-customer',
         'other@example.test',
         hashPassword('Dellvit@2026'),
+        new Date().toISOString(),
         new Date().toISOString(),
       );
       const other = await login('other@example.test');

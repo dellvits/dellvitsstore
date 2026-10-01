@@ -7,12 +7,15 @@ export default function DeliveryMap({
   pickup,
   rider,
   onChange,
+  radiusKm,
 }: {
   lat: number;
   lng: number;
   pickup?: { lat: number; lng: number };
   rider?: { lat: number; lng: number };
   onChange?: (lat: number, lng: number) => void;
+  /** Draws the area a delivery zone covers around the pin. */
+  radiusKm?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [routeState, setRouteState] = useState('');
@@ -22,6 +25,14 @@ export default function DeliveryMap({
   riderRef.current = rider;
   const mapRef = useRef<import('leaflet').Map | null>(null);
   const riderMarker = useRef<import('leaflet').CircleMarker | null>(null);
+  const radiusRef = useRef(radiusKm);
+  radiusRef.current = radiusKm;
+  const coverage = useRef<import('leaflet').Circle | null>(null);
+  useEffect(() => {
+    if (!coverage.current || !mapRef.current || !radiusKm || !(radiusKm > 0)) return;
+    coverage.current.setRadius(radiusKm * 1000);
+    mapRef.current.fitBounds(coverage.current.getBounds(), { padding: [12, 12] });
+  }, [radiusKm]);
   useEffect(() => {
     if (!riderMarker.current || !mapRef.current) return;
     if (rider) riderMarker.current.setLatLng([rider.lat, rider.lng]).addTo(mapRef.current);
@@ -50,6 +61,15 @@ export default function DeliveryMap({
       })
         .addTo(map)
         .bindTooltip('Delivery location');
+      if (radiusRef.current && radiusRef.current > 0) {
+        coverage.current = L.circle([lat, lng], {
+          radius: radiusRef.current * 1000,
+          color: '#d91e45',
+          weight: 2,
+          fillOpacity: 0.08,
+        }).addTo(map);
+        map.fitBounds(coverage.current.getBounds(), { padding: [12, 12] });
+      }
       if (changeRef.current)
         map.on('click', (e) => {
           marker.setLatLng(e.latlng);
@@ -119,6 +139,7 @@ export default function DeliveryMap({
       map?.remove();
       mapRef.current = null;
       riderMarker.current = null;
+      coverage.current = null;
     };
   }, [lat, lng, pickup?.lat, pickup?.lng]);
   return (
@@ -131,7 +152,9 @@ export default function DeliveryMap({
       />
       {onChange && (
         <p className="small-muted">
-          Tap the map to set your delivery pin. You can also enter coordinates below.
+          {radiusKm
+            ? 'Tap the map to move the centre. The shaded circle is where deliveries reach.'
+            : 'Tap the map to set your delivery pin. You can also enter coordinates below.'}
         </p>
       )}
       {routeState && <p className="small-muted">{routeState}</p>}

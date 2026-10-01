@@ -7,7 +7,7 @@ This document supersedes the order lifecycle and cancellation rules in API.md an
 | Stage             | Who acts                     | What happens                                                                                                  |
 | ----------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `placed`          | Customer                     | Stock is reserved. No rider is assigned automatically.                                                        |
-| Payment verified  | System or admin              | COD is verified on placement, cards when the gateway reports `paid`, transfers when an admin approves them.   |
+| Payment verified  | System or admin              | COD is verified on placement; bank, wallet and Raast transfers when an admin approves them. |
 | Sent              | Admin                        | Admin picks an active, on-duty rider in the area with spare capacity, then sends the order.                   |
 | Outlet response   | Outlet                       | **Accept** or **Reject**. A rejection cancels the order and shows the reason to the customer.                 |
 | Rider response    | Rider                        | **Accept** or **Decline**. A decline unassigns the rider. The order is not cancelled; admin reassigns.        |

@@ -47,7 +47,8 @@ export function rangeLabel(r: Range) {
 
 /**
  * Range state plus a `?from=&to=` query for the API. Relative ranges are re-evaluated every
- * minute so a dashboard left open keeps a true "last 24 hours" window.
+ * minute so a dashboard left open keeps a true "last 24 hours" window; `key` stays the same
+ * across those re-evaluations.
  */
 export function useRange(initial: RangeKey = '7d') {
   const [range, setRange] = useState<Range>({ key: initial });
@@ -66,5 +67,7 @@ export function useRange(initial: RangeKey = '7d') {
     return s ? '?' + s : '';
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range, tick]);
-  return { range, setRange, query, label: rangeLabel(range) };
+  // Changes only when the chosen range does, not on the minute tick — pass it to `useData` as its key.
+  const key = `${range.key}:${range.from || ''}:${range.to || ''}`;
+  return { range, setRange, query, key, label: rangeLabel(range) };
 }

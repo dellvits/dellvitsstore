@@ -10,17 +10,6 @@ is shown. The list comes from `apps/web/lib/paymentProviders.ts`.
 | ------------------------------------------ | ---------------------- |
 | Cash on delivery                           | `cash-on-delivery.png` |
 | Raast (all Raast methods)                  | `raast.png`            |
-| Card payment                               | `card.png`             |
-
-## Card brands (shown in the card number field at checkout)
-
-| Brand            | File name       |
-| ---------------- | --------------- |
-| Visa             | `visa.png`      |
-| Mastercard       | `mastercard.png` |
-| American Express | `amex.png`      |
-| UnionPay         | `unionpay.png`  |
-| PayPak           | `paypak.png`    |
 
 ## Mobile wallets
 

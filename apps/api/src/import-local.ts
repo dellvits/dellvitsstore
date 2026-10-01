@@ -115,6 +115,22 @@ export async function importLocal(sqlitePath: string, uploadPath: string) {
           count++;
         }
       }
+      // Legacy accounts predate email verification: like the migration, they count as verified.
+      if (!rows.get('users')?.some((row) => 'email_verified_at' in row))
+        await run('UPDATE users SET email_verified_at=created_at');
+      // Legacy products predate per-product payment methods: like the migration, they keep every
+      // method checkout offered them.
+      if (!rows.get('products')?.some((row) => 'payment_methods' in row))
+        await run(
+          'UPDATE products SET payment_methods=?',
+          JSON.stringify(
+            (
+              await all(
+                "SELECT id FROM platform_records WHERE kind='payments' AND (data::jsonb ->> 'type')<>'card' ORDER BY id",
+              )
+            ).map((r) => r.id),
+          ),
+        );
     });
     return { rows: count, files: files.size };
   } finally {

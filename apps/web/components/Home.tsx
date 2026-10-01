@@ -15,23 +15,19 @@ import {
   Zap,
   Package,
   Store,
+  Tag,
 } from 'lucide-react';
 import { useApp } from './Provider';
 import { useData } from '@/lib/useData';
-import type { Product, Ad, Outlet } from '@/lib/types';
+import type { Category, Product, Outlet } from '@/lib/types';
 import { ProductCard, OutletCard, ErrorBox, Skeleton, Empty } from './UI';
+import { ContentBlock, forArea, type ContentItem, type Placement } from './ContentBlocks';
+import { AdSlot } from './Ads';
 
 type Site = {
   settings: Record<string, any> | null;
-  content: {
-    id: string;
-    name: string;
-    type: string;
-    description: string;
-    image: string;
-    link: string;
-    button: string;
-  }[];
+  content: ContentItem[];
+  categories?: Category[];
 };
 type Feed = {
   nearby: Product[];
@@ -127,19 +123,39 @@ function OutletRail({ outlets }: { outlets: Outlet[] }) {
 
 export default function Home() {
   const { data: site, error: siteError } = useData<Site>('/site');
-  const { data: ad } = useData<Ad>('/ad');
   const { area, areaStatus, openLocation } = useApp();
   const { data: feed, loading, error, refresh } = useData<Feed>(area ? '/home?location=' + area.id : null);
   const show = (k: string) => site?.settings?.['show_' + k] !== false;
-  const hero = site?.content.find((c) => c.type === 'hero');
+  // Content can be limited to delivery areas; the first hero that applies here is the headline.
+  const content = (site?.content || []).filter((c) => forArea(c, area?.id));
+  const hero = content.find((c) => c.type === 'hero');
+  /** The administrator's blocks for one slot of the page, in their display order, then its ads. */
+  const slot = (placement: Placement) => (
+    <>
+      {content
+        .filter((c) => !['hero', 'announcement'].includes(c.type) && (c.placement || 'after_outlets') === placement)
+        .map((c) => (
+          <ContentBlock key={c.id} item={c} />
+        ))}
+      <AdSlot placement={placement} />
+    </>
+  );
   const waiting = areaStatus === 'loading' || areaStatus === 'detecting' || (area && loading && !feed);
+  const shortcuts = (site?.categories || []).filter((c) => c.show_in_filters !== false);
+  // Discounted picks among what is nearby, biggest saving first.
+  const deals = (feed?.nearby || []).filter((p) => p.discount > 0 && p.stock > 0).sort((a, b) => b.discount - a.discount);
   return (
     <div className="home">
+      {content
+        .filter((c) => c.type === 'announcement')
+        .map((c) => (
+          <ContentBlock key={c.id} item={c} />
+        ))}
       <section className="hero">
         <div className="container hero-grid">
           <div className="hero-copy">
             <span className="hero-tag">
-              <Zap size={14} /> Fast local delivery
+              <Zap size={14} /> {hero?.eyebrow || 'Fast local delivery'}
             </span>
             <h1>
               {hero?.name || (
@@ -159,8 +175,8 @@ export default function Home() {
                   </strong>
                 </span>
               </button>
-              <Link href="/search" className="button large">
-                Start shopping <ArrowRight size={18} />
+              <Link href={hero?.link || '/search'} className="button large">
+                {hero?.button || 'Start shopping'} <ArrowRight size={18} />
               </Link>
             </div>
             <div className="hero-stats">
@@ -217,6 +233,28 @@ export default function Home() {
         </div>
       )}
 
+      {show('categories') && shortcuts.length > 1 && (
+        <section className="section container">
+          <SectionHead eyebrow="Shop by category" title="What are you looking for?" href="/search" action="See everything" />
+          <div className="cat-rail">
+            {shortcuts.map((c) => (
+              <Link key={c.id} href={'/search?category=' + encodeURIComponent(c.name)} className="cat-tile">
+                {c.image ? (
+                  <img src={c.image} alt="" loading="lazy" />
+                ) : (
+                  <span className="cat-tile-icon">
+                    <ShoppingBag size={22} />
+                  </span>
+                )}
+                <strong>{c.name}</strong>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {slot('top')}
+
       {show('nearby') && (
         <section className="section container">
           <SectionHead
@@ -261,6 +299,23 @@ export default function Home() {
         </section>
       )}
 
+      {show('nearby') && deals.length >= 3 && (
+        <section className="section container">
+          <SectionHead eyebrow="Save today" title="Deals near you" href="/search" action="More deals">
+            <span className="deal-count">
+              <Tag size={14} /> {deals.length} offers
+            </span>
+          </SectionHead>
+          <div className="rail product-rail">
+            {deals.slice(0, 8).map((p) => (
+              <ProductCard key={p.id} product={p} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {slot('after_nearby')}
+
       {show('category_products') &&
         feed?.categories.map((c) => (
           <section className="section container" key={c.id}>
@@ -277,24 +332,11 @@ export default function Home() {
           </section>
         ))}
 
+      {slot('after_categories')}
+
       {show('outlets') && area && !!feed?.outlets.length && <OutletRail outlets={feed.outlets} />}
 
-      {site?.content
-        .filter((c) => c.type !== 'hero')
-        .map((c) => (
-          <section key={c.id} className={'container promo ' + c.type}>
-            <div>
-              <h2>{c.name}</h2>
-              {c.description && <p>{c.description}</p>}
-              {c.link && (
-                <Link className="button" href={c.link}>
-                  {c.button || 'Explore'} <ArrowRight size={16} />
-                </Link>
-              )}
-            </div>
-            {c.image && <img src={c.image} alt="" loading="lazy" />}
-          </section>
-        ))}
+      {slot('after_outlets')}
 
       {show('how') && (
         <section className="section container">
@@ -321,19 +363,7 @@ export default function Home() {
         </section>
       )}
 
-      {show('ad') && ad?.active && (
-        <section className="container ad">
-          <div className="ad-copy">
-            <span className="eyebrow light">{ad.label}</span>
-            <h2>{ad.title}</h2>
-            <p>{ad.description}</p>
-            <Link className="button white" href={ad.link}>
-              Explore now <ArrowRight size={16} />
-            </Link>
-          </div>
-          <img src={ad.image} alt="" loading="lazy" />
-        </section>
-      )}
+      {slot('bottom')}
 
       {!area && areaStatus !== 'detecting' && areaStatus !== 'loading' && !show('nearby') && (
         <div className="container section">

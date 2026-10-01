@@ -5,12 +5,14 @@ import { useRouter } from 'next/navigation';
 import {
   ArrowRight,
   ArrowUpDown,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
   CalendarRange,
   Clock,
+  Copy,
   Crosshair,
   Inbox,
   LoaderCircle,
@@ -25,6 +27,7 @@ import {
 import type { Outlet, Product } from '@/lib/types';
 import { label as titleCase, money } from '@/lib/api';
 import { inRange, rangeOptions, type Range, type RangeKey } from '@/lib/range';
+import { useSettling } from '@/lib/useSettling';
 import { useApp } from './Provider';
 
 export function Modal({
@@ -39,7 +42,7 @@ export function Modal({
   onClose: () => void;
   title: string;
   children: ReactNode;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'xl';
   footer?: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -191,10 +194,11 @@ export function ProductCard({ product: p, layout = 'grid' }: { product: Product;
 }
 export function OutletCard({ outlet: o }: { outlet: Outlet }) {
   return (
-    <Link href={'/outlets/' + o.id} className="outlet-card">
+    <Link href={'/outlets/' + o.id} className={'outlet-card' + (o.open === false ? ' is-closed' : '')}>
       <div className="outlet-media">
         <img src={o.image} alt="" loading="lazy" />
         <span className="chip">{o.category}</span>
+        {o.open === false && <span className="chip closed">Closed now</span>}
       </div>
       <div className="outlet-body">
         <strong>{o.name}</strong>
@@ -252,6 +256,20 @@ export function Loading({ label = 'Loading…' }: { label?: string }) {
     <div className="loading" role="status">
       <LoaderCircle className="spin" size={22} />
       {label}
+    </div>
+  );
+}
+/** Full-screen splash while the app starts: the Dellvit logo centred, with a spinner and label. */
+export function PageLoading({ label = 'Loading…' }: { label?: string }) {
+  return (
+    <div className="page-loading" role="status" aria-live="polite">
+      <div className="page-loading-inner">
+        <img className="page-loading-logo" src="/images/logo.webp" alt="Dellvit" width="484" height="262" />
+        <span className="page-loading-label">
+          <LoaderCircle className="spin" size={18} aria-hidden />
+          {label}
+        </span>
+      </div>
     </div>
   );
 }
@@ -339,22 +357,122 @@ export function Stat({
   value,
   hint,
   tone = 'red',
+  loading = false,
+  quiet = false,
+  onClick,
 }: {
   icon: ReactNode;
   label: string;
   value: ReactNode;
   hint?: ReactNode;
   tone?: string;
+  /** Shows placeholders instead of numbers while the figures for a new filter load. */
+  loading?: boolean;
+  /** Mutes the card, e.g. a queue with nothing waiting. */
+  quiet?: boolean;
+  /** Makes the whole card a button, e.g. to open the page that handles it. */
+  onClick?: () => void;
+}) {
+  const text = (n: ReactNode) => (typeof n === 'string' || typeof n === 'number' ? String(n) : undefined);
+  const Tag = onClick ? 'button' : 'div';
+  return (
+    <Tag
+      {...(onClick ? { type: 'button' as const, onClick } : {})}
+      className={'stat ' + tone + (loading ? ' is-loading' : '') + (quiet ? ' quiet' : '') + (onClick ? ' clickable' : '')}
+      aria-busy={loading || undefined}
+    >
+      <div className="stat-top">
+        <small>{label}</small>
+        <span className="stat-icon">{icon}</span>
+      </div>
+      {loading ? (
+        <span className="stat-shimmer value" />
+      ) : (
+        <strong title={text(value)}>{value}</strong>
+      )}
+      {hint &&
+        (loading ? (
+          <span className="stat-shimmer hint" />
+        ) : (
+          <em title={text(hint)}>{hint}</em>
+        ))}
+    </Tag>
+  );
+}
+/** A small icon button that copies `value` and briefly shows a tick. */
+export function CopyButton({ value, label }: { value: string; label: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      type="button"
+      className="op-copy"
+      title={'Copy ' + label}
+      aria-label={'Copy ' + label}
+      onClick={(e) => {
+        e.stopPropagation();
+        void navigator.clipboard?.writeText(value).catch(() => {});
+        setDone(true);
+        setTimeout(() => setDone(false), 1500);
+      }}
+    >
+      {done ? <Check size={14} /> : <Copy size={14} />}
+    </button>
+  );
+}
+/** A titled block inside a detail view (order, payment), with an optional item on the right. */
+export function PanelSection({
+  icon,
+  title,
+  aside,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  aside?: ReactNode;
+  children: ReactNode;
 }) {
   return (
-    <div className={'stat ' + tone}>
-      <span className="stat-icon">{icon}</span>
-      <div>
-        <small>{label}</small>
-        <strong>{value}</strong>
-        {hint && <em>{hint}</em>}
-      </div>
+    <section className="op-section">
+      <header className="op-section-head">
+        <h4>
+          {icon}
+          {title}
+        </h4>
+        {aside}
+      </header>
+      {children}
+    </section>
+  );
+}
+/** One labelled fact with an icon, for the summary row of a detail view. */
+export function MetaItem({
+  icon,
+  label: text,
+  children,
+  tone,
+}: {
+  icon: ReactNode;
+  label: string;
+  children: ReactNode;
+  tone?: string;
+}) {
+  return (
+    <div className={'op-meta-item' + (tone ? ' ' + tone : '')}>
+      <span className="op-meta-icon">{icon}</span>
+      <span className="op-meta-text">
+        <small>{text}</small>
+        <strong>{children}</strong>
+      </span>
     </div>
+  );
+}
+/** A pulsing red dot with a label, for panels whose figures update live. */
+export function LiveBadge({ children = 'Live' }: { children?: ReactNode }) {
+  return (
+    <span className="live-badge">
+      <i aria-hidden />
+      {children}
+    </span>
   );
 }
 /** Time-frame picker: presets plus a custom date range. */
@@ -550,7 +668,7 @@ export function DataTable<T>({
   title,
   dateFilter,
 }: {
-  /** Adds a time-frame filter on the date returned by `get` (defaults to the last 7 days). */
+  /** Adds a time-frame filter on the date returned by `get` (defaults to all time, so nothing is hidden). */
   dateFilter?: { get: (row: T) => string | null | undefined; initial?: RangeKey };
   rows: T[] | null | undefined;
   columns: Column<T>[];
@@ -575,7 +693,7 @@ export function DataTable<T>({
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(pageSize);
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
-  const [range, setRange] = useState<Range>({ key: dateFilter?.initial || '7d' });
+  const [range, setRange] = useState<Range>({ key: dateFilter?.initial || 'all' });
   const filtered = useMemo(() => {
     let list = [...(rows || [])];
     const term = q.trim().toLowerCase();
@@ -599,6 +717,15 @@ export function DataTable<T>({
   const current = Math.min(page, pages);
   const slice = filtered.slice((current - 1) * size, current * size);
   useEffect(() => setPage(1), [q, values, size, range]);
+  // Offer only page sizes the data can use: every size below the total, plus the first that fits it all.
+  // With no more rows than the smallest size, there is nothing to choose, so the picker is hidden.
+  const allSizes = [...new Set([5, 10, 20, 50, pageSize])].sort((a, b) => a - b);
+  const showSizes = filtered.length > allSizes[0];
+  const sizes = allSizes.filter((n, i) => i === 0 || n === size || allSizes[i - 1] < filtered.length);
+  // Filters run on rows already loaded; show the loading rows briefly so each change is visible.
+  const settling = useSettling(JSON.stringify([q.trim(), values, range, size]));
+  const busy = !!loading || settling;
+  const firstLoad = !!loading && !rows;
   const pageList = () => {
     const out: (number | '…')[] = [];
     for (let i = 1; i <= pages; i++)
@@ -683,8 +810,8 @@ export function DataTable<T>({
             </tr>
           </thead>
           <tbody>
-            {loading && !rows
-              ? Array.from({ length: 5 }, (_, i) => (
+            {busy
+              ? Array.from({ length: firstLoad ? Math.min(size, 5) : Math.min(size, 5, Math.max(1, filtered.length)) }, (_, i) => (
                   <tr key={i} className="row-skeleton">
                     {columns.map((c) => (
                       <td key={c.key}>
@@ -718,62 +845,85 @@ export function DataTable<T>({
                 ))}
           </tbody>
         </table>
-        {!loading && rows && !filtered.length && (
+        {!busy && rows && !filtered.length && (
           <div className="table-empty">
             <Inbox size={22} />
             <span>{rows.length ? 'No results match your filters.' : empty}</span>
           </div>
         )}
       </div>
-      {filtered.length > 0 && (
+      {!firstLoad && filtered.length > 0 && (
         <div className="pagination">
-          <span className="muted">
-            {(current - 1) * size + 1}–{Math.min(current * size, filtered.length)} of{' '}
-            {filtered.length}
-          </span>
-          <div className="pager">
-            <div className="select-wrap small">
-              <select aria-label="Rows per page" value={size} onChange={(e) => setSize(Number(e.target.value))}>
-                {[5, 10, 20, 50].map((n) => (
-                  <option key={n} value={n}>
-                    {n} / page
-                  </option>
-                ))}
-              </select>
-              <ChevronDown size={14} />
-            </div>
-            <button
-              className="page-btn"
-              disabled={current === 1}
-              onClick={() => setPage(current - 1)}
-              aria-label="Previous page"
-            >
-              <ChevronLeft size={16} />
-            </button>
-            {pageList().map((n, i) =>
-              n === '…' ? (
-                <span key={'gap' + i} className="page-gap">
-                  …
-                </span>
-              ) : (
-                <button
-                  key={n}
-                  className={'page-btn' + (n === current ? ' active' : '')}
-                  onClick={() => setPage(n)}
-                >
-                  {n}
-                </button>
-              ),
+          <span className="page-info">
+            {pages > 1 ? (
+              <>
+                Showing{' '}
+                <strong>
+                  {(current - 1) * size + 1}–{Math.min(current * size, filtered.length)}
+                </strong>{' '}
+                of <strong>{filtered.length}</strong>
+              </>
+            ) : (
+              <>
+                Showing <strong>{filtered.length}</strong> {filtered.length === 1 ? 'record' : 'records'}
+              </>
             )}
-            <button
-              className="page-btn"
-              disabled={current === pages}
-              onClick={() => setPage(current + 1)}
-              aria-label="Next page"
-            >
-              <ChevronRight size={16} />
-            </button>
-          </div>
+          </span>
+          {(showSizes || pages > 1) && (
+            <div className="pager">
+              {showSizes && (
+                <label className="page-size">
+                  <span>Rows</span>
+                  <span className="select-wrap small">
+                    <select aria-label="Rows per page" value={size} onChange={(e) => setSize(Number(e.target.value))}>
+                      {sizes.map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown size={14} />
+                  </span>
+                </label>
+              )}
+              {pages > 1 && (
+                <nav className="page-nav" aria-label="Pagination">
+                  <button
+                    className="page-btn"
+                    disabled={current === 1}
+                    onClick={() => setPage(current - 1)}
+                    aria-label="Previous page"
+                  >
+                    <ChevronLeft size={16} />
+                  </button>
+                  {pageList().map((n, i) =>
+                    n === '…' ? (
+                      <span key={'gap' + i} className="page-gap">
+                        …
+                      </span>
+                    ) : (
+                      <button
+                        key={n}
+                        className={'page-btn' + (n === current ? ' active' : '')}
+                        aria-current={n === current ? 'page' : undefined}
+                        onClick={() => setPage(n)}
+                      >
+                        {n}
+                      </button>
+                    ),
+                  )}
+                  <button
+                    className="page-btn"
+                    disabled={current === pages}
+                    onClick={() => setPage(current + 1)}
+                    aria-label="Next page"
+                  >
+                    <ChevronRight size={16} />
+                  </button>
+                </nav>
+              )}
+            </div>
+          )}
         </div>
       )}
     </section>

@@ -1,3 +1,5 @@
+/** A failed request. `code` names failures the app reacts to, such as `verify_email`. */
+export type ApiError = Error & { code?: string; data?: Record<string, any> };
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch('/api' + path, {
     ...init,
@@ -10,7 +12,8 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const data = await response
     .json()
     .catch(() => ({ error: 'Could not read the server response.' }));
-  if (!response.ok) throw new Error(data.error || 'Request failed.');
+  if (!response.ok)
+    throw Object.assign(new Error(data.error || 'Request failed.'), { code: data.code, data });
   return data as T;
 }
 export const money = (amount: number) =>
@@ -29,6 +32,13 @@ export const date = (value: string) =>
   });
 export const label = (value: string) =>
   value.replaceAll('_', ' ').replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+const clock = (time: string) => {
+  const [h, m] = time.split(':').map(Number);
+  return `${h % 12 || 12}${m ? ':' + String(m).padStart(2, '0') : ''} ${h < 12 ? 'am' : 'pm'}`;
+};
+/** An outlet's opening hours, e.g. "9 am – 11:30 pm"; empty when it is open around the clock. */
+export const openingHours = (o: { opens_at?: string; closes_at?: string }) =>
+  o.opens_at && o.closes_at ? `${clock(o.opens_at)} – ${clock(o.closes_at)}` : '';
 export function ago(value: string) {
   const s = Math.max(0, (Date.now() - new Date(value).getTime()) / 1000);
   if (s < 60) return 'Just now';

@@ -5,7 +5,7 @@ import type { AuthRequest } from './security.js';
 
 /** Serialize a complete write action, including its validation reads, across instances.
  * Buffer the JSON response until COMMIT succeeds. Upload middleware runs beforehand.
- * Checkout manages its own transaction so card gateway calls happen after commit.
+ * Checkout manages its own transaction so its notifications go out after commit.
  */
 export function atomicRoute(handler: RequestHandler): RequestHandler {
   return async (req: AuthRequest, res, next) => {

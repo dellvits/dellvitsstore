@@ -9,10 +9,8 @@
     },
     "api": {
       "root": "apps/api",
-      "framework": "express",
-      "entrypoint": "src/app.ts",
-      "installCommand": "d=$(pwd); while [ ! -f \"$d/package-lock.json\" ] && [ \"$d\" != \"/\" ]; do d=$(dirname \"$d\"); done; echo WORKSPACE_ROOT=$d; npm ci --include=dev --prefix \"$d\"",
-      "buildCommand": "npm run build"
+      "runtime": "container",
+      "entrypoint": "Dockerfile.vercel"
     }
   },
   "rewrites": [

@@ -3,8 +3,8 @@ import type { Express } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { all, one, run, transaction, type Row } from './db.js';
-import { requireRole, hashPassword, publicUser, type AuthRequest } from './security.js';
-import { cardGateway } from './cards.js';
+import { requireRole, hashPassword, accessRow, isOwner, type AuthRequest } from './security.js';
+import { range, between } from './range.js';
 
 export const permissions = [
   'overview',
@@ -24,10 +24,7 @@ export const permissions = [
   'settings',
 ] as const;
 export async function access(user?: Row) {
-  const a =
-    user?.role === 'admin'
-      ? await one('SELECT * FROM admin_access WHERE user_id=?', user.id)
-      : undefined;
+  const a = await accessRow(user);
   return {
     is_super_admin: !!a?.super,
     permissions: a ? (JSON.parse(a.permissions) as string[]) : [],
@@ -43,67 +40,239 @@ export async function records(kind: string, activeOnly = false): Promise<Row[]> 
     .filter((r) => !activeOnly || r.active)
     .sort((a, b) => (a.position || 0) - (b.position || 0));
 }
-export async function areaSettings(id: string) {
-  return (
-    (await one('SELECT * FROM area_settings WHERE location_id=?', id)) || {
-      active: 1,
-      radius: 8,
-      fee: 15000,
-    }
+/** Enabled home page content that is inside its schedule right now. */
+export async function publicContent() {
+  const at = new Date().toISOString();
+  return (await records('content', true)).filter(
+    (c) => (!c.starts_at || c.starts_at <= at) && (!c.ends_at || c.ends_at > at),
   );
 }
-/** Gateway credentials that must never leave the server. */
-const secretKeys = ['secret_key', 'webhook_secret'];
-/** Enabled payment methods, safe for customers: gateway credentials are removed. */
-export async function paymentMethods() {
-  return (await records('payments', true)).map(({ merchant_id, api_base_url, ...m }) =>
-    Object.fromEntries(Object.entries(m).filter(([k]) => !secretKeys.includes(k))),
+/** The date in Pakistan, as YYYY-MM-DD; advertising figures are counted per day. */
+export const adDay = (at: Date | string = new Date()) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi' }).format(new Date(at));
+/**
+ * Ads the storefront may show right now: enabled, inside their schedule and under their view
+ * limit. Campaign details that only administrators need are left out.
+ */
+export async function publicAds() {
+  const at = new Date().toISOString();
+  const live = (await records('ads', true)).filter(
+    (a) => (!a.starts_at || a.starts_at <= at) && (!a.ends_at || a.ends_at > at),
   );
+  const capped = live.filter((a) => a.max_views > 0);
+  const seen = new Map<string, number>(
+    capped.length
+      ? (
+          await all(
+            `SELECT ad_id,SUM(views) views FROM ad_stats WHERE ad_id IN (${capped.map(() => '?').join(',')}) GROUP BY ad_id`,
+            ...capped.map((a) => a.id),
+          )
+        ).map((r) => [r.ad_id, Number(r.views)])
+      : [],
+  );
+  return live
+    .filter((a) => !(a.max_views > 0) || (seen.get(a.id) || 0) < a.max_views)
+    .map(({ name, advertiser, notes, max_views, active, ...a }) => a);
 }
-/** All methods for the admin panel: secrets are replaced by whether they are set. */
-async function adminPaymentMethods() {
-  return (await records('payments')).map((m) => ({
-    ...m,
-    ...Object.fromEntries(
-      secretKeys.flatMap((k) => [
-        [k, ''],
-        [k + '_set', !!m[k]],
+/** Enabled categories for the storefront, without the commission only administrators may read. */
+export const publicCategories = async () =>
+  (await records('categories', true)).map(({ commission_rate, ...c }) => c);
+/** All categories for the admin panel, with how many products and outlets use each one. */
+async function adminCategories() {
+  const count = async (table: string) =>
+    new Map(
+      (await all(`SELECT category,COUNT(*) n FROM ${table} GROUP BY category`)).map((r) => [
+        r.category,
+        r.n,
       ]),
-    ),
-    ...(m.type === 'card' ? { gateway_connected: !!cardGateway(m) } : {}),
-  }));
-}
-export async function couponDiscount(code: string, subtotal: number) {
-  if (!code) return { discount: 0, coupon: null };
-  const c = (await records('coupons', true)).find((c) => c.code === code.trim().toUpperCase());
-  const date = new Date().toISOString();
-  if (
-    !c ||
-    (c.starts_at && c.starts_at > date) ||
-    (c.ends_at && c.ends_at < date) ||
-    subtotal < c.minimum ||
-    (await one('SELECT COUNT(*) n FROM coupon_uses WHERE coupon_id=?', c.id))!.n >= c.limit
-  )
-    throw Object.assign(
-      new Error('This coupon is unavailable, expired, or its minimum has not been reached.'),
-      { status: 400 },
     );
+  const [list, products, outlets] = await Promise.all([
+    records('categories'),
+    count('products'),
+    count('outlets'),
+  ]);
+  return list.map(
+    (c): Row => ({ ...c, products: products.get(c.name) || 0, outlets: outlets.get(c.name) || 0 }),
+  );
+}
+/** An area without a settings row yet has these. Money is in paisa. */
+const areaDefaults = {
+  active: 1,
+  radius: 8,
+  fee: 15000,
+  minimum_order: 0,
+  free_delivery_over: 0,
+  opens_at: '',
+  closes_at: '',
+};
+type AreaSettings = typeof areaDefaults;
+/** Area settings with their defaults, for queries that join area_settings as `a`. */
+export const areaColumns = Object.entries(areaDefaults)
+  .map(([k, v]) => `COALESCE(a.${k},${typeof v === 'number' ? v : `'${v}'`}) ${k}`)
+  .join(',');
+export async function areaSettings(id: string): Promise<AreaSettings> {
   return {
-    discount: Math.min(
-      subtotal,
-      c.type === 'percent' ? Math.round((subtotal * c.value) / 100) : c.value,
-    ),
-    coupon: c,
+    ...areaDefaults,
+    ...(await one('SELECT * FROM area_settings WHERE location_id=?', id)),
   };
 }
-export const cardNetworks = [
-  'Visa',
-  'Mastercard',
-  'UnionPay',
-  'PayPak',
-  'American Express',
-] as const;
+/** What delivery costs for an order of this subtotal: nothing once it reaches the free threshold. */
+export const deliveryFee = (area: AreaSettings, subtotal: number) =>
+  area.free_delivery_over > 0 && subtotal >= area.free_delivery_over ? 0 : area.fee;
+const time = z.union([z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), z.literal('')]);
+/** The settings an administrator can change on a delivery area; every one is optional. */
+export const areaFields = {
+  active: z.boolean().optional(),
+  radius: z.number().min(0.1).max(100).optional(),
+  fee: z.number().int().min(0).max(10000000).optional(),
+  minimum_order: z.number().int().min(0).max(10000000).optional(),
+  free_delivery_over: z.number().int().min(0).max(100000000).optional(),
+  opens_at: time.optional(),
+  closes_at: time.optional(),
+};
+/** Saves the settings given and keeps the rest as they are. */
+export async function saveAreaSettings(
+  id: string,
+  s: Partial<Omit<AreaSettings, 'active'>> & { active?: boolean },
+) {
+  const next: AreaSettings = { ...(await areaSettings(id)) };
+  for (const key of Object.keys(areaDefaults) as (keyof AreaSettings)[])
+    if (s[key] !== undefined) (next as Row)[key] = key === 'active' ? Number(s.active) : s[key];
+  const problem =
+    !next.opens_at !== !next.closes_at
+      ? 'Set both an opening and a closing time, or leave both empty.'
+      : next.opens_at && next.opens_at === next.closes_at
+        ? 'Opening and closing times must differ.'
+        : '';
+  if (problem) throw Object.assign(new Error(problem), { status: 400 });
+  const keys = Object.keys(areaDefaults) as (keyof AreaSettings)[];
+  await run(
+    `INSERT INTO area_settings(location_id,${keys.join(',')}) VALUES(?,${keys.map(() => '?').join(',')}) ON CONFLICT(location_id) DO UPDATE SET ${keys.map((k) => `${k}=excluded.${k}`).join(',')}`,
+    id,
+    ...keys.map((k) => next[k]),
+  );
+}
+/** The payment types checkout offers, in the order it lists them. */
+export const paymentTypes = ['cod', 'bank', 'wallet', 'raast'] as const;
+/**
+ * Fields left on older payment records by the removed card integration and display order. They are
+ * never sent out, so records saved before the cleanup migration ran stay clean too.
+ */
+const retiredPaymentKeys = [
+  'position',
+  'card_networks',
+  'gateway',
+  'environment',
+  'merchant_id',
+  'public_key',
+  'secret_key',
+  'webhook_secret',
+  'api_base_url',
+  'three_d_secure',
+];
+/** Payment methods in checkout order: by type, then by name. Retired card methods are dropped. */
+async function paymentRecords(activeOnly = false) {
+  const rank = (t: string) => paymentTypes.indexOf((t === 'manual' ? 'bank' : t) as never);
+  return (await records('payments', activeOnly))
+    .filter((m) => rank(m.type) >= 0)
+    .map((m) => Object.fromEntries(Object.entries(m).filter(([k]) => !retiredPaymentKeys.includes(k))))
+    .sort((a, b) => rank(a.type) - rank(b.type) || String(a.name).localeCompare(String(b.name)));
+}
+/** Enabled payment methods for checkout. */
+export const paymentMethods = () => paymentRecords(true);
+/** Every payment method, enabled or not, in checkout order. */
+export const allPaymentMethods = () => paymentRecords();
+/** The payment method ids a product row accepts. */
+export const productPaymentIds = (p: Row): string[] => JSON.parse(p.payment_methods || '[]');
+/** Enabled payment methods accepted by every one of the given products. */
+export async function paymentMethodsFor(products: Row[]) {
+  if (!products.length) return [];
+  const lists = products.map(productPaymentIds);
+  return (await paymentMethods()).filter((m) => lists.every((ids) => ids.includes(m.id)));
+}
+/** All payment methods for the admin panel, with how many products accept each one. */
+async function adminPaymentMethods() {
+  const [methods, products] = await Promise.all([
+    allPaymentMethods(),
+    all('SELECT payment_methods FROM products'),
+  ]);
+  const uses = new Map<string, number>();
+  for (const p of products)
+    for (const id of productPaymentIds(p)) uses.set(id, (uses.get(id) || 0) + 1);
+  return methods.map((m): Row => ({ ...m, products: uses.get(m.id) || 0 }));
+}
+/** Removes a deleted payment method from every product that accepted it. */
+async function detachPaymentMethod(id: string) {
+  // LIKE narrows the scan; the exact match happens on the parsed list.
+  for (const p of await all(
+    'SELECT id,payment_methods FROM products WHERE payment_methods LIKE ?',
+    '%' + JSON.stringify(id) + '%',
+  )) {
+    const ids = productPaymentIds(p);
+    if (ids.includes(id))
+      await run(
+        'UPDATE products SET payment_methods=? WHERE id=?',
+        JSON.stringify(ids.filter((x) => x !== id)),
+        p.id,
+      );
+  }
+}
+const couponError = (message: string) => Object.assign(new Error(message), { status: 400 });
+const rupees = (amount: number) => 'PKR ' + (amount / 100).toLocaleString('en-PK');
+const inSchedule = (c: Row, at = new Date().toISOString()) =>
+  (!c.starts_at || c.starts_at <= at) && (!c.ends_at || c.ends_at > at);
+/**
+ * The discount a coupon gives on a basket, or an error that tells the customer why it does not
+ * apply. `fee` is the delivery fee, which a free-delivery coupon takes off. Limits per customer
+ * and first-order coupons are checked once the customer is known.
+ */
+export async function couponDiscount(
+  code: string,
+  subtotal: number,
+  context: { userId?: string; locationId?: string; fee?: number } = {},
+) {
+  if (!code) return { discount: 0, coupon: null };
+  const c = (await records('coupons', true)).find((c) => c.code === code.trim().toUpperCase());
+  const at = new Date().toISOString();
+  if (!c) throw couponError('This coupon code is not valid.');
+  if (c.starts_at && c.starts_at > at) throw couponError('This coupon is not active yet.');
+  if (c.ends_at && c.ends_at < at) throw couponError('This coupon has expired.');
+  if (c.location_ids?.length && !c.location_ids.includes(context.locationId))
+    throw couponError('This coupon is not valid in your delivery area.');
+  if (subtotal < c.minimum)
+    throw couponError(
+      `Add ${rupees(c.minimum - subtotal)} more to use this coupon. It needs a subtotal of ${rupees(c.minimum)}.`,
+    );
+  const uid = context.userId || '';
+  const used = (await one(
+    `SELECT COUNT(*) total,COUNT(*) FILTER (WHERE o.user_id=?) mine,
+       (SELECT COUNT(*) FROM orders WHERE user_id=? AND status<>'cancelled') orders
+     FROM coupon_uses u JOIN orders o ON o.id=u.order_id WHERE u.coupon_id=?`,
+    uid,
+    uid,
+    c.id,
+  ))!;
+  if (c.limit > 0 && Number(used.total) >= c.limit)
+    throw couponError('This coupon has been fully redeemed.');
+  if (uid && c.per_customer > 0 && Number(used.mine) >= c.per_customer)
+    throw couponError(
+      c.per_customer === 1
+        ? 'You have already used this coupon.'
+        : `You have already used this coupon ${c.per_customer} times.`,
+    );
+  if (uid && c.first_order && Number(used.orders) > 0)
+    throw couponError('This coupon is for your first order only.');
+  if (c.type === 'delivery') return { discount: context.fee || 0, coupon: c };
+  let discount = c.type === 'percent' ? Math.round((subtotal * c.value) / 100) : c.value;
+  if (c.type === 'percent' && c.max_discount > 0) discount = Math.min(discount, c.max_discount);
+  return { discount: Math.min(subtotal, discount), coupon: c };
+}
 const text = z.string().trim().min(1).max(200);
+const contentTypes = ['hero', 'section', 'banner', 'announcement', 'embed'] as const;
+const contentPlacements = ['top', 'after_nearby', 'after_categories', 'after_outlets', 'bottom'] as const;
+/** Keep in sync with embedSource in apps/web/components/ContentBlocks.tsx */
+const videoAddress =
+  /^https:\/\/(www\.youtube\.com\/(watch\?v=|shorts\/|embed\/)|youtu\.be\/|(www\.)?vimeo\.com\/|player\.vimeo\.com\/video\/)[\w-]+/;
 const image = z
   .string()
   .max(500)
@@ -115,6 +284,24 @@ const link = z
   .string()
   .max(500)
   .refine((v) => !v || /^\/(?!\/)[\w/?=&%#.-]*$/.test(v), 'Use a website path, such as /search.');
+/** Ads may also lead to another website, over HTTPS only. */
+const adLink = z
+  .string()
+  .trim()
+  .max(500)
+  .refine(
+    (v) => !v || /^\/(?!\/)[\w/?=&%#.-]*$/.test(v) || /^https:\/\/[^\s<>"']+$/.test(v),
+    'Use a website path such as /search, or a full https:// address.',
+  );
+const adFormats = ['banner', 'cover', 'strip', 'card', 'image'] as const;
+const adPlacements = [...contentPlacements, 'search', 'search_inline', 'outlets', 'outlet', 'product'] as const;
+/** A link to another website, for the store's social pages; empty when there is none. */
+const webLink = z
+  .string()
+  .trim()
+  .max(300)
+  .refine((v) => !v || /^https:\/\/[^\s<>"']+$/.test(v), 'Use a full https:// address.')
+  .default('');
 const base = {
   active: z.boolean().default(true),
   position: z.number().int().min(0).max(999).default(0),
@@ -138,6 +325,30 @@ const schemas: Record<string, z.ZodType> = {
     show_ad: z.boolean(),
     show_outlets: z.boolean().default(true),
     show_category_products: z.boolean().default(true),
+    // Brand and contact details shown in the footer and on the contact page.
+    tagline: z.string().trim().max(120).default(''),
+    support_hours: z.string().trim().max(120).default(''),
+    whatsapp: z
+      .string()
+      .trim()
+      .max(20)
+      .refine((v) => !v || /^\+?[\d ()-]{7,20}$/.test(v), 'Enter a valid WhatsApp number.')
+      .default(''),
+    facebook_url: webLink,
+    instagram_url: webLink,
+    tiktok_url: webLink,
+    youtube_url: webLink,
+    footer_note: z.string().trim().max(200).default(''),
+    // A bar across the top of every storefront page.
+    notice_enabled: z.boolean().default(false),
+    notice: z.string().trim().max(200).default(''),
+    // What customers read while ordering is paused.
+    checkout_message: z.string().trim().max(300).default(''),
+    // Whether new customers may create accounts, use the contact form and the support chat.
+    signup_enabled: z.boolean().default(true),
+    contact_form_enabled: z.boolean().default(true),
+    chat_enabled: z.boolean().default(true),
+    chat_greeting: z.string().trim().max(300).default(''),
   }),
   categories: z.object({
     ...base,
@@ -145,16 +356,71 @@ const schemas: Record<string, z.ZodType> = {
     description: z.string().max(500).default(''),
     image,
     show_on_home: z.boolean().default(true),
+    // How many products the category's home page section shows.
+    home_limit: z.number().int().min(1).max(24).default(8),
+    show_in_filters: z.boolean().default(true),
+    // Starting commission for new outlets in this category; null leaves the platform default.
+    commission_rate: z.number().min(0).max(100).nullable().default(null),
   }),
-  content: z.object({
-    ...base,
-    name: text,
-    type: z.enum(['hero', 'section', 'banner']),
-    description: z.string().max(2000).default(''),
-    image,
-    link,
-    button: z.string().max(80).default('Explore'),
-  }),
+  content: z
+    .object({
+      ...base,
+      name: text,
+      type: z.enum(contentTypes),
+      description: z.string().max(2000).default(''),
+      image: image.default(''),
+      link: link.default(''),
+      button: z.string().max(80).default('Explore'),
+      // A small label above the headline.
+      eyebrow: z.string().trim().max(80).default(''),
+      layout: z.enum(['image-right', 'image-left', 'image-background', 'centered']).default('image-right'),
+      theme: z.enum(['light', 'soft', 'brand', 'dark', 'warm']).default('light'),
+      // Where on the home page the block sits; heroes and announcements have fixed places.
+      placement: z.enum(contentPlacements).default('after_outlets'),
+      devices: z.enum(['all', 'desktop', 'mobile']).default('all'),
+      // Delivery areas the block is shown in; empty means every area.
+      location_ids: z.array(z.string().max(100)).max(200).default([]),
+      starts_at: z.union([z.iso.datetime(), z.literal('')]).default(''),
+      ends_at: z.union([z.iso.datetime(), z.literal('')]).default(''),
+      // A YouTube or Vimeo page address, for video blocks.
+      embed_url: z
+        .string()
+        .trim()
+        .max(300)
+        .default('')
+        .refine((v) => !v || videoAddress.test(v), 'Use a YouTube or Vimeo video link.'),
+    })
+    .refine((v) => !v.starts_at || !v.ends_at || v.ends_at > v.starts_at, 'End must follow start.')
+    .refine((v) => v.type !== 'embed' || !!v.embed_url, 'Add the video link.'),
+  ads: z
+    .object({
+      ...base,
+      // The campaign name administrators see; customers see the headline.
+      name: text,
+      advertiser: z.string().trim().max(120).default(''),
+      label: z.string().trim().max(40).default(''),
+      title: z.string().trim().max(120).default(''),
+      description: z.string().trim().max(300).default(''),
+      image: image.default(''),
+      link: adLink.default(''),
+      button: z.string().trim().max(40).default(''),
+      format: z.enum(adFormats).default('banner'),
+      theme: z.enum(['light', 'soft', 'brand', 'dark', 'warm']).default('brand'),
+      // Every place the ad is shown: slots on the home page, the search page, the outlets page.
+      placements: z.array(z.enum(adPlacements)).min(1, 'Choose where the ad is shown.').max(adPlacements.length),
+      devices: z.enum(['all', 'desktop', 'mobile']).default('all'),
+      // Delivery areas the ad is shown in; empty means every area.
+      location_ids: z.array(z.string().max(100)).max(200).default([]),
+      starts_at: z.union([z.iso.datetime(), z.literal('')]).default(''),
+      ends_at: z.union([z.iso.datetime(), z.literal('')]).default(''),
+      // The ad stops once it has been seen this many times; 0 means no limit.
+      max_views: z.number().int().min(0).max(1000000000).default(0),
+      notes: z.string().max(1000).default(''),
+    })
+    .refine((v) => !v.starts_at || !v.ends_at || v.ends_at > v.starts_at, 'End must follow start.')
+    .refine((v) => (v.format === 'image' ? !!v.image : !!v.title), 'Add a headline, or a picture for a picture-only ad.')
+    .refine((v) => v.format !== 'cover' || !!v.image, 'A cover ad needs a picture.')
+    .transform((v) => ({ ...v, placements: [...new Set(v.placements)] })),
   coupons: z
     .object({
       ...base,
@@ -164,20 +430,33 @@ const schemas: Record<string, z.ZodType> = {
         .trim()
         .toUpperCase()
         .regex(/^[A-Z0-9_-]{3,30}$/),
-      type: z.enum(['percent', 'fixed']),
-      value: z.number().int().positive().max(10000000),
+      // `delivery` takes the delivery fee off; its value is not used.
+      type: z.enum(['percent', 'fixed', 'delivery']),
+      value: z.number().int().min(0).max(10000000),
+      // The most a percentage coupon may take off; 0 means no cap.
+      max_discount: z.number().int().min(0).max(10000000).default(0),
       minimum: z.number().int().min(0),
-      limit: z.number().int().positive().max(1000000),
+      // Redemptions allowed in total and for each customer; 0 means unlimited.
+      limit: z.number().int().min(0).max(1000000),
+      per_customer: z.number().int().min(0).max(1000).default(0),
+      first_order: z.boolean().default(false),
+      // Delivery areas the coupon works in; empty means every area.
+      location_ids: z.array(z.string().max(100)).max(200).default([]),
+      // Listed at checkout as an offer the customer can apply with one tap.
+      public: z.boolean().default(false),
+      description: z.string().trim().max(200).default(''),
       starts_at: z.union([z.iso.datetime(), z.literal('')]),
       ends_at: z.union([z.iso.datetime(), z.literal('')]),
     })
+    .refine((v) => v.type === 'delivery' || v.value > 0, 'Enter the discount.')
     .refine((v) => v.type !== 'percent' || v.value <= 100, 'Percent must be 100 or less.')
     .refine((v) => !v.starts_at || !v.ends_at || v.ends_at > v.starts_at, 'End must follow start.'),
   payments: z
     .object({
-      ...base,
+      // Checkout lists methods by type and name, so payment methods have no display order.
+      active: base.active,
       name: text,
-      type: z.enum(['cod', 'bank', 'wallet', 'raast', 'card']),
+      type: z.enum(paymentTypes),
       logo: image.default(''),
       instructions: z.string().max(2000).default(''),
       bank_name: z.string().trim().max(100).default(''),
@@ -202,38 +481,12 @@ const schemas: Record<string, z.ZodType> = {
         .transform((v) =>
           /^PK/i.test(v.trim()) ? v.replace(/\s/g, '').toUpperCase() : pkMobile(v),
         ),
-      card_networks: z.array(z.enum(cardNetworks)).max(cardNetworks.length).default([]),
-      // Card gateway integration settings.
-      gateway: z.string().trim().max(60).default(''),
-      environment: z.enum(['sandbox', 'live']).default('sandbox'),
-      merchant_id: z.string().trim().max(200).default(''),
-      public_key: z.string().trim().max(500).default(''),
-      secret_key: z.string().trim().max(1000).default(''),
-      webhook_secret: z.string().trim().max(1000).default(''),
-      api_base_url: z
-        .string()
-        .trim()
-        .max(500)
-        .default('')
-        .refine(
-          (v) => !v || /^https:\/\/[^\s]+$/i.test(v),
-          'The API URL must start with https://.',
-        ),
-      three_d_secure: z.boolean().default(true),
       require_proof: z.boolean().default(false),
     })
     .superRefine((v, ctx) => {
       const issue = (path: string, message: string) =>
         ctx.addIssue({ code: 'custom', path: [path], message });
       if (v.type === 'cod') return;
-      if (v.type === 'card') {
-        if (!v.gateway) issue('gateway', 'Choose the card payment gateway.');
-        if (!v.card_networks.length) issue('card_networks', 'Choose at least one accepted card.');
-        if (!v.merchant_id && !v.public_key)
-          issue('public_key', 'Enter the merchant ID or public key from your gateway.');
-        if (!v.secret_key) issue('secret_key', 'Enter the secret key from your gateway.');
-        return;
-      }
       if (!v.account_title) issue('account_title', 'Enter the account title.');
       if (v.type === 'bank') {
         if (!v.bank_name) issue('bank_name', 'Enter the bank name.');
@@ -292,10 +545,11 @@ export function installPlatform(app: Express) {
           : (
               {
                 summary: 'overview',
-                ad: 'ads',
                 documents: 'outlets',
                 staff: 'staff',
                 'area-settings': 'locations',
+                support: 'messages',
+                'email-settings': 'settings',
                 'rider-controls': 'riders',
                 tracking: 'riders',
                 cash: 'riders',
@@ -323,16 +577,91 @@ export function installPlatform(app: Express) {
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && p) res.locals.auditTarget = req.path;
     next();
   });
-  app.get('/api/site', async (_req, res) =>
+  app.get('/api/site', async (_req, res) => {
+    const [categories, content, payments, settings, ads] = await Promise.all([
+      publicCategories(),
+      publicContent(),
+      paymentMethods(),
+      records('settings', true),
+      publicAds(),
+    ]);
     res.json({
-      categories: await records('categories', true),
-      content: await records('content', true),
-      payments: await paymentMethods(),
-      settings: (await records('settings', true))[0] || null,
+      categories,
+      content,
+      payments,
+      settings: settings[0] || null,
+      // Advertising has one master switch in Store settings.
+      ads: settings[0]?.show_ad === false ? [] : ads,
+    });
+  });
+  /** Every ad with its view and click counts, for the chosen period and overall. */
+  app.get('/api/admin/ads', requireRole('admin'), async (req, res) => {
+    const r = range(req);
+    const from = r.from === '0000' ? r.from : adDay(r.from);
+    const to = r.to === '9999' ? r.to : adDay(r.to);
+    const inRange = between('day');
+    const [list, totals, days] = await Promise.all([
+      records('ads'),
+      all(
+        `SELECT ad_id,SUM(views) views,SUM(clicks) clicks,
+          SUM(CASE WHEN ${inRange} THEN views ELSE 0 END) views_range,
+          SUM(CASE WHEN ${inRange} THEN clicks ELSE 0 END) clicks_range
+         FROM ad_stats GROUP BY ad_id`,
+        from,
+        to,
+        from,
+        to,
+      ),
+      all(
+        `SELECT day,SUM(views) views,SUM(clicks) clicks FROM ad_stats WHERE ${inRange} GROUP BY day ORDER BY day DESC LIMIT 60`,
+        from,
+        to,
+      ),
+    ]);
+    const stats = new Map(totals.map((t) => [t.ad_id, t]));
+    const count = (id: string, k: string) => Number(stats.get(id)?.[k] || 0);
+    res.json({
+      ads: list.map((a) => ({
+        ...a,
+        views: count(a.id, 'views'),
+        clicks: count(a.id, 'clicks'),
+        views_range: count(a.id, 'views_range'),
+        clicks_range: count(a.id, 'clicks_range'),
+      })),
+      days: days
+        .reverse()
+        .map((d) => ({ day: d.day, views: Number(d.views), clicks: Number(d.clicks) })),
+    });
+  });
+  /** Starts an ad's counts again from zero, which also restarts its view limit. */
+  app.delete(
+    '/api/admin/ads/:id/stats',
+    requireRole('admin'),
+    atomicRoute(async (req, res) => {
+      await run('DELETE FROM ad_stats WHERE ad_id=?', String(req.params.id));
+      res.json({ ok: true });
     }),
   );
-  app.get('/api/categories', async (_req, res) => res.json(await records('categories', true)));
-  app.get('/api/payments', async (_req, res) => res.json(await paymentMethods()));
+  app.get('/api/categories', async (_req, res) => res.json(await publicCategories()));
+  /** Enabled payment methods; with ?products=a,b only those every listed product accepts. */
+  app.get('/api/payments', async (req, res) => {
+    const ids = [
+      ...new Set(
+        String(req.query.products || '')
+          .split(',')
+          .filter(Boolean),
+      ),
+    ].slice(0, 50);
+    if (!ids.length) return res.json(await paymentMethods());
+    res.json(
+      await paymentMethodsFor(
+        await all(
+          `SELECT payment_methods FROM products WHERE id IN (${ids.map(() => '?').join(',')})`,
+          ...ids,
+        ),
+      ),
+    );
+  });
   app.post(
     '/api/quote',
     atomicRoute(async (req, res) => {
@@ -354,21 +683,103 @@ export function installPlatform(app: Express) {
         subtotal += Math.round((x.price * (100 - x.discount)) / 100) * i.quantity;
       }
       const area = await areaSettings(p.location_id);
-      const { discount } = await couponDiscount(p.coupon_code, subtotal);
-      res.json({
-        subtotal,
-        delivery_fee: area.fee,
-        discount,
-        total: subtotal + area.fee - discount,
+      const fee = deliveryFee(area, subtotal);
+      const user = (req as AuthRequest).user;
+      const { discount } = await couponDiscount(p.coupon_code, subtotal, {
+        userId: user?.role === 'customer' ? user.id : undefined,
+        locationId: p.location_id,
+        fee,
       });
+      res.json({ subtotal, delivery_fee: fee, discount, total: subtotal + fee - discount });
     }),
+  );
+  /** Offers shown at checkout: public coupons that are running and valid in the area. */
+  app.get('/api/coupons', async (req, res) => {
+    const area = String(req.query.location || '');
+    const open = (await records('coupons', true)).filter(
+      (c) => c.public && inSchedule(c) && (!c.location_ids?.length || c.location_ids.includes(area)),
+    );
+    const limited = open.filter((c) => c.limit > 0);
+    const used = new Map<string, number>(
+      limited.length
+        ? (
+            await all(
+              `SELECT coupon_id,COUNT(*) n FROM coupon_uses WHERE coupon_id IN (${limited.map(() => '?').join(',')}) GROUP BY coupon_id`,
+              ...limited.map((c) => c.id),
+            )
+          ).map((r) => [r.coupon_id, Number(r.n)])
+        : [],
+    );
+    res.json(
+      open
+        .filter((c) => !(c.limit > 0) || (used.get(c.id) || 0) < c.limit)
+        .map((c) => ({
+          code: c.code,
+          name: c.name,
+          description: c.description || '',
+          type: c.type,
+          value: c.value,
+          max_discount: c.max_discount || 0,
+          minimum: c.minimum,
+          first_order: !!c.first_order,
+          ends_at: c.ends_at,
+        })),
+    );
+  });
+  /** Every coupon with how often it was used and what it gave away, overall and in the period. */
+  app.get('/api/admin/coupons', requireRole('admin'), async (req, res) => {
+    const r = range(req);
+    const within = between('o.created_at');
+    const [list, stats] = await Promise.all([
+      records('coupons'),
+      all(
+        `SELECT u.coupon_id,COUNT(*) uses,COALESCE(SUM(d.discount),0) discount,COALESCE(SUM(o.total),0) sales,
+           COUNT(DISTINCT o.user_id) customers,
+           COUNT(*) FILTER (WHERE ${within}) uses_range,
+           COALESCE(SUM(d.discount) FILTER (WHERE ${within}),0) discount_range,
+           COALESCE(SUM(o.total) FILTER (WHERE ${within}),0) sales_range
+         FROM coupon_uses u JOIN orders o ON o.id=u.order_id LEFT JOIN order_details d ON d.order_id=o.id
+         GROUP BY u.coupon_id`,
+        r.from,
+        r.to,
+        r.from,
+        r.to,
+        r.from,
+        r.to,
+      ),
+    ]);
+    const by = new Map(stats.map((s) => [s.coupon_id, s]));
+    const figure = (id: string, k: string) => Number(by.get(id)?.[k] || 0);
+    res.json(
+      list.map((c) => ({
+        ...c,
+        ...Object.fromEntries(
+          ['uses', 'discount', 'sales', 'customers', 'uses_range', 'discount_range', 'sales_range'].map(
+            (k) => [k, figure(c.id, k)],
+          ),
+        ),
+      })),
+    );
+  });
+  /** The latest orders a coupon was used on. */
+  app.get('/api/admin/coupons/:id/orders', requireRole('admin'), async (req, res) =>
+    res.json(
+      await all(
+        `SELECT o.id,o.reference,o.name,o.total,o.status,o.created_at,COALESCE(d.discount,0) discount
+         FROM coupon_uses u JOIN orders o ON o.id=u.order_id LEFT JOIN order_details d ON d.order_id=o.id
+         WHERE u.coupon_id=? ORDER BY o.created_at DESC LIMIT 50`,
+        String(req.params.id),
+      ),
+    ),
   );
   app.get('/api/admin/records/:kind', requireRole('admin'), async (req, res) => {
     if (!schemas[String(req.params.kind)]) return res.sendStatus(404);
     res.json(
       req.params.kind === 'payments'
         ? await adminPaymentMethods()
-        : await records(String(req.params.kind)),
+        : req.params.kind === 'categories'
+          ? await adminCategories()
+          : await records(String(req.params.kind)),
     );
   });
   app.put(
@@ -379,14 +790,6 @@ export function installPlatform(app: Express) {
         id = String(req.params.id);
       if (!schemas[kind]) return res.sendStatus(404);
       const body = { ...req.body };
-      if (kind === 'payments') {
-        // Secrets are never sent back to the browser, so a blank field keeps the saved value.
-        const saved = (await records(kind)).find((m) => m.id === id);
-        for (const k of secretKeys) if (!body[k] && saved?.[k]) body[k] = saved[k];
-        if (body.type !== 'card')
-          for (const k of ['gateway', 'merchant_id', 'public_key', 'api_base_url', ...secretKeys])
-            delete body[k];
-      }
       const p = schemas[kind].parse(body) as Row;
       if (kind === 'settings' && id !== 'global')
         return res.status(400).json({ error: 'Use the global settings record.' });
@@ -398,13 +801,6 @@ export function installPlatform(app: Express) {
           return res
             .status(400)
             .json({ error: 'The payment type cannot be changed. Create a new method instead.' });
-        if (
-          p.type === 'card' &&
-          (await records(kind)).some((m) => m.id !== id && m.type === 'card')
-        )
-          return res.status(409).json({
-            error: 'Only one card payment method is allowed. Edit or delete the existing one.',
-          });
       }
       if (kind === 'categories') {
         if (
@@ -445,12 +841,20 @@ export function installPlatform(app: Express) {
       const kind = String(req.params.kind),
         id = String(req.params.id);
       if (!schemas[kind] || kind === 'settings') return res.sendStatus(404);
-      const p = z.object({ active: z.boolean() }).parse(req.body);
+      // Categories also switch their storefront flags here, without a full save.
+      const p = z
+        .object({
+          active: z.boolean().optional(),
+          ...(kind === 'categories'
+            ? { show_on_home: z.boolean().optional(), show_in_filters: z.boolean().optional() }
+            : {}),
+        })
+        .parse(req.body);
       const row = await one('SELECT data FROM platform_records WHERE kind=? AND id=?', kind, id);
       if (!row) return res.sendStatus(404);
       await run(
         'UPDATE platform_records SET data=? WHERE kind=? AND id=?',
-        JSON.stringify({ ...JSON.parse(row.data), active: p.active }),
+        JSON.stringify({ ...JSON.parse(row.data), ...p }),
         kind,
         id,
       );
@@ -478,20 +882,54 @@ export function installPlatform(app: Express) {
           .status(409)
           .json({ error: 'Products or outlets still use this category. Disable it instead.' });
       await run('DELETE FROM platform_records WHERE kind=? AND id=?', kind, id);
+      if (kind === 'payments') await detachPaymentMethod(id);
+      if (kind === 'ads') await run('DELETE FROM ad_stats WHERE ad_id=?', id);
       res.json({ ok: true });
     }),
   );
-  app.get('/api/admin/staff', requireRole('admin'), async (_req, res) =>
+  /**
+   * Administrators, in one query. Only super administrators reach these routes. The owner account
+   * is marked protected: it can be seen here but never edited, disabled or deleted.
+   */
+  app.get('/api/admin/staff', requireRole('admin'), async (req: AuthRequest, res) => {
+    const at = new Date().toISOString();
+    const month = new Date(Date.now() - 30 * 86400000).toISOString();
+    const users = await all(
+      `SELECT u.id,u.name,u.email,u.phone,u.active,u.created_at,u.last_login_at,
+         COALESCE(a.super,0) super,COALESCE(a.permissions,'[]') permissions,COALESCE(a.title,'') title,
+         (SELECT COUNT(*) FROM sessions s WHERE s.user_id=u.id AND s.expires_at>?) sessions,
+         (SELECT COUNT(*) FROM audit_log l WHERE l.user_id=u.id AND l.created_at>?) actions
+       FROM users u LEFT JOIN admin_access a ON a.user_id=u.id WHERE u.role='admin'
+       ORDER BY COALESCE(a.super,0) DESC,u.name`,
+      at,
+      month,
+    );
     res.json({
       permissions,
-      users: await Promise.all(
-        (await all("SELECT * FROM users WHERE role='admin'")).map(async (u) => ({
-          ...(await publicUser(u)),
-          ...(await access(u)),
-        })),
-      ),
-    }),
-  );
+      me: req.user!.id,
+      users: users.map(({ super: isSuper, ...u }) => ({
+        ...u,
+        permissions: JSON.parse(u.permissions),
+        is_super_admin: !!isSuper,
+        is_owner: isOwner({ ...u, role: 'admin' }),
+        sessions: Number(u.sessions),
+        actions: Number(u.actions),
+      })),
+    });
+  });
+  /** The administrator a staff route acts on. The owner and the caller's own account are refused. */
+  const staffMember = async (req: AuthRequest, action: string) => {
+    const u = await one("SELECT * FROM users WHERE id=? AND role='admin'", String(req.params.id));
+    if (!u) throw Object.assign(new Error('Administrator not found.'), { status: 404 });
+    if (isOwner(u))
+      throw Object.assign(new Error(`The owner account cannot be ${action}.`), { status: 403 });
+    if (u.id === req.user!.id)
+      throw Object.assign(
+        new Error(`Your own account cannot be ${action} here. Use your profile instead.`),
+        { status: 403 },
+      );
+    return u;
+  };
   app.put(
     '/api/admin/staff/:id',
     requireRole('admin'),
@@ -500,105 +938,139 @@ export function installPlatform(app: Express) {
         .object({
           name: text,
           email: z.email().transform((v) => v.toLowerCase()),
+          phone: z.string().trim().max(30).default(''),
+          title: z.string().trim().max(60).default(''),
           password: z.string().min(12).max(100).optional(),
           active: z.boolean(),
+          // A super administrator has every module and manages the other administrators.
+          super: z.boolean().default(false),
           permissions: z.array(z.enum(permissions)).max(permissions.length),
         })
         .parse(req.body);
-      const id = String(req.params.id),
-        old = await one('SELECT * FROM users WHERE id=?', id);
-      if (old && (old.role !== 'admin' || (await access(old)).is_super_admin))
-        return res
-          .status(403)
-          .json({ error: 'The super administrator cannot be changed here. Use account settings.' });
+      const id = String(req.params.id);
+      const exists = await one('SELECT id,role FROM users WHERE id=?', id);
+      if (exists && exists.role !== 'admin')
+        return res.status(403).json({ error: 'That account is not an administrator.' });
+      const old = exists ? await staffMember(req, 'changed') : undefined;
       if (!old && !p.password)
         return res.status(400).json({ error: 'A password is required for new administrators.' });
-      await transaction(async () => {
-        if (old)
-          await run(
-            'UPDATE users SET name=?,email=?,active=?,password_hash=? WHERE id=?',
-            p.name,
-            p.email,
-            Number(p.active),
-            p.password ? hashPassword(p.password) : old.password_hash,
-            id,
-          );
-        else
-          await run(
-            "INSERT INTO users(id,name,email,password_hash,role,active,created_at) VALUES(?,?,?,?,'admin',?,?)",
-            id,
-            p.name,
-            p.email,
-            hashPassword(p.password!),
-            Number(p.active),
-            new Date().toISOString(),
-          );
+      if (old)
         await run(
-          'INSERT INTO admin_access VALUES(?,0,?) ON CONFLICT(user_id) DO UPDATE SET permissions=excluded.permissions',
+          'UPDATE users SET name=?,email=?,phone=?,active=?,password_hash=? WHERE id=?',
+          p.name,
+          p.email,
+          p.phone,
+          Number(p.active),
+          p.password ? hashPassword(p.password) : old.password_hash,
           id,
-          JSON.stringify(p.permissions),
         );
-        await run('DELETE FROM sessions WHERE user_id=?', id);
-      });
-      res.json({ ok: true });
-    }),
-  );
-  app.get('/api/admin/audit', requireRole('admin'), async (_req, res) =>
-    res.json(
-      await all(
-        'SELECT a.*,u.name FROM audit_log a LEFT JOIN users u ON u.id=a.user_id ORDER BY created_at DESC LIMIT 200',
-      ),
-    ),
-  );
-  app.get('/api/admin/customers', requireRole('admin'), async (_req, res) =>
-    res.json(
-      await all(
-        "SELECT u.id,u.name,u.email,u.phone,u.active,u.created_at,COUNT(o.id) orders,COALESCE(SUM(CASE WHEN o.status='delivered' THEN o.total ELSE 0 END),0) spent FROM users u LEFT JOIN orders o ON o.user_id=u.id WHERE u.role='customer' GROUP BY u.id ORDER BY u.created_at DESC",
-      ),
-    ),
-  );
-  app.patch(
-    '/api/admin/customers/:id',
-    requireRole('admin'),
-    atomicRoute(async (req, res) => {
-      const p = z.object({ active: z.boolean() }).parse(req.body);
+      else
+        await run(
+          "INSERT INTO users(id,name,email,phone,password_hash,role,active,created_at,email_verified_at) VALUES(?,?,?,?,?,'admin',?,?,?)",
+          id,
+          p.name,
+          p.email,
+          p.phone,
+          hashPassword(p.password!),
+          Number(p.active),
+          new Date().toISOString(),
+          new Date().toISOString(),
+        );
       await run(
-        "UPDATE users SET active=? WHERE id=? AND role='customer'",
-        Number(p.active),
-        String(req.params.id),
+        'INSERT INTO admin_access(user_id,super,permissions,title) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET super=excluded.super,permissions=excluded.permissions,title=excluded.title',
+        id,
+        Number(p.super),
+        JSON.stringify(p.super ? [] : [...new Set(p.permissions)]),
+        p.title,
       );
-      if (!p.active) await run('DELETE FROM sessions WHERE user_id=?', String(req.params.id));
+      // Saving signs the administrator out, so the new access applies from their next sign-in.
+      await run('DELETE FROM sessions WHERE user_id=?', id);
       res.json({ ok: true });
     }),
   );
-  app.get('/api/admin/area-settings', requireRole('admin'), async (_req, res) =>
-    res.json(
-      await Promise.all(
-        (await all('SELECT * FROM locations')).map(async (l) => ({
-          ...l,
-          ...(await areaSettings(l.id)),
-        })),
-      ),
-    ),
+  /** The switch in the table: disable or enable an administrator. */
+  app.patch(
+    '/api/admin/staff/:id',
+    requireRole('admin'),
+    atomicRoute(async (req: AuthRequest, res) => {
+      const p = z.object({ active: z.boolean() }).parse(req.body);
+      const u = await staffMember(req, 'disabled');
+      await run('UPDATE users SET active=? WHERE id=?', Number(p.active), u.id);
+      if (!p.active) await run('DELETE FROM sessions WHERE user_id=?', u.id);
+      res.json({ ok: true });
+    }),
   );
+  app.post(
+    '/api/admin/staff/:id/sign-out',
+    requireRole('admin'),
+    atomicRoute(async (req: AuthRequest, res) => {
+      const u = await staffMember(req, 'signed out');
+      const { changes } = await run('DELETE FROM sessions WHERE user_id=?', u.id);
+      res.json({ ok: true, sessions: changes });
+    }),
+  );
+  /** Removes an administrator. What they did stays in the activity log, without their name. */
+  app.delete(
+    '/api/admin/staff/:id',
+    requireRole('admin'),
+    atomicRoute(async (req: AuthRequest, res) => {
+      const u = await staffMember(req, 'deleted');
+      for (const table of ['sessions', 'notifications', 'push_subscriptions', 'email_codes', 'admin_access'])
+        await run(`DELETE FROM ${table} WHERE user_id=?`, u.id);
+      await run('UPDATE support_threads SET assigned_to=NULL WHERE assigned_to=?', u.id);
+      await run('DELETE FROM users WHERE id=?', u.id);
+      res.json({ ok: true });
+    }),
+  );
+  /** What administrators changed in the period, newest first. */
+  app.get('/api/admin/audit', requireRole('admin'), async (req, res) => {
+    const r = range(req);
+    res.json(
+      await all(
+        `SELECT a.id,a.user_id,a.action,a.target,a.created_at,u.name,u.email FROM audit_log a LEFT JOIN users u ON u.id=a.user_id WHERE ${between('a.created_at')} ORDER BY a.created_at DESC LIMIT 1000`,
+        r.from,
+        r.to,
+      ),
+    );
+  });
+  /** Every area with its settings, what it covers and its orders in the time frame: one query. */
+  app.get('/api/admin/area-settings', requireRole('admin'), async (req, res) => {
+    const r = range(req);
+    res.json(
+      await all(
+        `SELECT l.*,${areaColumns},(SELECT COUNT(*) FROM outlets WHERE location_id=l.id AND active=1) outlets,(SELECT COUNT(*) FROM products WHERE location_id=l.id AND active=1) products,(SELECT COUNT(*) FROM users WHERE role='rider' AND location_id=l.id AND active=1) riders,(SELECT COUNT(*) FROM users u LEFT JOIN rider_state s ON s.user_id=u.id WHERE u.role='rider' AND u.location_id=l.id AND u.active=1 AND COALESCE(s.available,1)=1) riders_on_duty,(SELECT COUNT(*) FROM orders WHERE location_id=l.id AND status NOT IN ('delivered','cancelled')) active_orders,(SELECT COUNT(*) FROM orders WHERE location_id=l.id AND ${between('created_at')}) orders,(SELECT COALESCE(SUM(total),0) FROM orders WHERE location_id=l.id AND status='delivered' AND ${between('created_at')}) sales FROM locations l LEFT JOIN area_settings a ON a.location_id=l.id ORDER BY l.name`,
+        r.from,
+        r.to,
+        r.from,
+        r.to,
+      ),
+    );
+  });
   app.put(
     '/api/admin/area-settings/:id',
     requireRole('admin'),
     atomicRoute(async (req, res) => {
       const p = z
         .object({
+          ...areaFields,
           active: z.boolean(),
           radius: z.number().min(0.1).max(100),
           fee: z.number().int().min(0).max(10000000),
         })
         .parse(req.body);
-      await run(
-        'INSERT INTO area_settings VALUES(?,?,?,?) ON CONFLICT(location_id) DO UPDATE SET active=excluded.active,radius=excluded.radius,fee=excluded.fee',
-        String(req.params.id),
-        Number(p.active),
-        p.radius,
-        p.fee,
-      );
+      await saveAreaSettings(String(req.params.id), p);
+      res.json({ ok: true });
+    }),
+  );
+  /** The switch in the area table: pause or resume an area without re-sending its settings. */
+  app.patch(
+    '/api/admin/area-settings/:id',
+    requireRole('admin'),
+    atomicRoute(async (req, res) => {
+      const p = z.object({ active: z.boolean() }).parse(req.body);
+      const id = String(req.params.id);
+      if (!(await one('SELECT id FROM locations WHERE id=?', id))) return res.sendStatus(404);
+      await saveAreaSettings(id, p);
       res.json({ ok: true });
     }),
   );

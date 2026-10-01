@@ -102,8 +102,8 @@ function reviewCell(r: { status: string; reviewer_name: string | null; reviewed_
 /* ================= Rider: cash on delivery ================= */
 export function RiderCash() {
   const { notice } = useApp();
-  const { range, setRange, query, label: rangeText } = useRange('7d');
-  const { data, loading, error, refresh } = useData<CashStatement>('/rider/cash' + query, 30000);
+  const { range, setRange, query, key, label: rangeText } = useRange('7d');
+  const { data, loading, error, refresh } = useData<CashStatement>('/rider/cash' + query, 30000, 'rider-cash:' + key);
   const [form, setForm] = useState<{ amount: string; method: string; reference: string; note: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [withdraw, setWithdraw] = useState<CashDeposit | null>(null);
@@ -139,10 +139,10 @@ export function RiderCash() {
         </button>
       </FilterBar>
       <div className="stats">
-        <Stat icon={<HandCoins size={20} />} label="COD collected" value={money(data.collected_range)} hint="From customers in this period" tone="blue" />
-        <Stat icon={<Wallet size={20} />} label="Cash in hand" value={money(data.in_hand)} hint="Not yet submitted" tone="orange" />
-        <Stat icon={<Clock size={20} />} label="Awaiting verification" value={money(data.pending)} tone="purple" />
-        <Stat icon={<ShieldCheck size={20} />} label="Submitted to Dellvit" value={money(data.submitted_range)} hint="Verified in this period" tone="green" />
+        <Stat loading={loading} icon={<HandCoins size={20} />} label="COD collected" value={money(data.collected_range)} hint="From customers in this period" tone="blue" />
+        <Stat loading={loading} icon={<Wallet size={20} />} label="Cash in hand" value={money(data.in_hand)} hint="Not yet submitted" tone="orange" />
+        <Stat loading={loading} icon={<Clock size={20} />} label="Awaiting verification" value={money(data.pending)} tone="purple" />
+        <Stat loading={loading} icon={<ShieldCheck size={20} />} label="Submitted to Dellvit" value={money(data.submitted_range)} hint="Verified in this period" tone="green" />
       </div>
       <DataTable
         title={<h3>Submissions</h3>}
@@ -274,12 +274,12 @@ export function RiderCash() {
 type CashRider = { id: string; name: string; login_id: string; phone: string; collected: number; approved: number; pending: number; in_hand: number };
 export function AdminCash() {
   const { notice } = useApp();
-  const { range, setRange, query, label: rangeText } = useRange('7d');
+  const { range, setRange, query, key, label: rangeText } = useRange('7d');
   const { data, loading, error, refresh } = useData<{
     riders: CashRider[];
     totals: { in_hand: number; pending: number; collected_range: number; approved_range: number };
     deposits: CashDeposit[];
-  }>('/admin/cash' + query, 20000);
+  }>('/admin/cash' + query, 20000, 'admin-cash:' + key);
   const [reject, setReject] = useState<CashDeposit | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [rider, setRider] = useState<CashRider | null>(null);
@@ -302,16 +302,17 @@ export function AdminCash() {
     <div className="stack">
       <FilterBar title="Rider cash on delivery" hint={`Showing ${rangeText.toLowerCase()}`} range={range} onRange={setRange} />
       <div className="stats">
-        <Stat icon={<Wallet size={20} />} label="Cash with riders" value={money(t?.in_hand || 0)} hint="Collected, not yet submitted" tone="orange" />
+        <Stat loading={loading || !data} icon={<Wallet size={20} />} label="Cash with riders" value={money(t?.in_hand || 0)} hint="Collected, not yet submitted" tone="orange" />
         <Stat
+          loading={loading || !data}
           icon={<Clock size={20} />}
           label="Awaiting verification"
           value={money(t?.pending || 0)}
           hint={`${data?.deposits.filter((d) => d.status === 'pending').length || 0} submissions`}
           tone="purple"
         />
-        <Stat icon={<HandCoins size={20} />} label="COD collected" value={money(t?.collected_range || 0)} hint="In this period" tone="blue" />
-        <Stat icon={<ShieldCheck size={20} />} label="Verified submissions" value={money(t?.approved_range || 0)} hint="In this period" tone="green" />
+        <Stat loading={loading || !data} icon={<HandCoins size={20} />} label="COD collected" value={money(t?.collected_range || 0)} hint="In this period" tone="blue" />
+        <Stat loading={loading || !data} icon={<ShieldCheck size={20} />} label="Verified submissions" value={money(t?.approved_range || 0)} hint="In this period" tone="green" />
       </div>
       <DataTable
         title={<h3>Submissions</h3>}
@@ -649,8 +650,8 @@ function RequestTable({
 /* ================= Rider: earnings ================= */
 export function RiderEarnings() {
   const { notice } = useApp();
-  const { range, setRange, query, label: rangeText } = useRange('7d');
-  const { data, loading, error, refresh } = useData<RiderStatement>('/rider/earnings' + query, 30000);
+  const { range, setRange, query, key, label: rangeText } = useRange('7d');
+  const { data, loading, error, refresh } = useData<RiderStatement>('/rider/earnings' + query, 30000, 'rider-earnings:' + key);
   const [form, setForm] = useState<{ amount: string; method: string; account: string; note: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [withdraw, setWithdraw] = useState<PayoutRequest | null>(null);
@@ -670,6 +671,7 @@ export function RiderEarnings() {
       </FilterBar>
       <div className="stats">
         <Stat
+          loading={loading}
           icon={<Wallet size={20} />}
           label="Current balance"
           value={money(data.balance)}
@@ -677,14 +679,15 @@ export function RiderEarnings() {
           tone="green"
         />
         <Stat
+          loading={loading}
           icon={<TrendingUp size={20} />}
           label="Earnings"
           value={money(data.earned_range)}
           hint={`${data.deliveries_range} deliveries in this period`}
           tone="blue"
         />
-        <Stat icon={<CircleDollarSign size={20} />} label="Payouts" value={money(data.paid_range)} hint="Received in this period" tone="purple" />
-        <Stat icon={<CreditCard size={20} />} label="Commission" value={commissionText(data.settings)} hint="Set by your administrator" tone="orange" />
+        <Stat loading={loading} icon={<CircleDollarSign size={20} />} label="Payouts" value={money(data.paid_range)} hint="Received in this period" tone="purple" />
+        <Stat loading={loading} icon={<CreditCard size={20} />} label="Commission" value={commissionText(data.settings)} hint="Set by your administrator" tone="orange" />
       </div>
       <RequestTable
         rows={data.requests}
@@ -803,13 +806,13 @@ type PayoutRider = { id: string; name: string; login_id: string; earned: number;
 type PayForm = { rider_id: string; amount: string; method: string; reference: string; note: string; request?: PayoutRequest };
 export function AdminPayouts() {
   const { notice } = useApp();
-  const { range, setRange, query, label: rangeText } = useRange('7d');
+  const { range, setRange, query, key, label: rangeText } = useRange('7d');
   const { data, loading, error, refresh } = useData<{
     riders: PayoutRider[];
     totals: { balance: number; pending: number; paid_range: number; earned_range: number };
     requests: PayoutRequest[];
     payouts: Payout[];
-  }>('/admin/payouts' + query, 20000);
+  }>('/admin/payouts' + query, 20000, 'admin-payouts:' + key);
   const [pay, setPay] = useState<PayForm | null>(null);
   const [reject, setReject] = useState<PayoutRequest | null>(null);
   const [busy, setBusy] = useState(false);
@@ -853,15 +856,16 @@ export function AdminPayouts() {
       </FilterBar>
       <div className="stats">
         <Stat
+          loading={loading || !data}
           icon={<Clock size={20} />}
           label="Pending requests"
           value={pendingCount}
           hint={money(data?.totals.pending || 0) + ' requested'}
           tone="orange"
         />
-        <Stat icon={<Wallet size={20} />} label="Owed to riders" value={money(data?.totals.balance || 0)} hint="Current unpaid balances" tone="purple" />
-        <Stat icon={<Landmark size={20} />} label="Paid out" value={money(data?.totals.paid_range || 0)} hint="In this period" tone="green" />
-        <Stat icon={<TrendingUp size={20} />} label="Rider earnings" value={money(data?.totals.earned_range || 0)} hint="Commissions in this period" tone="blue" />
+        <Stat loading={loading || !data} icon={<Wallet size={20} />} label="Owed to riders" value={money(data?.totals.balance || 0)} hint="Current unpaid balances" tone="purple" />
+        <Stat loading={loading || !data} icon={<Landmark size={20} />} label="Paid out" value={money(data?.totals.paid_range || 0)} hint="In this period" tone="green" />
+        <Stat loading={loading || !data} icon={<TrendingUp size={20} />} label="Rider earnings" value={money(data?.totals.earned_range || 0)} hint="Commissions in this period" tone="blue" />
       </div>
       <RequestTable
         admin

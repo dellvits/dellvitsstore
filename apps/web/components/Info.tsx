@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { useState, type FormEvent } from 'react';
-import { Mail, Phone, MapPin, ArrowRight, Heart, ShieldCheck, Store, CheckCircle2 } from 'lucide-react';
+import { Mail, Phone, MapPin, ArrowRight, Heart, ShieldCheck, Store, CheckCircle2, Clock, MessageCircle, MessagesSquare } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useData } from '@/lib/useData';
 import { ErrorBox } from './UI';
@@ -54,7 +54,7 @@ export function About() {
 }
 
 export function Contact() {
-  const { data } = useData<{ settings: Record<string, string> | null }>('/site');
+  const { data } = useData<{ settings: Record<string, any> | null }>('/site');
   const settings = data?.settings;
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
@@ -87,7 +87,18 @@ export function Contact() {
       </div>
       <div className="split reverse">
         <section className="card">
-          {success ? (
+          {settings?.contact_form_enabled === false ? (
+            <div className="success-state">
+              <MessagesSquare size={36} />
+              <h3>The contact form is closed</h3>
+              <p className="muted">Please call or email us{settings.chat_enabled === false ? '.' : ', or use the support chat if you have an account.'}</p>
+              {settings.chat_enabled !== false && (
+                <Link className="button" href="/support">
+                  Open support chat
+                </Link>
+              )}
+            </div>
+          ) : success ? (
             <div className="success-state">
               <CheckCircle2 size={36} />
               <h3>Message sent</h3>
@@ -144,6 +155,39 @@ export function Contact() {
               <strong>{phone}</strong>
             </span>
           </a>
+          {settings?.whatsapp && (
+            <a className="card contact-item" href={'https://wa.me/' + settings.whatsapp.replace(/\D/g, '')} target="_blank" rel="noopener noreferrer">
+              <span className="feature-icon">
+                <MessageCircle size={20} />
+              </span>
+              <span>
+                <small>WhatsApp</small>
+                <strong>{settings.whatsapp}</strong>
+              </span>
+            </a>
+          )}
+          {settings?.chat_enabled !== false && (
+            <Link className="card contact-item" href="/support">
+              <span className="feature-icon">
+                <MessagesSquare size={20} />
+              </span>
+              <span>
+                <small>Have an account?</small>
+                <strong>Chat with support</strong>
+              </span>
+            </Link>
+          )}
+          {settings?.support_hours && (
+            <div className="card contact-item">
+              <span className="feature-icon">
+                <Clock size={20} />
+              </span>
+              <span>
+                <small>Hours</small>
+                <strong>{settings.support_hours}</strong>
+              </span>
+            </div>
+          )}
           <div className="card contact-item">
             <span className="feature-icon">
               <MapPin size={20} />

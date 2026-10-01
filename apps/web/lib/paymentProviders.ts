@@ -74,23 +74,15 @@ export const wallets: PaymentProvider[] = [
   { name: 'Alfa by Bank Alfalah', slug: 'alfa' },
 ];
 
-export const cardGateways: PaymentProvider[] = [
-  { name: 'Safepay', slug: 'safepay' },
-  { name: 'PayFast', slug: 'payfast' },
-];
+const all = [...banks, ...wallets];
 
-const all = [...banks, ...wallets, ...cardGateways];
-
-/** The provider a method belongs to: the wallet, card gateway, or bank. */
-export const providerName = (m: Partial<PaymentMethod>) =>
-  (m.type === 'wallet' ? m.provider : m.type === 'card' ? m.gateway : m.bank_name) || '';
+/** The provider a method belongs to: the wallet or the bank. */
+export const providerName = (m: Partial<PaymentMethod>) => (m.type === 'wallet' ? m.provider : m.bank_name) || '';
 
 /** Logo picked automatically from the selected provider; empty when the admin must upload one. */
 export function autoLogo(m: Partial<PaymentMethod>) {
   if (m.type === 'cod') return logoPath('cash-on-delivery');
   if (m.type === 'raast') return logoPath('raast');
-  // Customers see a card logo; the gateway behind it is an admin detail.
-  if (m.type === 'card') return logoPath('card');
   const p = all.find((x) => x.name === providerName(m));
   if (p) return logoPath(p.slug);
   return '';

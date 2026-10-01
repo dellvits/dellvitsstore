@@ -15,25 +15,61 @@ function fail(message: string, status = 400): never {
   throw Object.assign(new Error(message), { status });
 }
 
+export const outletDefaults = {
+  commission_rate: 10,
+  accepting: 1,
+  description: '',
+  featured: 0,
+  minimum_order: 0,
+  opens_at: '',
+  closes_at: '',
+  owner_name: '',
+  payout_bank: '',
+  payout_title: '',
+  payout_account: '',
+  notes: '',
+};
+export type OutletSettings = typeof outletDefaults;
 export async function outletSettings(outletId: string) {
   return ((await one('SELECT * FROM outlet_settings WHERE outlet_id=?', outletId)) || {
     outlet_id: outletId,
-    commission_rate: 10,
-    accepting: 1,
+    ...outletDefaults,
   }) as Row;
 }
-export async function saveOutletSettings(
-  outletId: string,
-  s: { commission_rate?: number; accepting?: number },
-) {
+/** An outlet's settings without the fields only administrators may read. */
+export async function outletOwnSettings(outletId: string) {
+  const { owner_name, payout_bank, payout_title, payout_account, notes, ...own } =
+    await outletSettings(outletId);
+  return own;
+}
+export async function saveOutletSettings(outletId: string, s: Partial<OutletSettings>) {
   const old = await outletSettings(outletId);
+  const keys = Object.keys(outletDefaults) as (keyof OutletSettings)[];
   await run(
-    'INSERT INTO outlet_settings VALUES(?,?,?) ON CONFLICT(outlet_id) DO UPDATE SET commission_rate=excluded.commission_rate,accepting=excluded.accepting',
+    `INSERT INTO outlet_settings(outlet_id,${keys.join(',')}) VALUES(?,${keys.map(() => '?').join(',')}) ON CONFLICT(outlet_id) DO UPDATE SET ${keys.map((k) => `${k}=excluded.${k}`).join(',')}`,
     outletId,
-    s.commission_rate ?? old.commission_rate,
-    s.accepting ?? old.accepting,
+    ...keys.map((k) => s[k] ?? old[k]),
   );
 }
+/** The storefront fields of an outlet's settings, for queries that join outlet_settings as `s`. */
+export const outletPublicColumns =
+  "COALESCE(s.description,'') description,COALESCE(s.featured,0) featured,COALESCE(s.minimum_order,0) minimum_order,COALESCE(s.opens_at,'') opens_at,COALESCE(s.closes_at,'') closes_at,COALESCE(s.accepting,1) accepting";
+const clock = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Karachi',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+/** Whether the time is inside an outlet's opening hours (Pakistan time). Hours may run past midnight. */
+export function withinHours(s: Row, at = new Date()) {
+  if (!s.opens_at || !s.closes_at) return true;
+  const t = clock.format(at);
+  return s.opens_at < s.closes_at
+    ? t >= s.opens_at && t < s.closes_at
+    : t >= s.opens_at || t < s.closes_at;
+}
+/** Whether an outlet takes orders right now: not paused, and inside its opening hours. */
+export const outletOpen = (s: Row, at = new Date()) => !!s.accepting && withinHours(s, at);
 
 /** Splits a delivered order between the outlet, the rider and Dellvit. Runs inside the delivery transaction. */
 export async function recordSettlement(order: Row) {
@@ -67,18 +103,15 @@ export async function recordSettlement(order: Row) {
 }
 
 export async function cashPosition(uid: string) {
-  const collected = (await one(
-    'SELECT COALESCE(SUM(cash_collected),0) n FROM rider_earnings WHERE rider_id=?',
+  const p = (await one(
+    `SELECT (SELECT COALESCE(SUM(cash_collected),0) FROM rider_earnings WHERE rider_id=?) collected,(SELECT COALESCE(SUM(amount),0) FROM cod_deposits WHERE rider_id=? AND status='approved') approved,(SELECT COALESCE(SUM(amount),0) FROM cod_deposits WHERE rider_id=? AND status='pending') pending`,
     uid,
-  ))!.n as number;
-  const sum = async (status: string) =>
-    (await one(
-      'SELECT COALESCE(SUM(amount),0) n FROM cod_deposits WHERE rider_id=? AND status=?',
-      uid,
-      status,
-    ))!.n as number;
-  const approved = await sum('approved');
-  const pending = await sum('pending');
+    uid,
+    uid,
+  ))!;
+  const collected = p.collected as number,
+    approved = p.approved as number,
+    pending = p.pending as number;
   return { collected, approved, pending, in_hand: collected - approved - pending };
 }
 const depositMethods = ['cash_handover', 'bank', 'wallet', 'raast'] as const;
@@ -87,52 +120,71 @@ export function installFinance(app: Express) {
   /* ---------- Admin dashboard ---------- */
   app.get('/api/admin/summary', requireRole('admin'), async (req, res) => {
     const r = range(req);
-    const count = async (extra = '') =>
-      (await one(
-        `SELECT COUNT(*) n FROM orders WHERE ${between('created_at')}${extra}`,
+    // Order counts come from the per-status totals, so the page needs two queries, run together.
+    const [statusRows, totals] = await Promise.all([
+      all(
+        `SELECT status,COUNT(*) n FROM orders WHERE ${between('created_at')} GROUP BY status`,
         r.from,
         r.to,
-      ))!.n;
-    const totals = (await one(
-      `SELECT COUNT(*) delivered,COALESCE(SUM(s.total),0) sales,COALESCE(SUM(s.outlet_payable),0) outlet_deducted,COALESCE(SUM(s.outlet_commission),0) outlet_commission,COALESCE(SUM(s.rider_commission),0) rider_commission,COALESCE(SUM(s.discount),0) coupon_deductions,COALESCE(SUM(s.store_net),0) store_sales,COALESCE(SUM(s.delivery_fee),0) delivery_fees FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE ${between('o.created_at')}`,
-      r.from,
-      r.to,
-    ))!;
+      ),
+      one(
+        `SELECT COUNT(*) delivered,COALESCE(SUM(s.total),0) sales,COALESCE(SUM(s.outlet_payable),0) outlet_deducted,COALESCE(SUM(s.outlet_commission),0) outlet_commission,COALESCE(SUM(s.rider_commission),0) rider_commission,COALESCE(SUM(s.discount),0) coupon_deductions,COALESCE(SUM(s.store_net),0) store_sales,COALESCE(SUM(s.delivery_fee),0) delivery_fees,(SELECT COUNT(*) FROM outlets WHERE active=1) outlets FROM order_settlements s JOIN orders o ON o.id=s.order_id WHERE ${between('o.created_at')}`,
+        r.from,
+        r.to,
+      ),
+    ]);
+    const statuses: Record<string, number> = Object.fromEntries(
+      statusRows.map((x) => [x.status, x.n]),
+    );
+    const orders = statusRows.reduce((sum, x) => sum + x.n, 0);
     res.json({
-      orders: await count(),
-      cancelled: await count(" AND status='cancelled'"),
-      active_orders: await count(" AND status NOT IN ('delivered','cancelled')"),
+      orders,
+      cancelled: statuses.cancelled || 0,
+      active_orders: orders - (statuses.delivered || 0) - (statuses.cancelled || 0),
       ...totals,
       // Kept for older clients.
-      revenue: totals.sales,
-      outlets: (await one('SELECT COUNT(*) n FROM outlets WHERE active=1'))!.n,
-      statuses: Object.fromEntries(
-        (
-          await all(
-            `SELECT status,COUNT(*) n FROM orders WHERE ${between('created_at')} GROUP BY status`,
-            r.from,
-            r.to,
-          )
-        ).map((x) => [x.status, x.n]),
-      ),
-      attention: {
-        dispatch: (await one(
-          "SELECT COUNT(*) n FROM orders o JOIN order_flow f ON f.order_id=o.id WHERE o.status='placed' AND f.payment_verified_at IS NOT NULL AND (f.sent_at IS NULL OR f.rider_status IN ('rejected','unsent'))",
-        ))!.n,
-        payments: (await one(
-          "SELECT COUNT(*) n FROM order_details d JOIN orders o ON o.id=d.order_id WHERE d.payment_status='submitted' AND o.status<>'cancelled'",
-        ))!.n,
-        refunds: (await one(
-          "SELECT COUNT(*) n FROM order_details WHERE payment_status='refund_due'",
-        ))!.n,
-        cancel_requests: (await one("SELECT COUNT(*) n FROM order_flow WHERE cancel_request<>''"))!
-          .n,
-        payout_requests: (await one(
-          "SELECT COUNT(*) n FROM payout_requests WHERE status='pending'",
-        ))!.n,
-        cod_deposits: (await one("SELECT COUNT(*) n FROM cod_deposits WHERE status='pending'"))!.n,
-      },
+      revenue: totals!.sales,
+      statuses,
     });
+  });
+
+  /* ---------- Admin live queues (not tied to a time frame) ---------- */
+  app.get('/api/admin/attention', requireRole('admin'), async (_req, res) => {
+    const at = Date.now();
+    const open = "o.status NOT IN ('delivered','cancelled')";
+    // One round trip: every live count as a scalar subquery.
+    const row = (await one(
+      `SELECT
+        (SELECT COUNT(*) FROM orders o JOIN order_flow f ON f.order_id=o.id WHERE o.status='placed' AND f.payment_verified_at IS NOT NULL AND (f.sent_at IS NULL OR f.rider_status IN ('rejected','unsent'))) dispatch,
+        (SELECT COUNT(*) FROM order_flow WHERE cancel_request<>'') cancel_requests,
+        (SELECT COUNT(*) FROM orders o JOIN order_flow f ON f.order_id=o.id WHERE ${open} AND f.outlet_status='rejected') outlet_declined,
+        (SELECT COUNT(*) FROM orders o JOIN order_flow f ON f.order_id=o.id WHERE o.status='placed' AND f.sent_at IS NOT NULL AND f.outlet_status='pending') awaiting_outlet,
+        (SELECT COUNT(*) FROM orders o JOIN order_flow f ON f.order_id=o.id WHERE ${open} AND f.sent_at IS NOT NULL AND f.rider_status='pending') awaiting_rider,
+        (SELECT COUNT(*) FROM orders o JOIN order_flow f ON f.order_id=o.id WHERE o.status IN ('confirmed','preparing','ready') AND f.sent_at IS NOT NULL AND (o.rider_id IS NULL OR f.rider_status='rejected')) rider_needed,
+        (SELECT COUNT(*) FROM orders o WHERE ${open} AND o.deliver_by<?) late,
+        (SELECT COUNT(*) FROM orders o WHERE ${open}) active,
+        (SELECT COUNT(*) FROM orders WHERE status='ready') ready,
+        (SELECT COUNT(*) FROM orders WHERE status='picked_up') on_the_road,
+        (SELECT COUNT(*) FROM order_details d JOIN orders o ON o.id=d.order_id WHERE d.payment_status='submitted' AND o.status<>'cancelled') payments,
+        (SELECT COALESCE(SUM(o.total),0) FROM order_details d JOIN orders o ON o.id=d.order_id WHERE d.payment_status='submitted' AND o.status<>'cancelled') payments_amount,
+        (SELECT COUNT(*) FROM order_details WHERE payment_status='refund_due') refunds,
+        (SELECT COALESCE(SUM(o.total),0) FROM order_details d JOIN orders o ON o.id=d.order_id WHERE d.payment_status='refund_due') refunds_amount,
+        (SELECT COUNT(*) FROM payout_requests WHERE status='pending') payout_requests,
+        (SELECT COALESCE(SUM(amount),0) FROM payout_requests WHERE status='pending') payout_amount,
+        (SELECT COUNT(*) FROM cod_deposits WHERE status='pending') cod_deposits,
+        (SELECT COALESCE(SUM(amount),0) FROM cod_deposits WHERE status='pending') cod_amount,
+        (SELECT COUNT(*) FROM users u LEFT JOIN rider_state s ON s.user_id=u.id WHERE u.role='rider' AND u.active=1 AND COALESCE(s.available,1)=1) riders_available,
+        (SELECT COUNT(DISTINCT o.rider_id) FROM orders o WHERE ${open} AND o.rider_id IS NOT NULL) riders_busy,
+        (SELECT COUNT(*) FROM users WHERE role='rider' AND active=1) riders_total,
+        (SELECT COUNT(*) FROM products WHERE active=1 AND stock=0) out_of_stock,
+        (SELECT COUNT(*) FROM products WHERE active=1 AND stock>0 AND stock<10) low_stock,
+        (SELECT COUNT(*) FROM outlets o LEFT JOIN outlet_settings s ON s.outlet_id=o.id WHERE o.active=1 AND COALESCE(s.accepting,1)=0) outlets_paused,
+        (SELECT COUNT(*) FROM outlets WHERE active=1) outlets_total,
+        (SELECT COUNT(*) FROM messages WHERE created_at>=?) messages`,
+      new Date(at).toISOString(),
+      new Date(at - 86400000).toISOString(),
+    ))!;
+    res.json({ ...row, checked_at: new Date(at).toISOString() });
   });
 
   /* ---------- Outlet dashboard ---------- */
@@ -161,7 +213,7 @@ export function installFinance(app: Express) {
       r.to,
     ))!;
     res.json({
-      outlet: { ...outlet, ...(await outletSettings(outlet.id)) },
+      outlet: { ...outlet, ...(await outletOwnSettings(outlet.id)) },
       statuses,
       orders: Object.values(statuses).reduce((a: number, b) => a + Number(b), 0),
       awaiting_response: (await one(
@@ -176,6 +228,20 @@ export function installFinance(app: Express) {
         "SELECT COUNT(*) n FROM orders WHERE outlet_id=? AND status='ready'",
         outlet.id,
       ))!.n,
+      late: (await one(
+        "SELECT COUNT(*) n FROM orders o JOIN order_flow f ON f.order_id=o.id WHERE o.outlet_id=? AND f.sent_at IS NOT NULL AND o.status NOT IN ('delivered','cancelled') AND o.deliver_by<?",
+        outlet.id,
+        now(),
+      ))!.n,
+      out_of_stock: (await one(
+        'SELECT COUNT(*) n FROM products WHERE outlet_id=? AND active=1 AND stock=0',
+        outlet.id,
+      ))!.n,
+      low_stock_count: (await one(
+        'SELECT COUNT(*) n FROM products WHERE outlet_id=? AND active=1 AND stock>0 AND stock<10',
+        outlet.id,
+      ))!.n,
+      checked_at: now(),
       ...totals,
       average_order: totals.delivered ? Math.round(totals.sales / totals.delivered) : 0,
       top_products: await all(
@@ -222,35 +288,39 @@ export function installFinance(app: Express) {
         body: `${outlet.name} ${p.accepting ? 'is accepting orders again.' : 'stopped accepting new orders.'}`,
         link: '/admin?tab=outlets',
       });
-      res.json({ ok: true, ...(await outletSettings(outlet.id)) });
+      res.json({ ok: true, ...(await outletOwnSettings(outlet.id)) });
     }),
   );
 
   /* ---------- Rider cash on delivery ---------- */
   async function cashStatement(uid: string, req: Request) {
     const r = range(req);
-    return {
-      ...(await cashPosition(uid)),
-      collected_range: (await one(
-        `SELECT COALESCE(SUM(cash_collected),0) n FROM rider_earnings WHERE rider_id=? AND ${between('created_at')}`,
+    const [position, ranges, collections, deposits] = await Promise.all([
+      cashPosition(uid),
+      one(
+        `SELECT (SELECT COALESCE(SUM(cash_collected),0) FROM rider_earnings WHERE rider_id=? AND ${between('created_at')}) collected_range,(SELECT COALESCE(SUM(amount),0) FROM cod_deposits WHERE rider_id=? AND status='approved' AND ${between('created_at')}) submitted_range`,
         uid,
         r.from,
         r.to,
-      ))!.n,
-      submitted_range: (await one(
-        `SELECT COALESCE(SUM(amount),0) n FROM cod_deposits WHERE rider_id=? AND status='approved' AND ${between('created_at')}`,
         uid,
         r.from,
         r.to,
-      ))!.n,
-      collections: await all(
+      ),
+      all(
         'SELECT e.order_id,e.cash_collected amount,e.created_at,o.reference,o.name customer FROM rider_earnings e JOIN orders o ON o.id=e.order_id WHERE e.rider_id=? AND e.cash_collected>0 ORDER BY e.created_at DESC',
         uid,
       ),
-      deposits: await all(
+      all(
         'SELECT d.*,u.name reviewer_name FROM cod_deposits d LEFT JOIN users u ON u.id=d.reviewed_by WHERE d.rider_id=? ORDER BY d.created_at DESC',
         uid,
       ),
+    ]);
+    return {
+      ...position,
+      collected_range: ranges!.collected_range,
+      submitted_range: ranges!.submitted_range,
+      collections,
+      deposits,
     };
   }
   app.get('/api/rider/cash', requireRole('rider'), async (req: AuthRequest, res) =>
@@ -310,32 +380,32 @@ export function installFinance(app: Express) {
   );
   app.get('/api/admin/cash', requireRole('admin'), async (req, res) => {
     const r = range(req);
-    const riders = await Promise.all(
-      (
-        await all(
-          "SELECT id,name,login_id,phone,location_id,active FROM users WHERE role='rider' ORDER BY name",
-        )
-      ).map(async (u) => ({ ...u, ...(await cashPosition(u.id)) })),
-    );
+    // Three queries, run together, however many riders there are.
+    const [rows, totals, deposits] = await Promise.all([
+      all(
+        `SELECT u.id,u.name,u.login_id,u.phone,u.location_id,u.active,(SELECT COALESCE(SUM(cash_collected),0) FROM rider_earnings WHERE rider_id=u.id) collected,(SELECT COALESCE(SUM(amount),0) FROM cod_deposits WHERE rider_id=u.id AND status='approved') approved,(SELECT COALESCE(SUM(amount),0) FROM cod_deposits WHERE rider_id=u.id AND status='pending') pending FROM users u WHERE u.role='rider' ORDER BY u.name`,
+      ),
+      one(
+        `SELECT (SELECT COALESCE(SUM(cash_collected),0) FROM rider_earnings WHERE ${between('created_at')}) collected_range,(SELECT COALESCE(SUM(amount),0) FROM cod_deposits WHERE status='approved' AND ${between('created_at')}) approved_range`,
+        r.from,
+        r.to,
+        r.from,
+        r.to,
+      ),
+      all(
+        'SELECT d.*,u.name rider_name,u.login_id,a.name reviewer_name FROM cod_deposits d JOIN users u ON u.id=d.rider_id LEFT JOIN users a ON a.id=d.reviewed_by ORDER BY d.created_at DESC',
+      ),
+    ]);
+    const riders = rows.map((u): Row => ({ ...u, in_hand: u.collected - u.approved - u.pending }));
     res.json({
       riders,
       totals: {
         in_hand: riders.reduce((s, x) => s + x.in_hand, 0),
         pending: riders.reduce((s, x) => s + x.pending, 0),
-        collected_range: (await one(
-          `SELECT COALESCE(SUM(cash_collected),0) n FROM rider_earnings WHERE ${between('created_at')}`,
-          r.from,
-          r.to,
-        ))!.n,
-        approved_range: (await one(
-          `SELECT COALESCE(SUM(amount),0) n FROM cod_deposits WHERE status='approved' AND ${between('created_at')}`,
-          r.from,
-          r.to,
-        ))!.n,
+        collected_range: totals!.collected_range,
+        approved_range: totals!.approved_range,
       },
-      deposits: await all(
-        'SELECT d.*,u.name rider_name,u.login_id,a.name reviewer_name FROM cod_deposits d JOIN users u ON u.id=d.rider_id LEFT JOIN users a ON a.id=d.reviewed_by ORDER BY d.created_at DESC',
-      ),
+      deposits,
     });
   });
   app.get('/api/admin/cash/riders/:id', requireRole('admin'), async (req, res) => {
@@ -438,41 +508,46 @@ export function installFinance(app: Express) {
   );
   app.get('/api/admin/payouts', requireRole('admin'), async (req, res) => {
     const r = range(req);
-    const riders = await Promise.all(
-      (await all("SELECT id,name,login_id FROM users WHERE role='rider' ORDER BY name")).map(
-        async (u) => {
-          const b = await riderBalance(u.id);
-          const pending = await pendingPayouts(u.id);
-          return { ...u, ...b, pending, available: b.balance - pending };
-        },
+    const earned = (rider: string) =>
+      `(SELECT COALESCE(SUM(amount),0) FROM rider_earnings WHERE rider_id=${rider})`;
+    const paid = (rider: string) =>
+      `(SELECT COALESCE(SUM(amount),0) FROM rider_payouts WHERE rider_id=${rider})`;
+    // Four queries, run together, however many riders and requests there are.
+    const [rows, totals, requestRows, payouts] = await Promise.all([
+      all(
+        `SELECT u.id,u.name,u.login_id,${earned('u.id')} earned,${paid('u.id')} paid,(SELECT COALESCE(SUM(amount),0) FROM payout_requests WHERE rider_id=u.id AND status='pending') pending FROM users u WHERE u.role='rider' ORDER BY u.name`,
       ),
-    );
+      one(
+        `SELECT (SELECT COALESCE(SUM(amount),0) FROM rider_payouts WHERE ${between('created_at')}) paid_range,(SELECT COALESCE(SUM(amount),0) FROM rider_earnings WHERE ${between('created_at')}) earned_range`,
+        r.from,
+        r.to,
+        r.from,
+        r.to,
+      ),
+      all(
+        `SELECT q.*,u.name rider_name,u.login_id,a.name reviewer_name,${earned('q.rider_id')} rider_earned,${paid('q.rider_id')} rider_paid FROM payout_requests q JOIN users u ON u.id=q.rider_id LEFT JOIN users a ON a.id=q.reviewed_by ORDER BY q.created_at DESC`,
+      ),
+      all(
+        'SELECT p.*,u.name rider_name,u.login_id,a.name issued_by FROM rider_payouts p JOIN users u ON u.id=p.rider_id LEFT JOIN users a ON a.id=p.created_by ORDER BY p.created_at DESC',
+      ),
+    ]);
+    const riders = rows.map((u): Row => {
+      const balance = u.earned - u.paid;
+      return { ...u, balance, available: balance - u.pending };
+    });
     res.json({
       riders,
       totals: {
         balance: riders.reduce((s, x) => s + x.balance, 0),
         pending: riders.reduce((s, x) => s + x.pending, 0),
-        paid_range: (await one(
-          `SELECT COALESCE(SUM(amount),0) n FROM rider_payouts WHERE ${between('created_at')}`,
-          r.from,
-          r.to,
-        ))!.n,
-        earned_range: (await one(
-          `SELECT COALESCE(SUM(amount),0) n FROM rider_earnings WHERE ${between('created_at')}`,
-          r.from,
-          r.to,
-        ))!.n,
+        paid_range: totals!.paid_range,
+        earned_range: totals!.earned_range,
       },
-      requests: await Promise.all(
-        (
-          await all(
-            'SELECT q.*,u.name rider_name,u.login_id,a.name reviewer_name FROM payout_requests q JOIN users u ON u.id=q.rider_id LEFT JOIN users a ON a.id=q.reviewed_by ORDER BY q.created_at DESC',
-          )
-        ).map(async (q) => ({ ...q, balance: (await riderBalance(q.rider_id)).balance })),
-      ),
-      payouts: await all(
-        'SELECT p.*,u.name rider_name,u.login_id,a.name issued_by FROM rider_payouts p JOIN users u ON u.id=p.rider_id LEFT JOIN users a ON a.id=p.created_by ORDER BY p.created_at DESC',
-      ),
+      requests: requestRows.map(({ rider_earned, rider_paid, ...q }) => ({
+        ...q,
+        balance: rider_earned - rider_paid,
+      })),
+      payouts,
     });
   });
   app.post(

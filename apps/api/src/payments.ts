@@ -8,8 +8,7 @@ import { all, one, run, transaction, type Row } from './db.js';
 import { can, isOnline, records } from './platform.js';
 import { requireRole, type AuthRequest } from './security.js';
 import { notify, adminsWith } from './notifications.js';
-import { cardGateway } from './cards.js';
-import { cancelOrder, clearPaymentVerified, flow, markPaymentVerified } from './workflow.js';
+import { clearPaymentVerified, flow, markPaymentVerified } from './workflow.js';
 
 const bankKeys = ['bank_name', 'account_title', 'account_number', 'iban', 'branch_code'];
 const detailKeys: Record<string, string[]> = {
@@ -17,8 +16,6 @@ const detailKeys: Record<string, string[]> = {
   manual: bankKeys,
   wallet: ['provider', 'account_title', 'mobile_number'],
   raast: ['bank_name', 'account_title', 'raast_id'],
-  // Public card details only: gateway secrets are never copied onto orders.
-  card: ['gateway', 'card_networks'],
   cod: [],
 };
 /** Account details shown to the customer, copied onto the order when it is placed. */
@@ -35,8 +32,6 @@ export const paymentSubmission = z.object({
   payer_name: z.string().trim().max(100).default(''),
   payer_account: z.string().trim().max(40).default(''),
   proof_id: z.string().max(100).optional(),
-  /** Single-use token from the card gateway. Raw card numbers are never accepted. */
-  card_token: z.string().trim().max(500).optional(),
 });
 type Submission = z.infer<typeof paymentSubmission>;
 
@@ -50,17 +45,6 @@ export async function validateSubmission(
     throw Object.assign(new Error(m), { status: 400 });
   };
   if (!isOnline(method.type)) return;
-  if (method.type === 'card') {
-    if (!cardGateway(method))
-      throw Object.assign(
-        new Error(
-          'Card payments are not available right now. Please choose another payment method.',
-        ),
-        { status: 503 },
-      );
-    if (!s?.card_token) fail('Enter your card details.');
-    return;
-  }
   if (!s || s.transaction_id.length < 4)
     fail('Enter the transaction ID (TID) from your payment receipt.');
   if (!s!.payer_name) fail('Enter the name on the account you paid from.');
@@ -78,30 +62,6 @@ export async function validateSubmission(
   if (duplicate) fail('This transaction ID has already been used for another order.');
 }
 
-/** Cancels a card order whose charge failed, restoring stock and the coupon use. */
-async function cancelFailedCard(orderId: string, message: string) {
-  await transaction(async () => {
-    const o = await one('SELECT * FROM orders WHERE id=?', orderId);
-    if (o && o.status !== 'cancelled') await cancelOrder(o, 'system', message);
-    await run(
-      "UPDATE order_details SET payment_status='failed',payment_note=?,payment_updated_at=? WHERE order_id=?",
-      message,
-      new Date().toISOString(),
-      orderId,
-    );
-  });
-}
-async function markCardPaid(orderId: string, transactionId: string) {
-  await transaction(async () => {
-    await run(
-      "UPDATE order_details SET payment_status='paid',transaction_id=?,payment_note='',payment_updated_at=? WHERE order_id=?",
-      transactionId,
-      new Date().toISOString(),
-      orderId,
-    );
-    await markPaymentVerified(orderId);
-  });
-}
 async function notifyReadyToSend(o: Row, how: string) {
   await notify(await adminsWith('orders'), {
     type: 'order',
@@ -109,38 +69,6 @@ async function notifyReadyToSend(o: Row, how: string) {
     body: `${o.reference} has been ${how}. Assign a rider and send it to the outlet.`,
     link: '/admin?tab=orders',
   });
-}
-
-/** Charges a newly placed card order. Throws (after cancelling the order) when the card is declined. */
-export async function chargeCardOrder(order: Row, method: Row, token: string) {
-  const gateway = cardGateway(method)!;
-  let result;
-  try {
-    result = await gateway.charge({
-      method,
-      token,
-      amount: order.total,
-      currency: 'PKR',
-      reference: order.reference,
-      customer: { name: order.name, email: order.email, phone: order.phone },
-    });
-  } catch {
-    result = { status: 'failed' as const, message: 'The card payment could not be processed.' };
-  }
-  if (result.status === 'failed') {
-    await cancelFailedCard(order.id, result.message);
-    throw Object.assign(new Error(result.message || 'Your card was declined.'), { status: 402 });
-  }
-  if (result.status === 'paid') {
-    await markCardPaid(order.id, result.transaction_id);
-    return {};
-  }
-  await run(
-    'UPDATE order_details SET transaction_id=? WHERE order_id=?',
-    result.transaction_id,
-    order.id,
-  );
-  return { redirect_url: result.redirect_url };
 }
 
 export function installPayments(app: Express, { upload }: { upload: RequestHandler }) {
@@ -202,7 +130,6 @@ export function installPayments(app: Express, { upload }: { upload: RequestHandl
       if (!o || !d) return res.status(404).json({ error: 'Order not found.' });
       if (
         !isOnline(d.payment_type) ||
-        d.payment_type === 'card' ||
         d.payment_status === 'paid' ||
         ['cancelled', 'delivered'].includes(o.status)
       )
@@ -245,8 +172,6 @@ export function installPayments(app: Express, { upload }: { upload: RequestHandl
       return res.status(400).json({ error: 'A completed order cannot be modified.' });
     if (!isOnline(d.payment_type))
       return res.status(400).json({ error: 'Cash orders are settled on delivery.' });
-    if (d.payment_type === 'card')
-      return res.status(400).json({ error: 'Card payments are confirmed by the card gateway.' });
     if (p.decision === 'reject' && !p.note)
       return res.status(400).json({ error: 'Tell the customer why the payment was rejected.' });
     if (p.decision === 'reject' && (await flow(o.id)).sent_at)
@@ -296,33 +221,6 @@ export function installPayments(app: Express, { upload }: { upload: RequestHandl
         proof_url: proof_id ? '/api/payment-proofs/' + proof_id : null,
       })),
     ),
-  );
-  // Server-to-server notifications from the card gateway (3-D Secure results, late declines).
-  app.post(
-    '/api/payments/card/webhook',
-    atomicRoute(async (req: AuthRequest & { rawBody?: Buffer }, res) => {
-      const method = (await records('payments')).find((m) => m.type === 'card');
-      const gateway = cardGateway(method);
-      if (!method || !gateway?.webhook)
-        return res.status(404).json({ error: 'Endpoint not found.' });
-      const event = await gateway.webhook(req, method).catch(() => null);
-      if (!event) return res.status(400).json({ error: 'Invalid webhook.' });
-      const o = await one('SELECT * FROM orders WHERE reference=?', event.reference);
-      const d = o && (await one('SELECT * FROM order_details WHERE order_id=?', o.id));
-      if (!o || d?.payment_type !== 'card' || d.payment_status !== 'pending')
-        return res.json({ ok: true });
-      if (event.status === 'paid') {
-        await markCardPaid(o.id, event.transaction_id);
-        await notifyReadyToSend(o, 'paid by card');
-      } else await cancelFailedCard(o.id, event.message || 'The card payment was not completed.');
-      await notify([o.user_id], {
-        type: 'payment',
-        title: event.status === 'paid' ? 'Card payment received' : 'Card payment failed',
-        body: `${o.reference}${event.status === 'paid' ? '' : ' was cancelled because the card payment failed.'}`,
-        link: '/orders/' + o.id,
-      });
-      res.json({ ok: true });
-    }),
   );
   /** Records that a paid online order that was later cancelled has been refunded. */
   app.patch(

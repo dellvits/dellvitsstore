@@ -2,24 +2,47 @@
 import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import {
+  AlertTriangle,
+  BadgeCheck,
   Ban,
   BellRing,
   Bike,
+  CalendarClock,
   CheckCircle2,
+  ChefHat,
   CircleDashed,
+  CircleDot,
   ClipboardList,
   Clock,
   CreditCard,
+  ExternalLink,
   HandCoins,
+  Hash,
+  History,
+  House,
+  LocateFixed,
   Lock,
+  Mail,
+  MapPin,
+  MapPinned,
+  MessageSquareText,
   Navigation,
   Package,
   PackageCheck,
+  Phone,
+  Receipt,
+  RefreshCcw,
+  Route,
   Send,
   ShieldCheck,
+  ShoppingBag,
   Store,
+  Timer,
   Truck,
+  Undo2,
+  UserRound,
   UserRoundCheck,
+  UserX,
   Wallet,
   XCircle,
 } from 'lucide-react';
@@ -27,8 +50,20 @@ import { useApp } from './Provider';
 import { api, money, date, label } from '@/lib/api';
 import { useData } from '@/lib/useData';
 import { inRange, useRange } from '@/lib/range';
-import type { CashStatement, Order } from '@/lib/types';
-import { Badge, DataTable, FilterBar, Modal, RowAction, Stat, ErrorBox } from './UI';
+import { useSettling } from '@/lib/useSettling';
+import type { CashStatement, Order, PaymentMethod } from '@/lib/types';
+import {
+  Badge,
+  CopyButton,
+  DataTable,
+  ErrorBox,
+  FilterBar,
+  MetaItem as Meta,
+  Modal,
+  PanelSection as Section,
+  RowAction,
+  Stat,
+} from './UI';
 import {
   Countdown,
   PaymentStatusBadge,
@@ -37,7 +72,7 @@ import {
   paymentTypeLabels,
   stageLabel,
 } from './Orders';
-import { PaymentName } from './Checkout';
+import { PaymentLogo, PaymentName } from './Checkout';
 const DeliveryMap = dynamic(() => import('./DeliveryMap'), {
   ssr: false,
   loading: () => <div className="map-placeholder">Loading map…</div>,
@@ -326,12 +361,26 @@ function RowButtons({ o, role, a, open }: { o: Order; role: Role; a: Actions; op
 }
 
 /* ---------- Cards ---------- */
-function DeskStats({ role, rows }: { role: Role; rows: Order[] }) {
-  const { range, setRange, query, label: rangeText } = useRange('7d');
-  const { data: cash } = useData<CashStatement>(role === 'rider' ? '/rider/cash' + query : null, 30000);
+function DeskStats({ role, rows, loading }: { role: Role; rows: Order[]; loading: boolean }) {
+  const { range, setRange, query, key, label: rangeText } = useRange('7d');
+  const { data: cash, loading: cashLoading } = useData<CashStatement>(
+    role === 'rider' ? '/rider/cash' + query : null,
+    30000,
+    'rider-cash:' + key,
+  );
+  // The figures are counted in the browser, so a new time frame is instant; show the placeholders briefly.
+  const settling = useSettling(key);
+  const busy = loading || settling;
   const inWindow = rows.filter((o) => inRange(o.created_at, range));
   const count = (fn: (o: Order) => boolean) => inWindow.filter(fn).length;
+  const sum = (list: Order[], fn: (o: Order) => number) => list.reduce((s, o) => s + fn(o), 0);
+  // Queues that need action are live across all orders, matching the dashboard's "Needs attention".
+  const live = (fn: (o: Order) => boolean) => rows.filter(fn).length;
   const active = rows.filter((o) => !closed(o));
+  const delivered = inWindow.filter((o) => o.status === 'delivered');
+  const cancelled = count((o) => o.status === 'cancelled');
+  const cancelShare = inWindow.length ? `${Math.round((cancelled / inWindow.length) * 100)}% of orders` : 'No orders in this period';
+  const cashBusy = role === 'rider' && (busy || cashLoading || !cash);
   return (
     <div className="stack tight">
       <FilterBar
@@ -340,77 +389,121 @@ function DeskStats({ role, rows }: { role: Role; rows: Order[] }) {
         range={range}
         onRange={setRange}
       />
-      <div className="stats compact">
+      <div className="stats">
         {role === 'admin' && (
           <>
-            <Stat icon={<ClipboardList size={18} />} label="Total orders" value={inWindow.length} tone="blue" />
             <Stat
-              icon={<Send size={18} />}
+              icon={<ClipboardList size={20} />}
+              label="Total orders"
+              value={inWindow.length}
+              hint={`${money(sum(inWindow, (o) => o.total))} order value`}
+              tone="blue"
+              loading={busy}
+            />
+            <Stat
+              icon={<Send size={20} />}
               label="Needs dispatch"
-              value={count((o) => needsDispatch(o) || needsRider(o))}
-              hint={`${count((o) => o.status === 'placed' && !o.flow?.payment_verified_at)} awaiting payment`}
+              value={live((o) => needsDispatch(o) || needsRider(o))}
+              hint={`${live((o) => o.status === 'placed' && !o.flow?.payment_verified_at)} awaiting payment`}
               tone="orange"
+              loading={busy}
             />
-            <Stat icon={<Clock size={18} />} label="In progress" value={count((o) => !closed(o))} tone="purple" />
             <Stat
-              icon={<PackageCheck size={18} />}
-              label="Delivered"
-              value={count((o) => o.status === 'delivered')}
-              hint={money(inWindow.filter((o) => o.status === 'delivered').reduce((s, o) => s + o.total, 0)) + ' sales'}
-              tone="green"
+              icon={<Clock size={20} />}
+              label="In progress"
+              value={active.length}
+              hint={`${live((o) => o.status === 'picked_up')} on the road · all open orders`}
+              tone="purple"
+              loading={busy}
             />
-            <Stat icon={<XCircle size={18} />} label="Cancelled" value={count((o) => o.status === 'cancelled')} />
+            <Stat
+              icon={<PackageCheck size={20} />}
+              label="Delivered"
+              value={delivered.length}
+              hint={money(sum(delivered, (o) => o.total)) + ' sales'}
+              tone="green"
+              loading={busy}
+            />
+            <Stat icon={<XCircle size={20} />} label="Cancelled" value={cancelled} hint={cancelShare} loading={busy} />
           </>
         )}
         {role === 'outlet' && (
           <>
-            <Stat icon={<ClipboardList size={18} />} label="Total orders" value={inWindow.length} tone="blue" />
             <Stat
-              icon={<BellRing size={18} />}
+              icon={<ClipboardList size={20} />}
+              label="Total orders"
+              value={inWindow.length}
+              hint={`${money(sum(inWindow, (o) => o.subtotal))} items value`}
+              tone="blue"
+              loading={busy}
+            />
+            <Stat
+              loading={busy}
+              icon={<BellRing size={20} />}
               label="New requests"
-              value={rows.filter((o) => o.status === 'placed' && o.flow?.outlet_status === 'pending').length}
+              value={live((o) => o.status === 'placed' && o.flow?.outlet_status === 'pending')}
               hint="Waiting for your answer"
               tone="orange"
             />
             <Stat
-              icon={<Package size={18} />}
+              loading={busy}
+              icon={<Package size={20} />}
               label="In the kitchen"
-              value={rows.filter((o) => ['confirmed', 'preparing'].includes(o.status)).length}
-              hint={`${rows.filter((o) => o.status === 'ready').length} ready for pickup`}
+              value={live((o) => ['confirmed', 'preparing'].includes(o.status))}
+              hint={`${live((o) => o.status === 'ready')} ready for pickup`}
               tone="purple"
             />
-            <Stat icon={<PackageCheck size={18} />} label="Delivered" value={count((o) => o.status === 'delivered')} tone="green" />
-            <Stat icon={<XCircle size={18} />} label="Cancelled" value={count((o) => o.status === 'cancelled')} />
+            <Stat
+              icon={<PackageCheck size={20} />}
+              label="Delivered"
+              value={delivered.length}
+              hint={money(sum(delivered, (o) => o.subtotal)) + ' item sales'}
+              tone="green"
+              loading={busy}
+            />
+            <Stat icon={<XCircle size={20} />} label="Cancelled" value={cancelled} hint={cancelShare} loading={busy} />
           </>
         )}
         {role === 'rider' && (
           <>
             <Stat
-              icon={<Truck size={18} />}
+              loading={busy}
+              icon={<Truck size={20} />}
               label="Active orders"
               value={active.length}
-              hint={`${rows.filter((o) => o.flow?.rider_status === 'pending' && !closed(o)).length} waiting for you`}
+              hint={`${live((o) => o.flow?.rider_status === 'pending' && !closed(o))} waiting for you`}
               tone="orange"
             />
             <Stat
-              icon={<PackageCheck size={18} />}
+              icon={<PackageCheck size={20} />}
               label="Delivered"
               value={rows.filter((o) => o.status === 'delivered' && inRange(o.delivered_at, range)).length}
+              hint="Completed in this period"
               tone="green"
+              loading={busy}
             />
-            <Stat icon={<HandCoins size={18} />} label="COD collected" value={money(cash?.collected_range || 0)} tone="blue" />
             <Stat
-              icon={<Wallet size={18} />}
+              icon={<HandCoins size={20} />}
+              label="COD collected"
+              value={money(cash?.collected_range || 0)}
+              hint="From customers in this period"
+              tone="blue"
+              loading={cashBusy}
+            />
+            <Stat
+              icon={<Wallet size={20} />}
               label="Cash in hand"
               value={money(cash?.in_hand || 0)}
               hint={cash?.pending ? money(cash.pending) + ' awaiting verification' : 'Current balance'}
               tone="purple"
+              loading={cashBusy}
             />
             <Stat
-              icon={<ShieldCheck size={18} />}
+              icon={<ShieldCheck size={20} />}
               label="Submitted to Dellvit"
               value={money(cash?.submitted_range || 0)}
               hint="Verified submissions"
+              loading={cashBusy}
             />
           </>
         )}
@@ -429,7 +522,7 @@ export function OrderDesk({ role }: { role: Role }) {
   const rows = data || [];
   return (
     <div className="stack">
-      <DeskStats role={role} rows={rows} />
+      <DeskStats role={role} rows={rows} loading={loading && !data} />
       <DataTable
         rows={data}
         loading={loading}
@@ -566,12 +659,17 @@ export function OrderDesk({ role }: { role: Role }) {
             key: 'due',
             header: 'Due in',
             sort: (o) => o.deliver_by,
-            render: (o) => <Countdown deadline={o.deliver_by} done={closed(o)} pending={o.status === 'placed'} />,
+            render: (o) =>
+              closed(o) ? (
+                <span className="muted">{o.status === 'cancelled' ? 'Cancelled' : 'Delivered'}</span>
+              ) : (
+                <Countdown deadline={o.deliver_by} pending={o.status === 'placed'} />
+              ),
           },
         ]}
         actions={(o) => <RowButtons o={o} role={role} a={a} open={() => setSelected(o.id)} />}
       />
-      <Modal open={!!current} onClose={() => setSelected(null)} title={current ? current.reference : 'Order'} size="lg">
+      <Modal open={!!current} onClose={() => setSelected(null)} title={current ? 'Order ' + current.reference : 'Order'} size="xl">
         {current && <OrderPanel o={current} role={role} a={a} refresh={refresh} />}
       </Modal>
       <PromptModal prompt={a.prompt} onClose={a.closePrompt} />
@@ -580,19 +678,90 @@ export function OrderDesk({ role }: { role: Role }) {
 }
 
 /* ---------- Order panel ---------- */
-function Check({ state, title, detail }: { state: 'done' | 'wait' | 'fail' | 'idle'; title: string; detail: ReactNode }) {
+const mapsUrl = (lat: number, lng: number) => `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+/** "just now", "5 min ago", "2 h ago", or the date for anything older than a day. */
+function ago(iso: string) {
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  if (mins < 1440) return `${Math.round(mins / 60)} h ago`;
+  return date(iso);
+}
+const orderSteps: { key: string; label: string; icon: typeof ClipboardList }[] = [
+  { key: 'placed', label: 'Placed', icon: ClipboardList },
+  { key: 'confirmed', label: 'Confirmed', icon: BadgeCheck },
+  { key: 'preparing', label: 'Preparing', icon: ChefHat },
+  { key: 'ready', label: 'Ready', icon: PackageCheck },
+  { key: 'picked_up', label: 'On the way', icon: Bike },
+  { key: 'delivered', label: 'Delivered', icon: House },
+];
+/** Where the order is in its life: each stage with the time it was reached, or where it was cancelled. */
+function StatusStepper({ o }: { o: Order }) {
+  const at = (key: string) =>
+    key === 'placed'
+      ? o.created_at
+      : key === 'delivered' && o.delivered_at
+        ? o.delivered_at
+        : o.events.find((e) => e.status === key)?.created_at;
+  const cancelled = o.status === 'cancelled';
+  const reached = cancelled
+    ? Math.max(0, ...orderSteps.map((s, i) => (at(s.key) ? i : 0)))
+    : Math.max(0, orderSteps.findIndex((s) => s.key === o.status));
+  const cancelledAt = o.events.find((e) => e.status === 'cancelled')?.created_at;
+  return (
+    <ol className="op-stepper" aria-label="Order progress">
+      {orderSteps.map((s, i) => {
+        const failed = cancelled && i === reached + 1;
+        const state = failed
+          ? 'fail'
+          : i < reached || (i === reached && (o.status === 'delivered' || cancelled))
+            ? 'done'
+            : i === reached
+              ? 'current'
+              : 'todo';
+        const Icon = failed ? XCircle : s.icon;
+        const when = failed ? cancelledAt : state === 'todo' ? undefined : at(s.key);
+        return (
+          <li key={s.key} className={'op-step ' + state} aria-current={state === 'current' ? 'step' : undefined}>
+            <span className="op-step-icon">
+              <Icon size={16} />
+            </span>
+            <strong>{failed ? 'Cancelled' : s.label}</strong>
+            <small>{when ? date(when) : state === 'current' ? 'In progress' : ' '}</small>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function FlowCheck({
+  state,
+  icon,
+  title,
+  detail,
+}: {
+  state: 'done' | 'wait' | 'fail' | 'idle';
+  icon: ReactNode;
+  title: string;
+  detail: ReactNode;
+}) {
+  const mark =
+    state === 'done' ? <CheckCircle2 size={14} /> : state === 'fail' ? <XCircle size={14} /> : <CircleDashed size={14} />;
   return (
     <div className={'flow-step ' + state}>
-      <span className="flow-icon">
-        {state === 'done' ? <CheckCircle2 size={17} /> : state === 'fail' ? <XCircle size={17} /> : <CircleDashed size={17} />}
-      </span>
+      <span className="flow-icon">{icon}</span>
       <span>
-        <strong>{title}</strong>
+        <strong>
+          {title}
+          <i className="flow-mark">{mark}</i>
+        </strong>
         <small>{detail}</small>
       </span>
     </div>
   );
 }
+/** The four confirmations an order needs before it is under way. */
 export function FlowTracker({ o }: { o: Order }) {
   const f = o.flow;
   if (!f) return null;
@@ -607,38 +776,89 @@ export function FlowTracker({ o }: { o: Order }) {
   const tone = (s: string) => (s === 'accepted' ? 'done' : s === 'rejected' ? 'fail' : s === 'pending' ? 'wait' : 'idle');
   return (
     <div className="flow-tracker">
-      <Check
+      <FlowCheck
         state={f.payment_verified_at ? 'done' : o.payment_status === 'rejected' ? 'fail' : 'wait'}
+        icon={<CreditCard size={16} />}
         title="Payment"
-        detail={f.payment_verified_at ? `Verified ${date(f.payment_verified_at)}` : o.payment_status === 'rejected' ? 'Rejected' : 'Awaiting verification'}
+        detail={
+          f.payment_verified_at
+            ? `Verified ${date(f.payment_verified_at)}`
+            : o.payment_status === 'rejected'
+              ? 'Rejected'
+              : 'Awaiting verification'
+        }
       />
-      <Check state={tone(f.outlet_status)} title="Outlet" detail={response(f.outlet_status, f.outlet_responded_at, f.outlet_note, 'the outlet')} />
-      <Check
+      <FlowCheck
+        state={tone(f.outlet_status)}
+        icon={<Store size={16} />}
+        title="Outlet"
+        detail={response(f.outlet_status, f.outlet_responded_at, f.outlet_note, 'the outlet')}
+      />
+      <FlowCheck
         state={tone(f.rider_status)}
+        icon={<Bike size={16} />}
         title={'Rider' + (o.rider ? ' · ' + o.rider.name : '')}
         detail={response(f.rider_status, f.rider_responded_at, f.rider_note, 'the rider')}
       />
-      <Check
+      <FlowCheck
         state={o.status === 'cancelled' ? 'fail' : o.status === 'placed' ? 'idle' : 'done'}
+        icon={<BadgeCheck size={16} />}
         title="Confirmed"
         detail={o.status === 'cancelled' ? 'Cancelled' : o.status === 'placed' ? 'After both accept' : label(o.status)}
       />
     </div>
   );
 }
+
+const eventIcons: Record<string, typeof ClipboardList> = {
+  placed: ClipboardList,
+  payment_verified: CreditCard,
+  sent: Send,
+  resent: RefreshCcw,
+  outlet_accepted: Store,
+  rider_requested: Bike,
+  rider_accepted: UserRoundCheck,
+  rider_rejected: UserX,
+  confirmed: BadgeCheck,
+  preparing: ChefHat,
+  ready: PackageCheck,
+  picked_up: Bike,
+  delivered: House,
+  cancelled: XCircle,
+  reminder: BellRing,
+  cancel_requested: AlertTriangle,
+  cancel_request_dismissed: Undo2,
+};
+const eventTone = (s: string) =>
+  ['cancelled', 'rider_rejected', 'cancel_requested'].includes(s)
+    ? 'red'
+    : ['delivered', 'confirmed', 'payment_verified', 'outlet_accepted', 'rider_accepted'].includes(s)
+      ? 'green'
+      : ['reminder', 'cancel_request_dismissed'].includes(s)
+        ? 'orange'
+        : 'blue';
+/** Everything that happened to the order, newest first. */
 export function Timeline({ o }: { o: Order }) {
   return (
-    <ol className="timeline">
-      {[...o.events].reverse().map((e, i) => (
-        <li key={i} className={'tl-' + e.status}>
-          <strong>{eventLabels[e.status] || label(e.status)}</strong>
-          {e.note && <span>{e.note}</span>}
-          <small>
-            {date(e.created_at)}
-            {e.actor && e.actor !== 'system' ? ' · ' + label(e.actor) : ''}
-          </small>
-        </li>
-      ))}
+    <ol className="op-timeline">
+      {[...o.events].reverse().map((e, i) => {
+        const Icon = eventIcons[e.status] || CircleDot;
+        return (
+          <li key={i} className={'tone-' + eventTone(e.status)}>
+            <span className="op-tl-icon">
+              <Icon size={14} />
+            </span>
+            <div>
+              <strong>{eventLabels[e.status] || label(e.status)}</strong>
+              {e.note && <p>{e.note}</p>}
+              <small>
+                {date(e.created_at)}
+                {e.actor && e.actor !== 'system' ? ' · ' + label(e.actor) : ''}
+              </small>
+            </div>
+          </li>
+        );
+      })}
     </ol>
   );
 }
@@ -687,13 +907,21 @@ function Dispatch({ o, refresh }: { o: Order; refresh: () => void }) {
     }
   }
   const unchanged = rider === o.rider_id && sent && o.flow.rider_status !== 'rejected';
+  const free = pool?.filter((r) => !r.problem).length ?? 0;
   return (
     <section className="dispatch-box">
       <div className="card-head">
         <h3>
           <Send size={17} /> {o.status === 'placed' ? (sent ? 'Confirmation' : 'Assign rider & send') : 'Rider'}
         </h3>
-        {o.flow.rider_rejections > 0 && <Badge tone="warn">{o.flow.rider_rejections} rider decline(s)</Badge>}
+        <span className="panel-badges">
+          {pool && (
+            <Badge tone={free ? 'success' : 'danger'}>
+              {free} rider{free === 1 ? '' : 's'} free
+            </Badge>
+          )}
+          {o.flow.rider_rejections > 0 && <Badge tone="warn">{o.flow.rider_rejections} rider decline(s)</Badge>}
+        </span>
       </div>
       {!verified && (
         <div className="alert warn">
@@ -734,7 +962,7 @@ function Dispatch({ o, refresh }: { o: Order; refresh: () => void }) {
 }
 
 function OrderPanel({ o, role, a, refresh }: { o: Order; role: Role; a: Actions; refresh: () => void }) {
-  const { notice } = useApp();
+  const { notice, locations } = useApp();
   const [otp, setOtp] = useState('');
   const [cash, setCash] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -758,18 +986,63 @@ function OrderPanel({ o, role, a, refresh }: { o: Order; role: Role; a: Actions;
     }
   }
   const working = !!a.busy?.startsWith(o.id);
+  const units = o.items.reduce((s, i) => s + i.quantity, 0);
+  const area = locations.find((l) => l.id === o.location_id)?.name;
+  const cancelledAt = o.events.find((e) => e.status === 'cancelled')?.created_at;
+  const late = !closed(o) && o.status !== 'placed' && new Date(o.deliver_by).getTime() < Date.now();
+  const riderText = !o.rider
+    ? ''
+    : f?.rider_status === 'accepted'
+      ? 'Accepted the delivery'
+      : f?.rider_status === 'pending'
+        ? 'Waiting for the rider to accept'
+        : f?.rider_status === 'rejected'
+          ? 'Declined — choose another rider'
+          : 'Not sent yet';
   return (
     <div className="order-panel">
-      <div className="panel-badges">
-        <Badge value={o.status} />
-        <PaymentStatusBadge order={o} />
-        <span className="pay-chip">
-          <PaymentName order={o} />
-        </span>
-        <span className="muted small">
-          Due <Countdown deadline={o.deliver_by} done={closed(o)} pending={o.status === 'placed'} />
-        </span>
+      {/* Summary */}
+      <div className="op-hero">
+        <div className="op-hero-top">
+          <div className="panel-badges">
+            <Badge value={o.status} />
+            <PaymentStatusBadge order={o} />
+            <span className="pay-chip">
+              <PaymentName order={o} />
+            </span>
+          </div>
+          <span className="op-ref">
+            <Hash size={14} />
+            {o.reference}
+            <CopyButton value={o.reference} label="order number" />
+          </span>
+        </div>
+        <div className="op-meta">
+          <Meta icon={<CalendarClock size={17} />} label="Placed">
+            {date(o.created_at)}
+          </Meta>
+          {o.status === 'delivered' ? (
+            <Meta icon={<House size={17} />} label="Delivered" tone="green">
+              {o.delivered_at ? date(o.delivered_at) : 'Delivered'}
+            </Meta>
+          ) : o.status === 'cancelled' ? (
+            <Meta icon={<XCircle size={17} />} label="Cancelled" tone="red">
+              {cancelledAt ? date(cancelledAt) : 'Cancelled'}
+            </Meta>
+          ) : (
+            <Meta icon={<Timer size={17} />} label={late ? 'Running late' : 'Delivery due in'} tone={late ? 'red' : undefined}>
+              <Countdown deadline={o.deliver_by} pending={o.status === 'placed'} />
+            </Meta>
+          )}
+          <Meta icon={<ShoppingBag size={17} />} label="Items">
+            {units} item{units === 1 ? '' : 's'} · {o.items.length} product{o.items.length === 1 ? '' : 's'}
+          </Meta>
+          <Meta icon={<Wallet size={17} />} label={role === 'outlet' ? 'Items value' : 'Order total'} tone="brand">
+            {money(role === 'outlet' ? o.subtotal : o.total)}
+          </Meta>
+        </div>
       </div>
+
       {o.locked && (
         <div className="alert info">
           <Lock size={16} /> This order is completed and can no longer be changed.
@@ -783,7 +1056,6 @@ function OrderPanel({ o, role, a, refresh }: { o: Order; role: Role; a: Actions;
           </span>
         </div>
       )}
-      {role !== 'rider' && <FlowTracker o={o} />}
       {role === 'admin' && f?.cancel_request && o.status !== 'cancelled' && (
         <div className="alert warn request-alert">
           <Store size={16} />
@@ -798,9 +1070,6 @@ function OrderPanel({ o, role, a, refresh }: { o: Order; role: Role; a: Actions;
           </div>
         </div>
       )}
-      {role === 'admin' && !closed(o) && o.status !== 'picked_up' && (
-        <Dispatch o={o} refresh={refresh} />
-      )}
       {role === 'outlet' && f?.cancel_request && o.status !== 'cancelled' && (
         <div className="alert info">
           <Clock size={16} /> Cancellation request sent: “{f.cancel_request}”. Dellvit will review it.
@@ -811,77 +1080,237 @@ function OrderPanel({ o, role, a, refresh }: { o: Order; role: Role; a: Actions;
           <Bike size={16} /> New delivery request. Accept to take it, or decline so another rider can be assigned.
         </div>
       )}
-      <div className="grid-2">
-        <div className="route">
-          <div className="route-stop pickup">
-            <small>Pickup</small>
-            <strong>{o.outlet.name}</strong>
-            <span>{o.outlet.address}</span>
-            <a href={'tel:' + o.outlet.phone}>{o.outlet.phone}</a>
-          </div>
-          <div className="route-stop drop">
-            <small>Deliver to</small>
-            <strong>{o.name}</strong>
-            <span>{o.address}</span>
-            <a href={'tel:' + o.phone}>{o.phone}</a>
-            {o.notes && <em>“{o.notes}”</em>}
-          </div>
-        </div>
-        <div className="mini-summary">
-          {o.items.map((i) => (
-            <div className="line" key={i.id}>
-              <span>
-                {i.quantity} × {i.name}
-              </span>
-              <strong>{money(i.unit_price * i.quantity)}</strong>
-            </div>
-          ))}
-          {role !== 'outlet' && (
-            <>
-              <div className="line">
-                <span>Delivery</span>
-                <strong>{money(o.delivery_fee)}</strong>
-              </div>
-              {!!o.discount && (
-                <div className="line success">
-                  <span>Discount {o.coupon_code}</span>
-                  <strong>−{money(o.discount)}</strong>
+
+      <Section icon={<Route size={16} />} title="Progress">
+        <StatusStepper o={o} />
+        {role !== 'rider' && <FlowTracker o={o} />}
+      </Section>
+
+      {role === 'admin' && !closed(o) && o.status !== 'picked_up' && <Dispatch o={o} refresh={refresh} />}
+
+      <div className="op-grid">
+        <div className="op-col">
+          <Section icon={<MapPin size={16} />} title="Pickup & delivery">
+            <div className="op-route">
+              <div className="op-stop pickup">
+                <span className="op-stop-icon">
+                  <Store size={16} />
+                </span>
+                <div className="op-stop-body">
+                  <small>Pickup</small>
+                  <strong>{o.outlet.name}</strong>
+                  <span>{o.outlet.address}</span>
+                  <div className="op-stop-actions">
+                    <a className="op-chip" href={'tel:' + o.outlet.phone}>
+                      <Phone size={13} /> {o.outlet.phone}
+                    </a>
+                    <a className="op-chip" href={mapsUrl(o.outlet.lat, o.outlet.lng)} target="_blank" rel="noreferrer">
+                      <MapPinned size={13} /> Map
+                    </a>
+                  </div>
                 </div>
-              )}
-            </>
-          )}
-          <div className="line total">
-            <span>{role === 'outlet' ? 'Items value' : 'Total'}</span>
-            <strong>{money(role === 'outlet' ? o.subtotal : o.total)}</strong>
-          </div>
-          {role === 'admin' && online && (
-            <div className="kv small">
-              <span>TID</span>
-              <strong>{o.transaction_id || '—'}</strong>
-              <span>Sender</span>
-              <strong>{o.payer_name || '—'}</strong>
-              {o.proof_url && (
-                <>
-                  <span>Receipt</span>
-                  <a className="link" href={o.proof_url} target="_blank" rel="noreferrer">
-                    View screenshot
+              </div>
+              <div className="op-stop drop">
+                <span className="op-stop-icon">
+                  <UserRound size={16} />
+                </span>
+                <div className="op-stop-body">
+                  <small>Deliver to{area ? ' · ' + area : ''}</small>
+                  <strong>{o.name}</strong>
+                  <span>{o.address}</span>
+                  <div className="op-stop-actions">
+                    <a className="op-chip" href={'tel:' + o.phone}>
+                      <Phone size={13} /> {o.phone}
+                    </a>
+                    <a className="op-chip" href={mapsUrl(o.lat, o.lng)} target="_blank" rel="noreferrer">
+                      <MapPinned size={13} /> Map
+                    </a>
+                    {role === 'admin' && o.email && (
+                      <a className="op-chip" href={'mailto:' + o.email}>
+                        <Mail size={13} /> Email
+                      </a>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+            {o.notes && (
+              <div className="op-note">
+                <MessageSquareText size={16} />
+                <span>
+                  <small>Customer note</small>
+                  {o.notes}
+                </span>
+              </div>
+            )}
+          </Section>
+
+          {role !== 'rider' && o.rider && (
+            <Section
+              icon={<Bike size={16} />}
+              title="Rider"
+              aside={f?.rider_status && f.rider_status !== 'unsent' ? <Badge value={f.rider_status} /> : undefined}
+            >
+              <div className="op-person">
+                <span className="op-avatar">{o.rider.name.slice(0, 1).toUpperCase()}</span>
+                <span className="op-person-text">
+                  <strong>{o.rider.name}</strong>
+                  <small>{riderText}</small>
+                </span>
+                {o.rider.phone && (
+                  <a className="op-chip" href={'tel:' + o.rider.phone}>
+                    <Phone size={13} /> Call
                   </a>
+                )}
+              </div>
+              {o.rider_location && !closed(o) && (
+                <a
+                  className="op-live"
+                  href={mapsUrl(o.rider_location.lat, o.rider_location.lng)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <LocateFixed size={15} />
+                  <span>
+                    Last location {ago(o.rider_location.updated_at)}
+                    {o.rider_location.accuracy ? ` · ±${Math.round(o.rider_location.accuracy)} m` : ''}
+                  </span>
+                  <ExternalLink size={13} />
+                </a>
+              )}
+            </Section>
+          )}
+
+          {role === 'rider' && !closed(o) && (
+            <Section icon={<Navigation size={16} />} title="Route">
+              <DeliveryMap lat={o.lat} lng={o.lng} pickup={o.outlet} />
+              <a href={navigateUrl(o)} target="_blank" rel="noreferrer" className="button ghost">
+                <Navigation size={16} /> Open in Google Maps
+              </a>
+            </Section>
+          )}
+        </div>
+
+        <div className="op-col">
+          <Section
+            icon={<ShoppingBag size={16} />}
+            title="Items"
+            aside={
+              <small className="muted">
+                {units} item{units === 1 ? '' : 's'}
+              </small>
+            }
+          >
+            <ul className="op-items">
+              {o.items.map((i) => (
+                <li key={i.id}>
+                  {i.image ? <img src={i.image} alt="" loading="lazy" /> : <span className="op-item-ph" />}
+                  <span className="op-item-text">
+                    <strong>{i.name}</strong>
+                    <small>
+                      {i.quantity} × {money(i.unit_price)}
+                    </small>
+                  </span>
+                  <strong>{money(i.unit_price * i.quantity)}</strong>
+                </li>
+              ))}
+            </ul>
+            <div className="op-totals">
+              {role !== 'outlet' && (
+                <>
+                  <div className="line">
+                    <span>Items</span>
+                    <strong>{money(o.subtotal)}</strong>
+                  </div>
+                  <div className="line">
+                    <span>Delivery</span>
+                    <strong>{money(o.delivery_fee)}</strong>
+                  </div>
+                  {!!o.discount && (
+                    <div className="line success">
+                      <span>
+                        Discount {o.coupon_code && <span className="op-code">{o.coupon_code}</span>}
+                      </span>
+                      <strong>−{money(o.discount)}</strong>
+                    </div>
+                  )}
                 </>
               )}
+              <div className="line total">
+                <span>{role === 'outlet' ? 'Items value' : 'Total'}</span>
+                <strong>{money(role === 'outlet' ? o.subtotal : o.total)}</strong>
+              </div>
             </div>
+          </Section>
+
+          {role === 'admin' && (
+            <Section icon={<CreditCard size={16} />} title="Payment" aside={<PaymentStatusBadge order={o} />}>
+              <div className="op-pay">
+                <PaymentLogo
+                  method={{ ...o.payment_details, type: (o.payment_type || 'cod') as PaymentMethod['type'] }}
+                  className="op-pay-logo"
+                  size={18}
+                />
+                <span className="op-person-text">
+                  <strong>{o.payment_name || 'Cash on delivery'}</strong>
+                  <small>{paymentTypeLabels[o.payment_type === 'manual' ? 'bank' : o.payment_type || 'cod'] || ''}</small>
+                </span>
+              </div>
+              <dl className="op-kv">
+                {online ? (
+                  <>
+                    <dt>Transaction ID</dt>
+                    <dd>
+                      {o.transaction_id ? (
+                        <>
+                          <span className="mono">{o.transaction_id}</span>
+                          <CopyButton value={o.transaction_id} label="transaction ID" />
+                        </>
+                      ) : (
+                        '—'
+                      )}
+                    </dd>
+                    <dt>Sender</dt>
+                    <dd>{o.payer_name || '—'}</dd>
+                    {o.payer_account && (
+                      <>
+                        <dt>Account</dt>
+                        <dd>{o.payer_account}</dd>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <dt>Collect</dt>
+                    <dd>{money(o.total)} in cash at the door</dd>
+                  </>
+                )}
+                <dt>Verified</dt>
+                <dd>{f?.payment_verified_at ? date(f.payment_verified_at) : 'Not yet'}</dd>
+              </dl>
+              {o.payment_note && (
+                <div className="op-note">
+                  <MessageSquareText size={16} />
+                  <span>
+                    <small>Payment note</small>
+                    {o.payment_note}
+                  </span>
+                </div>
+              )}
+              {o.proof_url && (
+                <a className="op-live" href={o.proof_url} target="_blank" rel="noreferrer">
+                  <Receipt size={15} />
+                  <span>View payment receipt</span>
+                  <ExternalLink size={13} />
+                </a>
+              )}
+            </Section>
           )}
         </div>
       </div>
-      {role === 'rider' && !closed(o) && (
-        <>
-          <DeliveryMap lat={o.lat} lng={o.lng} pickup={o.outlet} />
-          <a href={navigateUrl(o)} target="_blank" rel="noreferrer" className="button ghost">
-            <Navigation size={16} /> Open in Google Maps
-          </a>
-        </>
-      )}
+
       {!o.locked && o.status !== 'cancelled' && (
-        <div className="panel-actions">
+        <div className="panel-actions op-actions">
           {role === 'outlet' && o.status === 'placed' && f?.outlet_status === 'pending' && (
             <>
               <button className="button" disabled={working} onClick={() => a.outletAccept(o)}>
@@ -894,7 +1323,7 @@ function OrderPanel({ o, role, a, refresh }: { o: Order; role: Role; a: Actions;
           )}
           {role === 'outlet' && o.status === 'confirmed' && (
             <button className="button" disabled={working} onClick={() => a.status(o, 'preparing', 'Marked as preparing.')}>
-              <Package size={16} /> Start preparing
+              <ChefHat size={16} /> Start preparing
             </button>
           )}
           {role === 'outlet' && o.status === 'preparing' && (
@@ -930,7 +1359,7 @@ function OrderPanel({ o, role, a, refresh }: { o: Order; role: Role; a: Actions;
           )}
           {role === 'admin' && o.can_cancel && (
             <button className="button danger-ghost" onClick={() => a.cancel(o, role)}>
-              Cancel order
+              <XCircle size={16} /> Cancel order
             </button>
           )}
         </div>
@@ -967,10 +1396,17 @@ function OrderPanel({ o, role, a, refresh }: { o: Order; role: Role; a: Actions;
         </form>
       )}
       {role !== 'rider' || closed(o) ? (
-        <section>
-          <h3 className="section-label">Activity</h3>
+        <Section
+          icon={<History size={16} />}
+          title="Activity"
+          aside={
+            <small className="muted">
+              {o.events.length} event{o.events.length === 1 ? '' : 's'}
+            </small>
+          }
+        >
           <Timeline o={o} />
-        </section>
+        </Section>
       ) : null}
       {!o.flow && <ErrorBox error="Workflow details are unavailable for this order." />}
     </div>

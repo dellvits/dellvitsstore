@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import webpush from 'web-push';
 import { z } from 'zod';
 import { all, one, run, afterCommit } from './db.js';
-import { requireRole, type AuthRequest } from './security.js';
+import { requireRole, accessRow, type AuthRequest } from './security.js';
 
 /** VAPID keys come from the environment, or are generated once and kept in the database. */
 async function vapidKeys() {
@@ -20,6 +20,8 @@ async function vapidKeys() {
   };
 }
 export type Message = { type: string; title: string; body?: string; link?: string };
+/** The kinds of notification an account can silence. */
+export const notificationTypes = ['order', 'delivery', 'payment', 'earning', 'payout', 'message'] as const;
 
 export async function notify(userIds: (string | null | undefined)[], m: Message) {
   const ids = [...new Set(userIds.filter(Boolean) as string[])];
@@ -44,9 +46,11 @@ export async function notify(userIds: (string | null | undefined)[], m: Message)
         keys.publicKey,
         keys.privateKey,
       );
+      // Types the account has silenced stay in its inbox but send no pop-up.
       for (const subscription of await all(
-        'SELECT * FROM push_subscriptions WHERE user_id=?',
+        'SELECT s.* FROM push_subscriptions s JOIN users u ON u.id=s.user_id WHERE s.user_id=? AND u.notify_muted NOT LIKE ?',
         uid,
+        `%"${m.type}"%`,
       )) {
         try {
           await webpush.sendNotification(
@@ -87,7 +91,7 @@ export function installNotifications(app: Express) {
   app.get('/api/notifications', signedIn, async (req: AuthRequest, res) => {
     const q = z
       .object({
-        limit: z.coerce.number().int().min(1).max(100).default(20),
+        limit: z.coerce.number().int().min(1).max(500).default(20),
         offset: z.coerce.number().int().min(0).default(0),
         filter: z.enum(['all', 'unread', 'read']).default('all'),
         type: z.string().max(40).optional(),
@@ -100,18 +104,47 @@ export function installNotifications(app: Express) {
       where += ' AND type=?';
       args.push(q.type);
     }
-    res.json({
-      items: await all(
+    // The header's message badge rides along: replies waiting for this account, or for the
+    // support team, everything waiting for an answer.
+    const access = await accessRow(req.user);
+    const member = req.user!.role !== 'admin';
+    const team =
+      !member && (!!access?.super || (JSON.parse(access?.permissions || '[]') as string[]).includes('messages'));
+    const support = member
+      ? '(SELECT COALESCE(SUM(user_unread),0) FROM support_threads WHERE user_id=?)'
+      : team
+        ? "(SELECT COALESCE(SUM(staff_unread),0) FROM support_threads)+(SELECT COUNT(*) FROM messages WHERE status='new')"
+        : '0';
+    // Chat messages that have reached this device for the first time become "delivered".
+    const side = member ? 'user' : 'staff';
+    const arriving =
+      member || team
+        ? `(SELECT COUNT(*) FROM support_threads WHERE ${side}_unread>0 AND (${side}_delivered_at IS NULL OR ${side}_delivered_at<last_at)${member ? ' AND user_id=?' : ''})`
+        : '0';
+    const [items, counts] = await Promise.all([
+      all(
         `SELECT * FROM notifications WHERE ${where} ORDER BY created_at DESC,id LIMIT ? OFFSET ?`,
         ...args,
         q.limit,
         q.offset,
       ),
-      total: (await one(`SELECT COUNT(*) n FROM notifications WHERE ${where}`, ...args))!.n,
-      unread: (await one(
-        'SELECT COUNT(*) n FROM notifications WHERE user_id=? AND read=0',
+      one(
+        `SELECT (SELECT COUNT(*) FROM notifications WHERE ${where}) total,(SELECT COUNT(*) FROM notifications WHERE user_id=? AND read=0) unread,${support} support_unread,${arriving} arriving`,
+        ...args,
         req.user!.id,
-      ))!.n,
+        ...(member ? [req.user!.id, req.user!.id] : []),
+      ),
+    ]);
+    if (Number(counts!.arriving))
+      await run(
+        `UPDATE support_threads SET ${side}_delivered_at=? WHERE ${side}_unread>0 AND (${side}_delivered_at IS NULL OR ${side}_delivered_at<last_at)${member ? ' AND user_id=?' : ''}`,
+        ...[new Date().toISOString(), ...(member ? [req.user!.id] : [])],
+      );
+    res.json({
+      items,
+      total: counts!.total,
+      unread: counts!.unread,
+      support_unread: Number(counts!.support_unread),
     });
   });
   app.patch(
@@ -152,7 +185,36 @@ export function installNotifications(app: Express) {
     '/api/notifications',
     signedIn,
     atomicRoute(async (req: AuthRequest, res) => {
-      await run('DELETE FROM notifications WHERE user_id=? AND read=1', req.user!.id);
+      // ?all=1 empties the inbox; otherwise unread notifications are kept.
+      const { changes } = await run(
+        `DELETE FROM notifications WHERE user_id=?${req.query.all ? '' : ' AND read=1'}`,
+        req.user!.id,
+      );
+      res.json({ ok: true, removed: changes });
+    }),
+  );
+  /** Which kinds of notification play a sound and pop up; all kinds still reach the inbox. */
+  app.put(
+    '/api/notifications/preferences',
+    signedIn,
+    atomicRoute(async (req: AuthRequest, res) => {
+      const p = z.object({ muted: z.array(z.enum(notificationTypes)).max(notificationTypes.length) }).parse(req.body);
+      const muted = [...new Set(p.muted)];
+      await run('UPDATE users SET notify_muted=? WHERE id=?', JSON.stringify(muted), req.user!.id);
+      res.json({ muted });
+    }),
+  );
+  /** Sends the account a notification, to check that sound and pop-ups work on this device. */
+  app.post(
+    '/api/notifications/test',
+    signedIn,
+    atomicRoute(async (req: AuthRequest, res) => {
+      await notify([req.user!.id], {
+        type: 'test',
+        title: 'Test notification',
+        body: 'Notifications are working on this account.',
+        link: '',
+      });
       res.json({ ok: true });
     }),
   );

@@ -58,7 +58,7 @@ export function setTestStorage(value: ObjectStorage) {
   storage = value;
 }
 function validKey(key: string) {
-  if (!/^(images|proofs|documents)\/[\da-f-]+\.(webp|pdf)$/.test(key))
+  if (!/^(images|proofs|documents|support)\/[\da-f-]+\.(webp|pdf)$/.test(key))
     throw new Error('Invalid object key.');
   return key;
 }

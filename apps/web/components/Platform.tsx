@@ -1,24 +1,45 @@
 'use client';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import dynamic from 'next/dynamic';
+import { Fragment, useEffect, useRef, useState, type FormEvent } from 'react';
 import {
+  BadgeCheck,
   Banknote,
   Building2,
+  CalendarClock,
   Check,
   Clock,
   CreditCard,
   Edit3,
+  ExternalLink,
+  Eye,
+  Hash,
+  History,
+  House,
   Image as ImageIcon,
+  Landmark,
+  ListChecks,
+  LogOut,
   Mail,
+  MailWarning,
   MapPin,
   Navigation,
+  PackageX,
+  Phone,
   Plus,
   Power,
   ReceiptText,
+  Send,
   ShieldCheck,
   Smartphone,
+  ShoppingBag,
+  Store,
+  Tags,
   Trash2,
+  StickyNote,
   Undo2,
+  UserPlus,
+  UserRound,
+  Users,
+  Wallet,
   X,
   Zap,
 } from 'lucide-react';
@@ -28,22 +49,25 @@ import { useApp } from './Provider';
 import {
   Badge,
   Confirm,
+  CopyButton,
   DataTable,
   ErrorBox,
   FilterBar,
   IconAction,
   Loading,
+  MetaItem,
   Modal,
+  PanelSection,
   RowAction,
   Stat,
   Toggle,
 } from './UI';
 import { inRange, useRange } from '@/lib/range';
+import { useSettling } from '@/lib/useSettling';
 import { PaymentStatusBadge } from './Orders';
 import type { PaymentMethod, User } from '@/lib/types';
-import { autoLogo, banks, cardGateways, providerName, wallets, type PaymentProvider } from '@/lib/paymentProviders';
+import { autoLogo, banks, providerName, wallets, type PaymentProvider } from '@/lib/paymentProviders';
 import { PaymentLogo, PaymentName } from './Checkout';
-const Map = dynamic(() => import('./DeliveryMap'), { ssr: false });
 type RecordData = Record<string, any>;
 
 async function uploadImage(file: File) {
@@ -51,7 +75,7 @@ async function uploadImage(file: File) {
   form.append('file', file);
   return (await api<{ url: string }>('/manage/images', { method: 'POST', body: form })).url;
 }
-function ImageField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+export function ImageField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [busy, setBusy] = useState(false);
   const { notice } = useApp();
   return (
@@ -91,29 +115,32 @@ function ImageField({ value, onChange }: { value: string; onChange: (v: string) 
     </div>
   );
 }
-function localDate(value: string) {
+export function localDate(value: string) {
   const d = new Date(value);
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 }
 
-/* ---------- Categories, homepage content, coupons ---------- */
-type Kind = 'categories' | 'content' | 'coupons';
+/* ---------- Categories ---------- */
+type Kind = 'categories';
 const recordConfig: Record<Kind, { noun: string; defaults: RecordData }> = {
-  categories: { noun: 'category', defaults: { name: '', description: '', image: '', show_on_home: true } },
-  content: {
-    noun: 'section',
-    defaults: { name: '', type: 'section', description: '', image: '', link: '/search', button: 'Explore' },
-  },
-  coupons: {
-    noun: 'coupon',
-    defaults: { name: '', code: '', type: 'percent', value: 10, minimum: 0, limit: 100, starts_at: '', ends_at: '' },
+  categories: {
+    noun: 'category',
+    defaults: {
+      name: '',
+      description: '',
+      image: '',
+      show_on_home: true,
+      home_limit: 8,
+      show_in_filters: true,
+      commission_rate: null,
+    },
   },
 };
 export function RecordManager({ kind }: { kind: string }) {
   const k = kind as Kind;
   const config = recordConfig[k];
   const { notice } = useApp();
-  const { data, error, loading, refresh } = useData<RecordData[]>('/admin/records/' + kind);
+  const { data, setData, error, loading, refresh } = useData<RecordData[]>('/admin/records/' + kind);
   const [edit, setEdit] = useState<RecordData | null>(null);
   const [remove, setRemove] = useState<RecordData | null>(null);
   const [busy, setBusy] = useState(false);
@@ -124,15 +151,18 @@ export function RecordManager({ kind }: { kind: string }) {
     await api('/admin/records/' + kind + '/' + id, { method: 'PUT', body: JSON.stringify(body) });
     refresh();
   }
-  async function toggle(r: RecordData, v: boolean) {
+  /** Flips a switch at once and saves just that field; the list reloads only if the save fails. */
+  async function quick(r: RecordData, change: RecordData, done: string) {
+    setData((rows) => rows && rows.map((x) => (x.id === r.id ? { ...x, ...change } : x)));
     try {
-      await api('/admin/records/' + kind + '/' + r.id, { method: 'PATCH', body: JSON.stringify({ active: v }) });
-      refresh();
-      notice(v ? 'Enabled.' : 'Disabled.');
+      await api('/admin/records/' + kind + '/' + r.id, { method: 'PATCH', body: JSON.stringify(change) });
+      notice(done);
     } catch (e) {
       notice((e as Error).message);
+      refresh();
     }
   }
+  const toggle = (r: RecordData, v: boolean) => quick(r, { active: v }, v ? 'Enabled.' : 'Disabled.');
   async function save(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -152,6 +182,10 @@ export function RecordManager({ kind }: { kind: string }) {
     setEdit(r ? { ...r } : { ...config.defaults, id: crypto.randomUUID(), active: true, position: 0 });
   };
   const set = (key: string, v: unknown) => setEdit((e) => (e ? { ...e, [key]: v } : e));
+  const list = data || [];
+  const statsBusy = loading && !data;
+  const inUse = (r: RecordData) => r.products > 0 || r.outlets > 0;
+  const onHome = (r: RecordData) => !!r.active && r.show_on_home !== false;
   const columns =
     k === 'categories'
       ? [
@@ -170,68 +204,87 @@ export function RecordManager({ kind }: { kind: string }) {
             ),
           },
           {
+            key: 'products',
+            header: 'Products',
+            sort: (r: RecordData) => r.products || 0,
+            render: (r: RecordData) => (r.products ? r.products : <span className="muted">None</span>),
+          },
+          {
+            key: 'outlets',
+            header: 'Outlets',
+            sort: (r: RecordData) => r.outlets || 0,
+            render: (r: RecordData) => (
+              <span className="cell-stack">
+                <span>{r.outlets ? r.outlets : <span className="muted">None</span>}</span>
+                {r.commission_rate != null && <small>{r.commission_rate}% default commission</small>}
+              </span>
+            ),
+          },
+          {
             key: 'home',
             header: 'On home page',
             render: (r: RecordData) => (
+              <span className="cell-stack">
+                <Toggle
+                  checked={r.show_on_home !== false}
+                  onChange={(v) => quick(r, { show_on_home: v }, v ? 'Shown on home page.' : 'Hidden from home page.')}
+                />
+                {r.show_on_home !== false && <small>Up to {r.home_limit || 8} products</small>}
+              </span>
+            ),
+          },
+          {
+            key: 'filters',
+            header: 'In filters',
+            render: (r: RecordData) => (
               <Toggle
-                checked={r.show_on_home !== false}
+                checked={r.show_in_filters !== false}
                 onChange={(v) =>
-                  put({ ...r, show_on_home: v })
-                    .then(() => notice(v ? 'Shown on home page.' : 'Hidden from home page.'))
-                    .catch((e) => notice(e.message))
+                  quick(r, { show_in_filters: v }, v ? 'Shown in storefront filters.' : 'Hidden from storefront filters.')
                 }
               />
             ),
           },
         ]
-      : k === 'content'
-        ? [
-            {
-              key: 'name',
-              header: 'Section',
-              render: (r: RecordData) => (
-                <div className="cell-main">
-                  {r.image ? <img className="cell-thumb" src={r.image} alt="" /> : <span className="cell-thumb placeholder" />}
-                  <span className="cell-stack">
-                    <strong>{r.name}</strong>
-                    <small className="truncate">{r.description || '—'}</small>
-                  </span>
-                </div>
-              ),
-            },
-            { key: 'type', header: 'Placement', render: (r: RecordData) => <Badge tone="info">{label(r.type)}</Badge> },
-            { key: 'link', header: 'Link', render: (r: RecordData) => <code>{r.link || '—'}</code> },
-          ]
-        : [
-            {
-              key: 'code',
-              header: 'Coupon',
-              render: (r: RecordData) => (
-                <span className="cell-stack">
-                  <code className="code-chip">{r.code}</code>
-                  <small>{r.name}</small>
-                </span>
-              ),
-            },
-            {
-              key: 'value',
-              header: 'Discount',
-              render: (r: RecordData) => (r.type === 'percent' ? `${r.value}%` : money(r.value)),
-            },
-            { key: 'min', header: 'Minimum', render: (r: RecordData) => money(r.minimum) },
-            { key: 'limit', header: 'Limit', render: (r: RecordData) => r.limit },
-            {
-              key: 'dates',
-              header: 'Valid',
-              render: (r: RecordData) => (
-                <small>
-                  {r.starts_at ? date(r.starts_at) : 'Now'} → {r.ends_at ? date(r.ends_at) : 'No expiry'}
-                </small>
-              ),
-            },
-          ];
+      : [];
   return (
-    <>
+    <div className="stack">
+      {k === 'categories' && (
+        <div className="stats">
+          <Stat
+            icon={<Tags size={20} />}
+            label="Categories"
+            value={list.length}
+            hint={`${list.filter((r) => r.active).length} enabled`}
+            tone="blue"
+            loading={statsBusy}
+          />
+          <Stat
+            icon={<House size={20} />}
+            label="On home page"
+            value={list.filter(onHome).length}
+            hint="Enabled categories with a product section"
+            tone="green"
+            loading={statsBusy}
+          />
+          <Stat
+            icon={<ShoppingBag size={20} />}
+            label="Products"
+            value={list.reduce((n, r) => n + (r.products || 0), 0)}
+            hint={`${list.reduce((n, r) => n + (r.outlets || 0), 0)} outlets across all categories`}
+            tone="purple"
+            loading={statsBusy}
+          />
+          <Stat
+            icon={<PackageX size={20} />}
+            label="Not in use"
+            value={list.filter((r) => !inUse(r)).length}
+            hint="No products or outlets yet"
+            tone="orange"
+            loading={statsBusy}
+          />
+        </div>
+      )}
       <DataTable
         rows={data}
         loading={loading}
@@ -255,6 +308,28 @@ export function RecordManager({ kind }: { kind: string }) {
             ],
             test: (r, v) => (v === 'on' ? !!r.active : !r.active),
           },
+          ...(k === 'categories'
+            ? [
+                {
+                  key: 'home',
+                  label: 'Home page',
+                  options: [
+                    { value: 'shown', label: 'On home page' },
+                    { value: 'hidden', label: 'Not on home page' },
+                  ],
+                  test: (r: RecordData, v: string) => (v === 'shown') === (r.show_on_home !== false),
+                },
+                {
+                  key: 'usage',
+                  label: 'Usage',
+                  options: [
+                    { value: 'used', label: 'In use' },
+                    { value: 'unused', label: 'Not in use' },
+                  ],
+                  test: (r: RecordData, v: string) => (v === 'used') === inUse(r),
+                },
+              ]
+            : []),
         ]}
         columns={[
           ...columns,
@@ -295,103 +370,53 @@ export function RecordManager({ kind }: { kind: string }) {
                   <span className="field-label">Image</span>
                   <ImageField value={edit.image} onChange={(v) => set('image', v)} />
                 </div>
-                <Toggle
-                  checked={edit.show_on_home !== false}
-                  onChange={(v) => set('show_on_home', v)}
-                  label="Show a product section for this category on the home page"
-                />
-              </>
-            )}
-            {k === 'content' && (
-              <div className="form-grid">
-                <label className="span-2">
-                  Headline
-                  <input required value={edit.name} onChange={(e) => set('name', e.target.value)} />
-                </label>
-                <label>
-                  Placement
-                  <select value={edit.type} onChange={(e) => set('type', e.target.value)}>
-                    <option value="section">Section</option>
-                    <option value="banner">Banner</option>
-                    <option value="hero">Hero (main headline)</option>
-                  </select>
-                </label>
-                <label>
-                  Button label
-                  <input maxLength={80} value={edit.button} onChange={(e) => set('button', e.target.value)} />
-                </label>
-                <label className="span-2">
-                  Text
-                  <textarea rows={3} maxLength={2000} value={edit.description} onChange={(e) => set('description', e.target.value)} />
-                </label>
-                <label className="span-2">
-                  Link path
-                  <input value={edit.link} onChange={(e) => set('link', e.target.value)} placeholder="/search" />
-                </label>
-                <div className="field span-2">
-                  <span className="field-label">Artwork</span>
-                  <ImageField value={edit.image} onChange={(v) => set('image', v)} />
+                <h4 className="form-section">Storefront</h4>
+                <div className="toggle-list">
+                  <Toggle
+                    checked={edit.show_on_home !== false}
+                    onChange={(v) => set('show_on_home', v)}
+                    label="Show a product section for this category on the home page"
+                  />
+                  <Toggle
+                    checked={edit.show_in_filters !== false}
+                    onChange={(v) => set('show_in_filters', v)}
+                    label="Offer this category as a filter on the search and outlets pages"
+                  />
                 </div>
-              </div>
-            )}
-            {k === 'coupons' && (
-              <div className="form-grid">
-                <label>
-                  Campaign name
-                  <input required value={edit.name} onChange={(e) => set('name', e.target.value)} />
-                </label>
-                <label>
-                  Code
-                  <input required value={edit.code} onChange={(e) => set('code', e.target.value.toUpperCase())} pattern="[A-Z0-9_-]{3,30}" />
-                </label>
-                <label>
-                  Type
-                  <select value={edit.type} onChange={(e) => set('type', e.target.value)}>
-                    <option value="percent">Percentage</option>
-                    <option value="fixed">Fixed amount</option>
-                  </select>
-                </label>
-                <label>
-                  {edit.type === 'percent' ? 'Percent off' : 'Amount off (PKR)'}
-                  <input
-                    required
-                    type="number"
-                    min={1}
-                    value={edit.type === 'percent' ? edit.value : edit.value / 100}
-                    onChange={(e) => set('value', edit.type === 'percent' ? Number(e.target.value) : Math.round(Number(e.target.value) * 100))}
-                  />
-                </label>
-                <label>
-                  Minimum subtotal (PKR)
-                  <input
-                    required
-                    type="number"
-                    min={0}
-                    value={edit.minimum / 100}
-                    onChange={(e) => set('minimum', Math.round(Number(e.target.value) * 100))}
-                  />
-                </label>
-                <label>
-                  Max redemptions
-                  <input required type="number" min={1} value={edit.limit} onChange={(e) => set('limit', Number(e.target.value))} />
-                </label>
-                <label>
-                  Starts <span className="muted">(optional)</span>
-                  <input
-                    type="datetime-local"
-                    value={edit.starts_at ? localDate(edit.starts_at) : ''}
-                    onChange={(e) => set('starts_at', e.target.value ? new Date(e.target.value).toISOString() : '')}
-                  />
-                </label>
-                <label>
-                  Expires <span className="muted">(optional)</span>
-                  <input
-                    type="datetime-local"
-                    value={edit.ends_at ? localDate(edit.ends_at) : ''}
-                    onChange={(e) => set('ends_at', e.target.value ? new Date(e.target.value).toISOString() : '')}
-                  />
-                </label>
-              </div>
+                <div className="form-grid">
+                  <label>
+                    Products in the home page section
+                    <input
+                      type="number"
+                      required
+                      min={1}
+                      max={24}
+                      disabled={edit.show_on_home === false}
+                      value={edit.home_limit ?? 8}
+                      onChange={(e) => set('home_limit', Number(e.target.value))}
+                    />
+                    <small>In-stock products come first. 1 to 24.</small>
+                  </label>
+                  <label>
+                    Commission for new outlets (%) <span className="muted">(optional)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step="0.1"
+                      placeholder="Platform default (10%)"
+                      value={edit.commission_rate ?? ''}
+                      onChange={(e) => set('commission_rate', e.target.value === '' ? null : Number(e.target.value))}
+                    />
+                    <small>The starting rate when an outlet is added to this category. Existing outlets keep theirs.</small>
+                  </label>
+                </div>
+                {data?.some((d) => d.id === edit.id && d.name !== edit.name && inUse(d)) && (
+                  <div className="alert info">
+                    <Tags size={16} /> Renaming moves this category’s products and outlets to the new name.
+                  </div>
+                )}
+              </>
             )}
             <div className="form-grid">
               <label>
@@ -435,148 +460,154 @@ export function RecordManager({ kind }: { kind: string }) {
           }
         }}
       >
-        “{remove?.name}” will be removed permanently. You can disable it instead to keep it.
+        {remove && k === 'categories' && inUse(remove)
+          ? `“${remove.name}” is still used by ${remove.products} product${remove.products === 1 ? '' : 's'} and ${remove.outlets} outlet${remove.outlets === 1 ? '' : 's'}, so it cannot be deleted. Move them to another category first, or disable it instead.`
+          : `“${remove?.name}” will be removed permanently. You can disable it instead to keep it.`}
       </Confirm>
-    </>
+    </div>
   );
 }
 
-/* ---------- Store settings ---------- */
-const settingsDefaults = {
-  name: 'Dellvit',
-  support_email: '',
-  support_phone: '',
-  support_address: '',
-  about_title: 'Your neighbourhood, a little closer.',
-  about_description: '',
-  minimum_order: 0,
-  checkout_enabled: true,
-  show_trust: true,
-  show_categories: true,
-  show_nearby: true,
-  show_category_products: true,
-  show_outlets: true,
-  show_how: true,
-  show_why: true,
-  show_ad: true,
+type EmailConfig = {
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  from: string;
+  has_password: boolean;
+  source: 'saved' | 'environment' | 'none';
 };
-export function SettingsManager() {
-  const { notice } = useApp();
-  const { data, loading, error, refresh } = useData<RecordData[]>('/admin/records/settings');
-  const [form, setForm] = useState<RecordData | null>(null);
-  const [busy, setBusy] = useState(false);
+/** The mail server that sends verification codes, with a button to prove it works. */
+export function EmailSettings() {
+  const { notice, user } = useApp();
+  const { data, loading, error, refresh } = useData<EmailConfig>('/admin/email-settings');
+  const [form, setForm] = useState<(EmailConfig & { pass: string }) | null>(null);
+  const [to, setTo] = useState(user?.email || '');
+  const [busy, setBusy] = useState('');
   const [formError, setFormError] = useState('');
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   useEffect(() => {
-    if (data) setForm({ ...settingsDefaults, ...(data.find((d) => d.id === 'global') || {}) });
+    if (data) setForm({ ...data, pass: '' });
   }, [data]);
   if (loading && !form) return <Loading />;
   if (error) return <ErrorBox error={error} retry={refresh} />;
   if (!form) return null;
   const set = (k: string, v: unknown) => setForm({ ...form, [k]: v });
+  const dirty =
+    !!data &&
+    (form.pass !== '' || (['host', 'port', 'secure', 'user', 'from'] as const).some((k) => form[k] !== data[k]));
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setBusy('save');
+    setFormError('');
+    setResult(null);
+    try {
+      const { has_password, source, ...body } = form!;
+      await api('/admin/email-settings', { method: 'PUT', body: JSON.stringify(body) });
+      refresh();
+      notice('Email settings saved. Send a test email to check them.');
+    } catch (err) {
+      setFormError((err as Error).message);
+    } finally {
+      setBusy('');
+    }
+  }
+  async function test() {
+    setBusy('test');
+    setResult(null);
+    try {
+      await api('/admin/email-settings/test', { method: 'POST', body: JSON.stringify({ to }) });
+      setResult({ ok: true, text: `Test email sent to ${to}. Check the inbox, and the spam folder.` });
+    } catch (err) {
+      setResult({ ok: false, text: (err as Error).message });
+    } finally {
+      setBusy('');
+    }
+  }
   return (
-    <form
-      className="stack"
-      onSubmit={async (e) => {
-        e.preventDefault();
-        setBusy(true);
-        setFormError('');
-        try {
-          const { id, ...body } = form;
-          await api('/admin/records/settings/global', {
-            method: 'PUT',
-            body: JSON.stringify({ ...body, active: true, position: 0 }),
-          });
-          refresh();
-          notice('Settings saved.');
-        } catch (err) {
-          setFormError((err as Error).message);
-        } finally {
-          setBusy(false);
-        }
-      }}
-    >
-      <div className="grid-2">
-        <section className="card">
-          <div className="card-head">
-            <h3>Store & support</h3>
-          </div>
-          <div className="form-grid">
-            <label>
-              Store name
-              <input required value={form.name} onChange={(e) => set('name', e.target.value)} />
-            </label>
-            <label>
-              Support email
-              <input required type="email" value={form.support_email} onChange={(e) => set('support_email', e.target.value)} />
-            </label>
-            <label>
-              Support phone
-              <input required value={form.support_phone} onChange={(e) => set('support_phone', e.target.value)} />
-            </label>
-            <label>
-              Support address
-              <input value={form.support_address} onChange={(e) => set('support_address', e.target.value)} />
-            </label>
-            <label className="span-2">
-              About page headline
-              <input required value={form.about_title} onChange={(e) => set('about_title', e.target.value)} />
-            </label>
-            <label className="span-2">
-              About page text
-              <textarea rows={3} value={form.about_description} onChange={(e) => set('about_description', e.target.value)} />
-            </label>
-          </div>
-        </section>
-        <div className="stack">
-          <section className="card">
-            <div className="card-head">
-              <h3>Checkout</h3>
-            </div>
-            <div className="stack">
-              <Toggle checked={form.checkout_enabled} onChange={(v) => set('checkout_enabled', v)} label="Accept new orders" />
-              <label>
-                Minimum order subtotal (PKR)
-                <input
-                  type="number"
-                  min={0}
-                  value={form.minimum_order / 100}
-                  onChange={(e) => set('minimum_order', Math.round(Number(e.target.value) * 100))}
-                />
-              </label>
-            </div>
-          </section>
-          <section className="card">
-            <div className="card-head">
-              <h3>Home page sections</h3>
-            </div>
-            <div className="toggle-list">
-              {[
-                ['show_trust', 'Benefits bar'],
-                ['show_nearby', 'Good things near you'],
-                ['show_category_products', 'Category product sections'],
-                ['show_outlets', 'Outlets near you'],
-                ['show_how', 'How it works'],
-                ['show_ad', 'Advertising banner'],
-              ].map(([key, title]) => (
-                <Toggle key={key} checked={form[key] !== false} onChange={(v) => set(key, v)} label={title} />
-              ))}
-            </div>
-          </section>
+    <section className="card">
+      <div className="card-head">
+        <h3>Email (SMTP)</h3>
+        <Badge tone={data?.source === 'none' ? 'danger' : 'success'}>
+          {data?.source === 'none' ? 'Not set up' : data?.source === 'environment' ? 'Set in server environment' : 'Set up'}
+        </Badge>
+      </div>
+      <form className="stack" onSubmit={save}>
+        <small className="muted">
+          Customers receive their 6-digit verification code through this mail server. Until it is set up, new customers
+          cannot sign up.
+        </small>
+        <div className="form-grid">
+          <label>
+            SMTP server
+            <input value={form.host} onChange={(e) => set('host', e.target.value.trim())} placeholder="smtp.gmail.com" />
+          </label>
+          <label>
+            Security and port
+            <select
+              value={form.secure ? 'ssl' : 'starttls'}
+              onChange={(e) => setForm({ ...form, secure: e.target.value === 'ssl', port: e.target.value === 'ssl' ? 465 : 587 })}
+            >
+              <option value="starttls">STARTTLS (port 587)</option>
+              <option value="ssl">SSL / TLS (port 465)</option>
+            </select>
+          </label>
+          <label>
+            Port
+            <input type="number" required min={1} max={65535} value={form.port} onChange={(e) => set('port', Number(e.target.value))} />
+          </label>
+          <label>
+            Username
+            <input value={form.user} autoComplete="off" onChange={(e) => set('user', e.target.value)} placeholder="you@your-domain.com" />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={form.pass}
+              onChange={(e) => set('pass', e.target.value)}
+              placeholder={data?.has_password && data.source === 'saved' ? 'Saved. Type to replace it' : ''}
+            />
+            <small>For Gmail, use an app password, not your normal password.</small>
+          </label>
+          <label>
+            Sender shown to customers
+            <input value={form.from} onChange={(e) => set('from', e.target.value)} placeholder="Dellvit <no-reply@your-domain.com>" />
+          </label>
         </div>
-      </div>
-      {formError && <ErrorBox error={formError} />}
-      <div className="form-foot sticky-foot">
-        <button className="button" disabled={busy}>
-          {busy ? 'Saving…' : 'Save settings'}
-        </button>
-      </div>
-    </form>
+        {formError && <ErrorBox error={formError} />}
+        <div className="email-test">
+          <label>
+            Send a test email to
+            <input type="email" value={to} onChange={(e) => setTo(e.target.value)} placeholder="you@example.com" />
+          </label>
+          <button
+            type="button"
+            className="button ghost"
+            disabled={!!busy || !to || dirty || data?.source === 'none'}
+            title={dirty ? 'Save your changes first' : undefined}
+            onClick={test}
+          >
+            <Send size={16} /> {busy === 'test' ? 'Sending…' : 'Send test email'}
+          </button>
+          <button className="button" disabled={!!busy || !dirty}>
+            {busy === 'save' ? 'Saving…' : 'Save email settings'}
+          </button>
+        </div>
+        {result && (
+          <div className={'alert ' + (result.ok ? 'success' : 'error')}>
+            {result.ok ? <Check size={16} /> : <X size={16} />} {result.text}
+          </div>
+        )}
+      </form>
+    </section>
   );
 }
 
 /* ---------- Payments ---------- */
 const OTHER = '__other';
-/** A bank/gateway select with an "Other" choice that reveals a free-text name. */
+/** A bank/wallet select with an "Other" choice that reveals a free-text name. */
 function ProviderField({
   label,
   groups,
@@ -632,25 +663,23 @@ const typeInfo: Record<string, { title: string; icon: typeof Banknote; hint: str
   bank: { title: 'Bank transfer (IBFT)', icon: Building2, hint: 'Account number / IBAN' },
   wallet: { title: 'Mobile wallet', icon: Smartphone, hint: 'JazzCash, Easypaisa, SadaPay…' },
   raast: { title: 'Raast', icon: Zap, hint: 'Instant transfer to a Raast ID' },
-  card: { title: 'Card payment', icon: CreditCard, hint: 'Visa, Mastercard via a card gateway' },
 };
-const cardNetworks = ['Visa', 'Mastercard', 'UnionPay', 'PayPak', 'American Express'];
-const accountSummary = (m: PaymentMethod) =>
+const methodType = (t?: string) => (t === 'manual' ? 'bank' : t || 'cod');
+const accountSummary = (m: Partial<PaymentMethod>) =>
   m.type === 'cod'
     ? 'Collected by rider'
     : m.type === 'wallet'
       ? `${m.provider || ''} · ${m.mobile_number || ''}`
       : m.type === 'raast'
         ? `Raast ID ${m.raast_id || ''}`
-        : m.type === 'card'
-          ? `${m.gateway || 'No gateway'} · ${m.environment === 'live' ? 'Live' : 'Sandbox'}`
-          : `${m.bank_name || ''} · ${m.iban || m.account_number || ''}`;
+        : `${m.bank_name || ''} · ${m.iban || m.account_number || ''}`;
 
 type QueueRow = {
   id: string;
   reference: string;
   name: string;
   phone: string;
+  email: string;
   total: number;
   status: string;
   created_at: string;
@@ -670,65 +699,52 @@ type QueueRow = {
   reviewer_email: string | null;
   cancel_reason: string | null;
 };
+type Queue = ReturnType<typeof useData<QueueRow[]>>;
+const awaiting = (r: QueueRow) => ['submitted', 'pending'].includes(r.payment_status) && r.status !== 'cancelled';
+const canDecide = (r: QueueRow) =>
+  !['paid', 'refund_due', 'refunded'].includes(r.payment_status) && !['cancelled', 'delivered'].includes(r.status);
+const paidAt = (r: QueueRow) => r.payment_updated_at || r.created_at;
+
 export function PaymentsWorkspace() {
   const [tab, setTab] = useState<'queue' | 'methods'>('queue');
-  const { data: queue } = useData<QueueRow[]>('/admin/payments/queue', 15000);
-  const pending = queue?.filter((q) => q.payment_status === 'submitted' && q.status !== 'cancelled').length || 0;
+  // One poll feeds both the tab badge and the verification list.
+  const queue = useData<QueueRow[]>('/admin/payments/queue', 15000);
+  const { data: methods } = useData<PaymentMethod[]>('/admin/records/payments');
+  const pending = queue.data?.filter(awaiting).length || 0;
+  const enabled = methods?.filter((m) => m.active).length;
   return (
     <div className="stack">
-      <div className="tabs">
-        <button className={tab === 'queue' ? 'active' : ''} onClick={() => setTab('queue')}>
-          Verification {pending > 0 && <span className="tab-count">{pending}</span>}
+      <div className="seg-tabs" role="tablist" aria-label="Payments">
+        <button role="tab" aria-selected={tab === 'queue'} className={tab === 'queue' ? 'active' : ''} onClick={() => setTab('queue')}>
+          <ShieldCheck size={16} />
+          Verification
+          {pending > 0 && <span className="tab-count">{pending}</span>}
         </button>
-        <button className={tab === 'methods' ? 'active' : ''} onClick={() => setTab('methods')}>
+        <button role="tab" aria-selected={tab === 'methods'} className={tab === 'methods' ? 'active' : ''} onClick={() => setTab('methods')}>
+          <Wallet size={16} />
           Payment methods
+          {enabled !== undefined && <span className="seg-count">{enabled} live</span>}
         </button>
       </div>
-      {tab === 'queue' ? <PaymentQueue /> : <PaymentMethods />}
+      {tab === 'queue' ? <PaymentQueue queue={queue} /> : <PaymentMethods />}
     </div>
   );
 }
-function PaymentQueue() {
+
+function PaymentQueue({ queue }: { queue: Queue }) {
   const { notice } = useApp();
-  const { range, setRange, label: rangeText } = useRange('7d');
-  const { data, loading, error, refresh } = useData<QueueRow[]>('/admin/payments/queue', 15000);
+  const { range, setRange, key, label: rangeText } = useRange('7d');
+  const { data, loading, error, refresh } = queue;
   const [review, setReview] = useState<QueueRow | null>(null);
-  const [mode, setMode] = useState<'review' | 'reject' | 'refund'>('review');
-  const [note, setNote] = useState('');
-  const [reference, setReference] = useState('');
   const [busy, setBusy] = useState(false);
-  const open = (row: QueueRow, m: 'review' | 'reject' | 'refund' = 'review') => {
-    setReview(row);
-    setMode(m);
-    setNote('');
-    setReference('');
-  };
-  const close = () => {
-    setReview(null);
-    setMode('review');
-  };
-  async function decide(row: QueueRow, decision: 'approve' | 'reject') {
+  // Figures are counted in the browser, so a new time frame shows placeholders briefly.
+  const settling = useSettling(key);
+  const statsBusy = (loading && !data) || settling;
+  async function approve(row: QueueRow) {
     setBusy(true);
     try {
-      await api('/admin/payments/' + row.id + '/verify', {
-        method: 'PATCH',
-        body: JSON.stringify({ decision, note: decision === 'reject' ? note : '' }),
-      });
-      notice(decision === 'approve' ? 'Payment verified. The order is ready to send.' : 'Payment rejected. Customer notified.');
-      close();
-      refresh();
-    } catch (e) {
-      notice((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function refund(row: QueueRow) {
-    setBusy(true);
-    try {
-      await api('/admin/payments/' + row.id + '/refund', { method: 'PATCH', body: JSON.stringify({ reference, note }) });
-      notice('Refund recorded. Customer notified.');
-      close();
+      await api('/admin/payments/' + row.id + '/verify', { method: 'PATCH', body: JSON.stringify({ decision: 'approve', note: '' }) });
+      notice('Payment verified. The order is ready to send.');
       refresh();
     } catch (e) {
       notice((e as Error).message);
@@ -737,33 +753,49 @@ function PaymentQueue() {
     }
   }
   const rows = data || [];
-  const when = (r: QueueRow) => r.payment_updated_at || r.created_at;
-  const windowed = rows.filter((r) => inRange(when(r), range));
-  const awaiting = (r: QueueRow) =>
-    r.payment_type !== 'card' && ['submitted', 'pending'].includes(r.payment_status) && r.status !== 'cancelled';
-  const canDecide = (r: QueueRow) =>
-    r.payment_type !== 'card' &&
-    !['paid', 'refund_due', 'refunded'].includes(r.payment_status) &&
-    !['cancelled', 'delivered'].includes(r.status);
+  const windowed = rows.filter((r) => inRange(paidAt(r), range));
+  const total = (list: QueueRow[]) => money(list.reduce((s, r) => s + r.total, 0));
+  const waiting = rows.filter(awaiting);
+  const verified = windowed.filter((r) => r.payment_status === 'paid');
+  const rejected = windowed.filter((r) => r.payment_status === 'rejected');
+  const refunds = rows.filter((r) => r.payment_status === 'refund_due');
+  // Keep the open review in step with the latest poll.
+  const current = review && (rows.find((r) => r.id === review.id) || review);
   return (
     <>
       <FilterBar title="Online payments" hint={`Showing ${rangeText.toLowerCase()}`} range={range} onRange={setRange} />
-      <div className="stats compact">
-        <Stat icon={<Clock size={18} />} label="Awaiting verification" value={rows.filter(awaiting).length} hint="Live" tone="orange" />
+      <div className="stats">
         <Stat
-          icon={<Check size={18} />}
-          label="Verified value"
-          value={money(windowed.filter((r) => r.payment_status === 'paid').reduce((s, r) => s + r.total, 0))}
-          hint={`${windowed.filter((r) => r.payment_status === 'paid').length} payments`}
-          tone="green"
+          icon={<Clock size={20} />}
+          label="Awaiting verification"
+          value={waiting.length}
+          hint={`${total(waiting)} to check · live`}
+          tone="orange"
+          loading={statsBusy}
         />
-        <Stat icon={<X size={18} />} label="Rejected" value={windowed.filter((r) => r.payment_status === 'rejected').length} tone="red" />
         <Stat
-          icon={<Undo2 size={18} />}
+          icon={<BadgeCheck size={20} />}
+          label="Verified"
+          value={total(verified)}
+          hint={`${verified.length} payment${verified.length === 1 ? '' : 's'} in this period`}
+          tone="green"
+          loading={statsBusy}
+        />
+        <Stat
+          icon={<X size={20} />}
+          label="Rejected"
+          value={rejected.length}
+          hint={rejected.length ? `${total(rejected)} sent back to customers` : 'None in this period'}
+          tone="red"
+          loading={statsBusy}
+        />
+        <Stat
+          icon={<Undo2 size={20} />}
           label="Refunds due"
-          value={rows.filter((r) => r.payment_status === 'refund_due').length}
-          hint={money(rows.filter((r) => r.payment_status === 'refund_due').reduce((s, r) => s + r.total, 0))}
+          value={refunds.length}
+          hint={`${total(refunds)} to return · live`}
           tone="purple"
+          loading={statsBusy}
         />
       </div>
       <DataTable
@@ -772,9 +804,9 @@ function PaymentQueue() {
         error={error}
         onRetry={refresh}
         rowKey={(r) => r.id}
-        onRowClick={(r) => open(r)}
-        dateFilter={{ get: when }}
-        search={(r) => `${r.reference} ${r.name} ${r.transaction_id} ${r.payer_name}`}
+        onRowClick={(r) => setReview(r)}
+        dateFilter={{ get: paidAt }}
+        search={(r) => `${r.reference} ${r.name} ${r.phone} ${r.transaction_id} ${r.payer_name}`}
         searchPlaceholder="Search order, TID, sender"
         empty="No online payments yet."
         filters={[
@@ -788,7 +820,6 @@ function PaymentQueue() {
               { value: 'rejected', label: 'Rejected' },
               { value: 'refund_due', label: 'Refund due' },
               { value: 'refunded', label: 'Refunded' },
-              { value: 'failed', label: 'Failed' },
             ],
             test: (r, v) => (v === 'submitted' ? awaiting(r) : r.payment_status === v),
           },
@@ -799,20 +830,28 @@ function PaymentQueue() {
               { value: 'bank', label: 'Bank transfer' },
               { value: 'wallet', label: 'Mobile wallet' },
               { value: 'raast', label: 'Raast' },
-              { value: 'card', label: 'Card' },
             ],
-            test: (r, v) => (r.payment_type === 'manual' ? 'bank' : r.payment_type) === v,
+            test: (r, v) => methodType(r.payment_type) === v,
+          },
+          {
+            key: 'receipt',
+            label: 'Receipts',
+            options: [
+              { value: 'yes', label: 'With receipt' },
+              { value: 'no', label: 'No receipt' },
+            ],
+            test: (r, v) => (v === 'yes' ? !!r.proof_url : !r.proof_url),
           },
         ]}
         columns={[
           {
             key: 'ref',
             header: 'Order',
-            sort: (r) => when(r),
+            sort: (r) => paidAt(r),
             render: (r) => (
               <span className="cell-stack">
                 <strong>{r.reference}</strong>
-                <small>{date(when(r))}</small>
+                <small>{date(paidAt(r))}</small>
               </span>
             ),
           },
@@ -856,147 +895,338 @@ function PaymentQueue() {
         actions={(r) => (
           <>
             {canDecide(r) && (
-              <>
-                <RowAction tone="success" disabled={busy} onClick={() => decide(r, 'approve')}>
-                  Approve
-                </RowAction>
-                <RowAction tone="danger" onClick={() => open(r, 'reject')}>
-                  Reject
-                </RowAction>
-              </>
-            )}
-            {r.payment_status === 'refund_due' && (
-              <RowAction tone="warn" onClick={() => open(r, 'refund')}>
-                Mark refunded
+              <RowAction tone="success" disabled={busy} onClick={() => approve(r)}>
+                Approve
               </RowAction>
             )}
-            <RowAction onClick={() => open(r)}>Review</RowAction>
+            <RowAction onClick={() => setReview(r)}>Review</RowAction>
           </>
         )}
       />
-      <Modal open={!!review} onClose={close} title={'Payment · ' + (review?.reference || '')}>
-        {review && (
-          <div className="stack">
-            <div className="kv">
-              <span>Customer</span>
-              <strong>
-                {review.name} · {review.phone}
-              </strong>
-              <span>Outlet</span>
-              <strong>{review.outlet_name}</strong>
-              <span>Method</span>
-              <strong>
-                <PaymentName order={review} />
-              </strong>
-              <span>Amount</span>
-              <strong>{money(review.total)}</strong>
-              <span>Transaction ID</span>
-              <strong>
-                <code>{review.transaction_id || '—'}</code>
-              </strong>
-              <span>Sender</span>
-              <strong>
-                {review.payer_name || '—'} {review.payer_account && `· ${review.payer_account}`}
-              </strong>
-              <span>Payment status</span>
-              <strong>
-                <PaymentStatusBadge order={review} />
-              </strong>
-              <span>Order status</span>
-              <strong>
-                <Badge value={review.status} />
-                {review.cancel_reason && <small className="muted"> · {review.cancel_reason}</small>}
-              </strong>
-              {review.reviewer_name && review.payment_status !== 'submitted' && (
-                <>
-                  <span>Reviewed by</span>
-                  <strong>
-                    {review.reviewer_name} · {review.reviewer_email}
-                    {review.payment_reviewed_at && <small className="muted"> · {date(review.payment_reviewed_at)}</small>}
-                  </strong>
-                </>
-              )}
-            </div>
-            {review.payment_note && <div className="alert info">{review.payment_note}</div>}
-            {review.proof_url ? (
-              <a href={review.proof_url} target="_blank" rel="noreferrer" className="receipt">
-                <img src={review.proof_url} alt="Payment receipt" />
-              </a>
-            ) : (
-              review.payment_type !== 'card' && (
-                <div className="alert info">
-                  <ReceiptText size={16} /> No screenshot uploaded. Match the TID and amount in your account.
-                </div>
-              )
-            )}
-            {mode === 'refund' && review.payment_status === 'refund_due' && (
-              <div className="form-grid">
-                <label>
-                  Refund reference <span className="muted">(optional)</span>
-                  <input maxLength={80} value={reference} onChange={(e) => setReference(e.target.value)} />
-                </label>
-                <label>
-                  Note <span className="muted">(optional)</span>
-                  <input maxLength={300} value={note} onChange={(e) => setNote(e.target.value)} />
-                </label>
+      <PaymentReview row={current} onClose={() => setReview(null)} refresh={refresh} />
+    </>
+  );
+}
+
+/** The full payment review: what the customer sent, where it should have arrived, and the decision. */
+function PaymentReview({ row, onClose, refresh }: { row: QueueRow | null; onClose: () => void; refresh: () => void }) {
+  const { notice } = useApp();
+  const [mode, setMode] = useState<'review' | 'reject' | 'refund'>('review');
+  const [note, setNote] = useState('');
+  const [reference, setReference] = useState('');
+  const [checks, setChecks] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setMode('review');
+    setNote('');
+    setReference('');
+    setChecks([]);
+  }, [row?.id]);
+  async function send(path: string, body: unknown, done: string) {
+    if (!row) return;
+    setBusy(true);
+    try {
+      await api('/admin/payments/' + row.id + path, { method: 'PATCH', body: JSON.stringify(body) });
+      notice(done);
+      onClose();
+      refresh();
+    } catch (e) {
+      notice((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const r = row;
+  const d = r?.payment_details || {};
+  const checklist = r
+    ? [
+        { key: 'amount', text: `Received exactly ${money(r.total)}` },
+        { key: 'tid', text: `Transaction ID ${r.transaction_id || '—'} matches your statement` },
+        { key: 'sender', text: `Sent by ${r.payer_name || 'the customer'}${r.payer_account ? ' · ' + r.payer_account : ''}` },
+      ]
+    : [];
+  const allChecked = checklist.every((c) => checks.includes(c.key));
+  const destination: [string, string | undefined][] = [
+    ['Bank', d.bank_name],
+    ['Wallet', d.provider],
+    ['Account title', d.account_title],
+    ['Account number', d.account_number],
+    ['IBAN', d.iban],
+    ['Mobile number', d.mobile_number],
+    ['Raast ID', d.raast_id],
+  ];
+  return (
+    <Modal open={!!r} onClose={() => !busy && onClose()} title={r ? 'Payment · ' + r.reference : 'Payment'} size="xl">
+      {r && (
+        <div className="order-panel">
+          <div className="op-hero">
+            <div className="op-hero-top">
+              <div className="panel-badges">
+                <PaymentStatusBadge order={r} />
+                <Badge value={r.status} />
+                <span className="pay-chip">
+                  <PaymentName order={r} />
+                </span>
               </div>
-            )}
-            {mode === 'reject' && (
-              <label>
-                Reason (sent to customer)
-                <textarea
-                  rows={2}
-                  maxLength={300}
-                  value={note}
-                  onChange={(e) => setNote(e.target.value)}
-                  placeholder="e.g. No transfer found with this TID"
-                  autoFocus
-                />
-              </label>
-            )}
-            <div className="form-foot">
-              {mode === 'reject' ? (
-                <>
-                  <button className="button ghost" onClick={() => setMode('review')}>
-                    Back
-                  </button>
-                  <button className="button danger" disabled={busy || !note.trim()} onClick={() => decide(review, 'reject')}>
-                    Reject payment
-                  </button>
-                </>
-              ) : mode === 'refund' ? (
-                <>
-                  <button className="button ghost" onClick={() => setMode('review')}>
-                    Back
-                  </button>
-                  <button className="button" disabled={busy} onClick={() => refund(review)}>
-                    <Undo2 size={16} /> Confirm refund sent
-                  </button>
-                </>
-              ) : (
-                <>
-                  {review.payment_status === 'refund_due' && (
-                    <button className="button ghost" onClick={() => setMode('refund')}>
-                      <Undo2 size={16} /> Mark refunded
-                    </button>
-                  )}
-                  {canDecide(review) && (
+              <span className="op-ref">
+                <Hash size={14} />
+                {r.reference}
+                <CopyButton value={r.reference} label="order number" />
+              </span>
+            </div>
+            <div className="op-meta">
+              <MetaItem icon={<Wallet size={17} />} label="Amount" tone="brand">
+                {money(r.total)}
+              </MetaItem>
+              <MetaItem icon={<CalendarClock size={17} />} label="Submitted">
+                {date(paidAt(r))}
+              </MetaItem>
+              <MetaItem icon={<Store size={17} />} label="Outlet">
+                {r.outlet_name}
+              </MetaItem>
+              <MetaItem icon={<UserRound size={17} />} label="Customer">
+                {r.name}
+              </MetaItem>
+            </div>
+          </div>
+
+          {r.status === 'cancelled' && r.cancel_reason && (
+            <div className="alert error">
+              <X size={16} /> Order cancelled: {r.cancel_reason}
+            </div>
+          )}
+          {r.payment_status === 'refund_due' && (
+            <div className="alert warn">
+              <Undo2 size={16} /> This order was cancelled after the payment was verified. Send {money(r.total)} back to the
+              customer, then mark it refunded.
+            </div>
+          )}
+
+          <div className="op-grid">
+            <div className="op-col">
+              <PanelSection icon={<CreditCard size={16} />} title="What the customer sent">
+                <div className="op-pay">
+                  <PaymentLogo
+                    method={{ ...d, type: methodType(r.payment_type) as PaymentMethod['type'] }}
+                    className="op-pay-logo"
+                    size={18}
+                  />
+                  <span className="op-person-text">
+                    <strong>{r.payment_name}</strong>
+                    <small>{typeInfo[methodType(r.payment_type)]?.title}</small>
+                  </span>
+                </div>
+                <dl className="op-kv">
+                  <dt>Transaction ID</dt>
+                  <dd>
+                    {r.transaction_id ? (
+                      <>
+                        <span className="mono">{r.transaction_id}</span>
+                        <CopyButton value={r.transaction_id} label="transaction ID" />
+                      </>
+                    ) : (
+                      '—'
+                    )}
+                  </dd>
+                  <dt>Sender</dt>
+                  <dd>{r.payer_name || '—'}</dd>
+                  {r.payer_account && (
                     <>
-                      <button className="button danger-ghost" onClick={() => setMode('reject')}>
-                        Reject
-                      </button>
-                      <button className="button" disabled={busy} onClick={() => decide(review, 'approve')}>
-                        <Check size={16} /> Verify payment received
-                      </button>
+                      <dt>From account</dt>
+                      <dd>
+                        <span className="mono">{r.payer_account}</span>
+                        <CopyButton value={r.payer_account} label="sender account" />
+                      </dd>
                     </>
                   )}
-                </>
+                </dl>
+                {r.payment_note && (
+                  <div className="op-note">
+                    <ReceiptText size={16} />
+                    <span>
+                      <small>{r.payment_status === 'rejected' ? 'Rejection reason' : 'Note'}</small>
+                      {r.payment_note}
+                    </span>
+                  </div>
+                )}
+              </PanelSection>
+              <PanelSection icon={<Landmark size={16} />} title="Paid into">
+                <dl className="op-kv">
+                  {destination
+                    .filter(([, v]) => v)
+                    .map(([k, v]) => (
+                      <Fragment key={k}>
+                        <dt>{k}</dt>
+                        <dd>
+                          <span className={/number|IBAN|ID/.test(k) ? 'mono' : ''}>{v}</span>
+                        </dd>
+                      </Fragment>
+                    ))}
+                </dl>
+                {!destination.some(([, v]) => v) && <small className="muted">No account details were saved on this order.</small>}
+              </PanelSection>
+              <PanelSection icon={<UserRound size={16} />} title="Customer">
+                <div className="op-person">
+                  <span className="op-avatar">{r.name.slice(0, 1).toUpperCase()}</span>
+                  <span className="op-person-text">
+                    <strong>{r.name}</strong>
+                    <small>{r.email || r.phone}</small>
+                  </span>
+                  <a className="op-chip" href={'tel:' + r.phone}>
+                    <Phone size={13} /> Call
+                  </a>
+                </div>
+              </PanelSection>
+            </div>
+            <div className="op-col">
+              <PanelSection
+                icon={<ImageIcon size={16} />}
+                title="Receipt"
+                aside={
+                  r.proof_url ? (
+                    <a className="op-chip" href={r.proof_url} target="_blank" rel="noreferrer">
+                      <ExternalLink size={13} /> Open full size
+                    </a>
+                  ) : undefined
+                }
+              >
+                {r.proof_url ? (
+                  <a href={r.proof_url} target="_blank" rel="noreferrer" className="pr-receipt">
+                    <img src={r.proof_url} alt="Payment receipt" />
+                  </a>
+                ) : (
+                  <div className="pr-empty">
+                    <ReceiptText size={22} />
+                    <strong>No screenshot uploaded</strong>
+                    <small>Match the transaction ID and amount against your account statement.</small>
+                  </div>
+                )}
+              </PanelSection>
+              {canDecide(r) && mode === 'review' && (
+                <PanelSection
+                  icon={<ListChecks size={16} />}
+                  title="Before you approve"
+                  aside={
+                    <small className="muted">
+                      {checks.length}/{checklist.length} checked
+                    </small>
+                  }
+                >
+                  <div className="pr-checks">
+                    {checklist.map((c) => (
+                      <label key={c.key} className="check">
+                        <input
+                          type="checkbox"
+                          checked={checks.includes(c.key)}
+                          onChange={(e) =>
+                            setChecks((list) => (e.target.checked ? [...list, c.key] : list.filter((x) => x !== c.key)))
+                          }
+                        />
+                        {c.text}
+                      </label>
+                    ))}
+                  </div>
+                </PanelSection>
+              )}
+              {r.reviewer_name && r.payment_status !== 'submitted' && (
+                <PanelSection icon={<History size={16} />} title="Review">
+                  <div className="op-person">
+                    <span className="op-avatar">{r.reviewer_name.slice(0, 1).toUpperCase()}</span>
+                    <span className="op-person-text">
+                      <strong>{r.reviewer_name}</strong>
+                      <small>
+                        {label(r.payment_status)}
+                        {r.payment_reviewed_at && ' · ' + date(r.payment_reviewed_at)}
+                      </small>
+                    </span>
+                  </div>
+                </PanelSection>
               )}
             </div>
           </div>
-        )}
-      </Modal>
-    </>
+
+          {mode === 'reject' && (
+            <label>
+              Reason (sent to the customer)
+              <textarea
+                rows={2}
+                maxLength={300}
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="e.g. No transfer found with this TID"
+                autoFocus
+              />
+            </label>
+          )}
+          {mode === 'refund' && (
+            <div className="form-grid">
+              <label>
+                Refund reference <span className="muted">(optional)</span>
+                <input maxLength={80} value={reference} onChange={(e) => setReference(e.target.value)} autoFocus />
+              </label>
+              <label>
+                Note <span className="muted">(optional)</span>
+                <input maxLength={300} value={note} onChange={(e) => setNote(e.target.value)} />
+              </label>
+            </div>
+          )}
+          <div className="panel-actions op-actions">
+            {mode === 'reject' ? (
+              <>
+                <button className="button ghost" onClick={() => setMode('review')}>
+                  Back
+                </button>
+                <button
+                  className="button danger"
+                  disabled={busy || !note.trim()}
+                  onClick={() => send('/verify', { decision: 'reject', note }, 'Payment rejected. Customer notified.')}
+                >
+                  <X size={16} /> Reject payment
+                </button>
+              </>
+            ) : mode === 'refund' ? (
+              <>
+                <button className="button ghost" onClick={() => setMode('review')}>
+                  Back
+                </button>
+                <button
+                  className="button"
+                  disabled={busy}
+                  onClick={() => send('/refund', { reference, note }, 'Refund recorded. Customer notified.')}
+                >
+                  <Undo2 size={16} /> Confirm refund sent
+                </button>
+              </>
+            ) : (
+              <>
+                {r.payment_status === 'refund_due' && (
+                  <button className="button" onClick={() => setMode('refund')}>
+                    <Undo2 size={16} /> Mark refunded
+                  </button>
+                )}
+                {canDecide(r) && (
+                  <>
+                    <button className="button danger-ghost" onClick={() => setMode('reject')}>
+                      <X size={16} /> Reject
+                    </button>
+                    <button
+                      className="button"
+                      disabled={busy || !allChecked}
+                      title={allChecked ? undefined : 'Tick each check first'}
+                      onClick={() =>
+                        send('/verify', { decision: 'approve', note: '' }, 'Payment verified. The order is ready to send.')
+                      }
+                    >
+                      <Check size={16} /> Verify payment received
+                    </button>
+                  </>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -1013,18 +1243,8 @@ const emptyMethod: RecordData = {
   provider: 'JazzCash',
   mobile_number: '',
   raast_id: '',
-  card_networks: [],
-  gateway: '',
-  environment: 'sandbox',
-  merchant_id: '',
-  public_key: '',
-  secret_key: '',
-  webhook_secret: '',
-  api_base_url: '',
-  three_d_secure: true,
   require_proof: false,
   active: true,
-  position: 0,
 };
 function PaymentMethods() {
   const { notice } = useApp();
@@ -1035,7 +1255,10 @@ function PaymentMethods() {
   const [formError, setFormError] = useState('');
   const set = (k: string, v: unknown) => setEdit((e) => (e ? { ...e, [k]: v } : e));
   const isExisting = !!edit && !!data?.some((m) => m.id === edit.id);
-  const hasCard = !!data?.some((m) => m.type === 'card');
+  const list = data || [];
+  const live = list.filter((m) => m.active);
+  const online = list.filter((m) => m.type !== 'cod');
+  const statsBusy = loading && !data;
   async function save(e: FormEvent) {
     e.preventDefault();
     if (!edit) return;
@@ -1043,37 +1266,76 @@ function PaymentMethods() {
     setFormError('');
     try {
       const { id, ...body } = edit;
-      if (body.type !== 'card') body.card_networks = [];
       // Known providers use the shared logo in public/paymentmethods, so no upload is stored.
       if (autoLogo(body)) body.logo = '';
       await api('/admin/records/payments/' + id, { method: 'PUT', body: JSON.stringify(body) });
       setEdit(null);
       refresh();
-      notice('Payment method saved.');
+      notice(isExisting ? 'Payment method saved.' : 'Payment method added. Select it on the products that should accept it.');
     } catch (err) {
       setFormError((err as Error).message);
     } finally {
       setBusy(false);
     }
   }
+  const add = () => {
+    setFormError('');
+    setEdit({ ...emptyMethod, id: crypto.randomUUID() });
+  };
   return (
     <>
+      <div className="stats">
+        <Stat
+          icon={<Wallet size={20} />}
+          label="Payment methods"
+          value={list.length}
+          hint={`${live.length} enabled at checkout`}
+          tone="blue"
+          loading={statsBusy}
+        />
+        <Stat
+          icon={<Banknote size={20} />}
+          label="Cash on delivery"
+          value={list.some((m) => m.type === 'cod' && m.active) ? 'On' : 'Off'}
+          hint="Rider collects cash at the door"
+          tone="green"
+          loading={statsBusy}
+        />
+        <Stat
+          icon={<Building2 size={20} />}
+          label="Online methods"
+          value={online.filter((m) => m.active).length}
+          hint={`${online.length} set up · bank, wallet and Raast`}
+          tone="purple"
+          loading={statsBusy}
+        />
+        <Stat
+          icon={<ReceiptText size={20} />}
+          label="Receipt required"
+          value={online.filter((m) => m.require_proof).length}
+          hint={`of ${online.length} online method${online.length === 1 ? '' : 's'}`}
+          tone="orange"
+          loading={statsBusy}
+        />
+      </div>
       <DataTable
+        title={
+          <span className="cell-stack">
+            <h3>Payment methods</h3>
+            <small className="muted">
+              Choose which methods each product accepts when you add or edit it under Products.
+            </small>
+          </span>
+        }
         rows={data}
         loading={loading}
         error={error}
         onRetry={refresh}
         rowKey={(m) => m.id}
-        search={(m) => `${m.name} ${accountSummary(m)}`}
+        search={(m) => `${m.name} ${accountSummary(m)} ${m.account_title || ''}`}
         searchPlaceholder="Search methods"
         toolbar={
-          <button
-            className="button"
-            onClick={() => {
-              setFormError('');
-              setEdit({ ...emptyMethod, id: crypto.randomUUID() });
-            }}
-          >
+          <button className="button" onClick={add}>
             <Plus size={16} /> Add method
           </button>
         }
@@ -1082,7 +1344,7 @@ function PaymentMethods() {
             key: 'type',
             label: 'Types',
             options: Object.entries(typeInfo).map(([value, t]) => ({ value, label: t.title })),
-            test: (m, v) => m.type === v || (v === 'bank' && m.type === 'manual'),
+            test: (m, v) => methodType(m.type) === v,
           },
           {
             key: 'status',
@@ -1094,22 +1356,21 @@ function PaymentMethods() {
             test: (m, v) => (v === 'on' ? !!m.active : !m.active),
           },
         ]}
+        empty="No payment methods yet. Add one so customers can pay."
         columns={[
           {
             key: 'name',
             header: 'Method',
-            render: (m) => {
-              const t = typeInfo[m.type] || typeInfo.bank;
-              return (
-                <div className="cell-main">
-                  <PaymentLogo method={m} className="n-icon payment" size={16} />
-                  <span className="cell-stack">
-                    <strong>{m.name}</strong>
-                    <small>{t.title}</small>
-                  </span>
-                </div>
-              );
-            },
+            sort: (m) => m.name,
+            render: (m) => (
+              <div className="cell-main">
+                <PaymentLogo method={m} className="n-icon payment" size={16} />
+                <span className="cell-stack">
+                  <strong>{m.name}</strong>
+                  <small>{typeInfo[methodType(m.type)]?.title}</small>
+                </span>
+              </div>
+            ),
           },
           {
             key: 'account',
@@ -1125,9 +1386,25 @@ function PaymentMethods() {
             key: 'proof',
             header: 'Receipt',
             render: (m) =>
-              m.type === 'cod' || m.type === 'card' ? '—' : m.require_proof ? 'Required' : 'Optional',
+              m.type === 'cod' ? (
+                <span className="muted">—</span>
+              ) : (
+                <Badge tone={m.require_proof ? 'warn' : 'neutral'}>{m.require_proof ? 'Required' : 'Optional'}</Badge>
+              ),
           },
-          { key: 'position', header: 'Order', sort: (m) => m.position || 0, render: (m) => m.position || 0 },
+          {
+            key: 'products',
+            header: 'Products',
+            sort: (m) => m.products || 0,
+            render: (m) =>
+              m.products ? (
+                <span>
+                  {m.products} product{m.products === 1 ? '' : 's'}
+                </span>
+              ) : (
+                <span className="muted">Not used</span>
+              ),
+          },
           {
             key: 'active',
             header: 'Enabled',
@@ -1138,7 +1415,11 @@ function PaymentMethods() {
                   try {
                     await api('/admin/records/payments/' + m.id, { method: 'PATCH', body: JSON.stringify({ active: v }) });
                     refresh();
-                    notice(v ? `${m.name} enabled at checkout.` : `${m.name} hidden from checkout.`);
+                    notice(
+                      v
+                        ? `${m.name} enabled for the products that accept it.`
+                        : `${m.name} hidden from checkout on every product.`,
+                    );
                   } catch (e) {
                     notice((e as Error).message);
                   }
@@ -1153,7 +1434,7 @@ function PaymentMethods() {
               label="Edit"
               onClick={() => {
                 setFormError('');
-                setEdit({ ...emptyMethod, ...m, type: m.type === 'manual' ? 'bank' : m.type });
+                setEdit({ ...emptyMethod, ...m, type: methodType(m.type) });
               }}
             >
               <Edit3 size={16} />
@@ -1174,7 +1455,7 @@ function PaymentMethods() {
                   <button
                     type="button"
                     key={value}
-                    disabled={isExisting || (value === 'card' && hasCard)}
+                    disabled={isExisting}
                     className={'type-card' + (edit.type === value ? ' selected' : '')}
                     onClick={() =>
                       setEdit({
@@ -1182,136 +1463,22 @@ function PaymentMethods() {
                         type: value,
                         name:
                           edit.name ||
-                          (value === 'wallet'
-                            ? edit.provider
-                            : value === 'cod'
-                              ? 'Cash on delivery'
-                              : value === 'raast'
-                                ? 'Raast'
-                                : value === 'card'
-                                  ? 'Card payment'
-                                  : ''),
-                        card_networks: value === 'card' && !edit.card_networks?.length ? ['Visa', 'Mastercard'] : edit.card_networks,
+                          (value === 'wallet' ? edit.provider : value === 'cod' ? 'Cash on delivery' : value === 'raast' ? 'Raast' : ''),
                       })
                     }
                   >
                     <t.icon size={20} />
                     <strong>{t.title}</strong>
-                    <small>
-                      {isExisting
-                        ? 'Type is fixed once a method is created'
-                        : value === 'card' && hasCard
-                          ? 'Already added — edit or delete the existing card method'
-                          : t.hint}
-                    </small>
+                    <small>{isExisting ? 'Type is fixed once a method is created' : t.hint}</small>
                   </button>
                 ))}
             </div>
             <div className="form-grid">
-              <label>
+              <label className="span-2">
                 Name shown at checkout
                 <input required value={edit.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. Meezan Bank transfer" />
               </label>
-              <label>
-                Display order
-                <input type="number" min={0} max={999} value={edit.position} onChange={(e) => set('position', Number(e.target.value))} />
-              </label>
-              {edit.type === 'card' && (
-                <>
-                  <h4 className="span-2 form-section">Gateway integration</h4>
-                  <ProviderField
-                    label="Payment gateway"
-                    groups={[['Payment gateways', cardGateways]]}
-                    value={edit.gateway}
-                    onChange={(v) => set('gateway', v)}
-                  />
-                  <label>
-                    Environment
-                    <select value={edit.environment} onChange={(e) => set('environment', e.target.value)}>
-                      <option value="sandbox">Sandbox (test payments)</option>
-                      <option value="live">Live (real payments)</option>
-                    </select>
-                  </label>
-                  <label>
-                    Merchant ID <span className="muted">(if your gateway uses one)</span>
-                    <input autoComplete="off" value={edit.merchant_id} onChange={(e) => set('merchant_id', e.target.value)} />
-                  </label>
-                  <label>
-                    Public / publishable key
-                    <input autoComplete="off" value={edit.public_key} onChange={(e) => set('public_key', e.target.value)} />
-                  </label>
-                  <label>
-                    Secret key
-                    <input
-                      type="password"
-                      autoComplete="new-password"
-                      required={!edit.secret_key_set}
-                      value={edit.secret_key}
-                      onChange={(e) => set('secret_key', e.target.value)}
-                      placeholder={edit.secret_key_set ? 'Saved — leave blank to keep' : ''}
-                    />
-                  </label>
-                  <label>
-                    Webhook signing secret <span className="muted">(optional)</span>
-                    <input
-                      type="password"
-                      autoComplete="new-password"
-                      value={edit.webhook_secret}
-                      onChange={(e) => set('webhook_secret', e.target.value)}
-                      placeholder={edit.webhook_secret_set ? 'Saved — leave blank to keep' : ''}
-                    />
-                  </label>
-                  {!cardGateways.some((g) => g.name === edit.gateway) && edit.gateway && (
-                    <label className="span-2">
-                      API base URL
-                      <input
-                        type="url"
-                        pattern="https://.*"
-                        value={edit.api_base_url}
-                        onChange={(e) => set('api_base_url', e.target.value)}
-                        placeholder="https://api.yourgateway.com"
-                      />
-                    </label>
-                  )}
-                  <div className="field span-2">
-                    <span className="field-label">Webhook URL (paste into your gateway dashboard)</span>
-                    <code className="webhook-url">{`${typeof window === 'undefined' ? '' : window.location.origin}/api/payments/card/webhook`}</code>
-                  </div>
-                  <div className="span-2">
-                    <Toggle
-                      checked={!!edit.three_d_secure}
-                      onChange={(v) => set('three_d_secure', v)}
-                      label="Require 3-D Secure (bank OTP) for every card payment"
-                    />
-                  </div>
-                  {isExisting && !edit.gateway_connected && (
-                    <div className="alert warn span-2">
-                      <ShieldCheck size={16} /> Settings are saved, but the {edit.gateway || 'selected'} gateway is not connected in
-                      the code yet, so checkout will refuse card payments. Keep this method disabled until it is connected.
-                    </div>
-                  )}
-                  <div className="field span-2">
-                    <span className="field-label">Accepted cards</span>
-                    <div className="toggle-list">
-                      {cardNetworks.map((n) => (
-                        <Toggle
-                          key={n}
-                          label={n}
-                          checked={(edit.card_networks || []).includes(n)}
-                          onChange={(v) =>
-                            set(
-                              'card_networks',
-                              v
-                                ? cardNetworks.filter((x) => x === n || (edit.card_networks || []).includes(x))
-                                : (edit.card_networks || []).filter((x: string) => x !== n),
-                            )
-                          }
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </>
-              )}
+              {edit.type !== 'cod' && <h4 className="span-2 form-section">Account details</h4>}
               {edit.type === 'bank' && (
                 <>
                   <ProviderField label="Bank" groups={[['Banks', banks]]} value={edit.bank_name} onChange={(v) => set('bank_name', v)} />
@@ -1392,8 +1559,7 @@ function PaymentMethods() {
                   <div className="logo-auto">
                     <PaymentLogo method={edit} className="n-icon payment" size={16} />
                     <small className="muted">
-                      Set automatically from{' '}
-                      {(!['raast', 'card'].includes(edit.type) && providerName(edit)) || typeInfo[edit.type]?.title}
+                      Set automatically from {(edit.type !== 'raast' && providerName(edit)) || typeInfo[edit.type]?.title}
                     </small>
                   </div>
                 </div>
@@ -1417,18 +1583,12 @@ function PaymentMethods() {
               </label>
             </div>
             <div className="toggle-list">
-              {edit.type !== 'cod' && edit.type !== 'card' && (
+              {edit.type !== 'cod' && (
                 <Toggle checked={!!edit.require_proof} onChange={(v) => set('require_proof', v)} label="Require a receipt screenshot" />
               )}
               <Toggle checked={!!edit.active} onChange={(v) => set('active', v)} label="Enabled at checkout" />
             </div>
-            {edit.type === 'card' && (
-              <div className="alert info">
-                <ShieldCheck size={16} /> Customers enter their card at checkout and the card details go straight to the gateway.
-                Paid orders need no manual verification. Secret keys are stored on the server and never shown again.
-              </div>
-            )}
-            {edit.type !== 'cod' && edit.type !== 'card' && (
+            {edit.type !== 'cod' && (
               <div className="alert info">
                 <ShieldCheck size={16} /> Customers enter the transaction ID after paying. Orders wait for your verification in the
                 Verification tab. Never enter passwords, PINs or API secrets here.
@@ -1467,283 +1627,12 @@ function PaymentMethods() {
           }
         }}
       >
-        “{remove?.name}” will be removed. Existing orders keep their payment details. To hide it temporarily, disable it instead.
+        “{remove?.name}” will be removed
+        {remove?.products
+          ? ` from ${remove.products} product${remove.products === 1 ? '' : 's'} as well. Products left without an enabled method cannot be ordered until you choose another`
+          : ''}
+        . Existing orders keep their payment details. To hide it temporarily, disable it instead.
       </Confirm>
-    </>
-  );
-}
-
-/* ---------- Admin access ---------- */
-export function StaffManager() {
-  const { data, error, loading, refresh } = useData<{ permissions: string[]; users: User[] }>('/admin/staff');
-  const { notice } = useApp();
-  const [edit, setEdit] = useState<RecordData | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState('');
-  async function save(e: FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setMessage('');
-    try {
-      await api('/admin/staff/' + edit!.id, {
-        method: 'PUT',
-        body: JSON.stringify({ ...edit, password: edit!.password || undefined }),
-      });
-      setEdit(null);
-      refresh();
-      notice('Administrator saved.');
-    } catch (e) {
-      setMessage((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <>
-      <DataTable
-        rows={data?.users}
-        loading={loading}
-        error={error}
-        onRetry={refresh}
-        rowKey={(u) => u.id}
-        search={(u) => u.name + ' ' + u.email}
-        searchPlaceholder="Search administrators"
-        toolbar={
-          <button
-            className="button"
-            onClick={() => {
-              setMessage('');
-              setEdit({ id: crypto.randomUUID(), name: '', email: '', password: '', permissions: [], active: true, isNew: true });
-            }}
-          >
-            <Plus size={16} /> Add administrator
-          </button>
-        }
-        columns={[
-          {
-            key: 'name',
-            header: 'Administrator',
-            render: (u) => (
-              <div className="cell-main">
-                <span className="avatar sm">{u.name.slice(0, 1)}</span>
-                <span className="cell-stack">
-                  <strong>{u.name}</strong>
-                  <small>{u.email}</small>
-                </span>
-              </div>
-            ),
-          },
-          {
-            key: 'role',
-            header: 'Role',
-            render: (u) => <Badge tone={u.is_super_admin ? 'purple' : 'info'}>{u.is_super_admin ? 'Super admin' : 'Admin'}</Badge>,
-          },
-          {
-            key: 'modules',
-            header: 'Modules',
-            render: (u) =>
-              u.is_super_admin ? (
-                'All modules'
-              ) : (
-                <span className="chip-list">
-                  {(u.permissions || []).slice(0, 4).map((p) => (
-                    <span className="chip small" key={p}>
-                      {label(p)}
-                    </span>
-                  ))}
-                  {(u.permissions?.length || 0) > 4 && <span className="chip small">+{(u.permissions?.length || 0) - 4}</span>}
-                </span>
-              ),
-          },
-          { key: 'status', header: 'Status', render: (u) => <Badge value={u.active ? 'active' : 'disabled'} /> },
-        ]}
-        actions={(u) =>
-          !u.is_super_admin && (
-            <IconAction
-              label="Edit access"
-              onClick={() => {
-                setMessage('');
-                setEdit({ ...u, active: !!u.active, password: '' });
-              }}
-            >
-              <Edit3 size={16} />
-            </IconAction>
-          )
-        }
-      />
-      <Modal open={!!edit} onClose={() => !busy && setEdit(null)} title="Administrator access" size="lg">
-        {edit && (
-          <form className="stack" onSubmit={save}>
-            <div className="form-grid">
-              <label>
-                Name
-                <input required value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} />
-              </label>
-              <label>
-                Email
-                <input required type="email" value={edit.email} onChange={(e) => setEdit({ ...edit, email: e.target.value })} />
-              </label>
-              <label className="span-2">
-                {edit.isNew ? 'Password (12+ characters)' : 'New password (optional)'}
-                <input
-                  type="password"
-                  required={!!edit.isNew}
-                  minLength={12}
-                  autoComplete="new-password"
-                  value={edit.password}
-                  onChange={(e) => setEdit({ ...edit, password: e.target.value })}
-                />
-              </label>
-            </div>
-            <fieldset className="fieldset">
-              <legend>
-                Modules
-                <button
-                  type="button"
-                  className="link"
-                  onClick={() =>
-                    setEdit({ ...edit, permissions: edit.permissions.length === data?.permissions.length ? [] : data?.permissions })
-                  }
-                >
-                  {edit.permissions.length === data?.permissions.length ? 'Clear all' : 'Select all'}
-                </button>
-              </legend>
-              <div className="permission-grid">
-                {data?.permissions.map((p) => (
-                  <label className="check" key={p}>
-                    <input
-                      type="checkbox"
-                      checked={edit.permissions.includes(p)}
-                      onChange={(e) =>
-                        setEdit({
-                          ...edit,
-                          permissions: e.target.checked ? [...edit.permissions, p] : edit.permissions.filter((x: string) => x !== p),
-                        })
-                      }
-                    />
-                    {label(p)}
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <Toggle checked={edit.active} onChange={(v) => setEdit({ ...edit, active: v })} label="Account enabled" />
-            <small className="muted">Saving signs this administrator out of existing sessions.</small>
-            {message && <ErrorBox error={message} />}
-            <div className="form-foot">
-              <button type="button" className="button ghost" onClick={() => setEdit(null)}>
-                Cancel
-              </button>
-              <button className="button" disabled={busy}>
-                Save access
-              </button>
-            </div>
-          </form>
-        )}
-      </Modal>
-    </>
-  );
-}
-
-/* ---------- Fleet ---------- */
-export function FleetManager() {
-  const { data, error, loading, refresh } = useData<RecordData[]>('/admin/tracking', 15000);
-  const { notice, locations } = useApp();
-  const [map, setMap] = useState<RecordData | null>(null);
-  async function update(r: RecordData, patch: { available?: boolean; capacity?: number }) {
-    try {
-      await api('/admin/rider-controls/' + r.id, {
-        method: 'PUT',
-        body: JSON.stringify({ available: r.available !== 0, capacity: r.capacity ?? 5, ...patch }),
-      });
-      refresh();
-      notice('Dispatch settings saved.');
-    } catch (e) {
-      notice((e as Error).message);
-    }
-  }
-  return (
-    <>
-      <DataTable
-        title={<h3>Fleet & live positions</h3>}
-        rows={data}
-        loading={loading}
-        error={error}
-        onRetry={refresh}
-        rowKey={(r) => r.id}
-        pageSize={5}
-        search={(r) => r.name}
-        searchPlaceholder="Search fleet"
-        filters={[
-          {
-            key: 'availability',
-            label: 'Availability',
-            options: [
-              { value: 'on', label: 'On duty' },
-              { value: 'off', label: 'Off duty' },
-            ],
-            test: (r, v) => (v === 'on' ? r.available !== 0 : r.available === 0),
-          },
-        ]}
-        columns={[
-          {
-            key: 'name',
-            header: 'Rider',
-            render: (r) => (
-              <span className="cell-stack">
-                <strong>{r.name}</strong>
-                <small>{locations.find((l) => l.id === r.location_id)?.name}</small>
-              </span>
-            ),
-          },
-          {
-            key: 'available',
-            header: 'On duty',
-            render: (r) => <Toggle checked={r.available !== 0} onChange={(v) => update(r, { available: v })} />,
-          },
-          {
-            key: 'load',
-            header: 'Load',
-            sort: (r) => r.load,
-            render: (r) => (
-              <span className="load">
-                <strong>{r.load}</strong> /
-                <select
-                  aria-label="Capacity"
-                  value={r.capacity ?? 5}
-                  onChange={(e) => update(r, { capacity: Number(e.target.value) })}
-                >
-                  {Array.from({ length: 20 }, (_, i) => i + 1).map((n) => (
-                    <option key={n}>{n}</option>
-                  ))}
-                </select>
-              </span>
-            ),
-          },
-          {
-            key: 'position',
-            header: 'Last position',
-            render: (r) =>
-              r.lat != null ? (
-                <span className="cell-stack">
-                  <span>{date(r.updated_at)}</span>
-                  <small>±{Math.round(r.accuracy)} m</small>
-                </span>
-              ) : (
-                <span className="muted">Not shared</span>
-              ),
-          },
-        ]}
-        actions={(r) =>
-          r.lat != null && (
-            <IconAction label="Show on map" onClick={() => setMap(r)}>
-              <MapPin size={16} />
-            </IconAction>
-          )
-        }
-      />
-      <Modal open={!!map} onClose={() => setMap(null)} title={map ? map.name + ' · last position' : ''}>
-        {map && <Map lat={map.lat} lng={map.lng} />}
-      </Modal>
     </>
   );
 }
@@ -1830,117 +1719,637 @@ export function RiderTools() {
 }
 
 /* ---------- Customers & audit ---------- */
+type AdminCustomer = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  address: string;
+  location_id: string | null;
+  active: number;
+  created_at: string;
+  /** Empty until the customer enters the code emailed to them; they cannot sign in before that. */
+  email_verified_at: string | null;
+  last_login_at: string | null;
+  admin_notes: string;
+  orders: number;
+  active_orders: number;
+  cancelled: number;
+  spent: number;
+  last_order_at: string | null;
+  /** Figures for the time frame chosen above the cards. */
+  orders_range: number;
+  spent_range: number;
+  code_sent_at: string | null;
+};
+type CustomerOrder = {
+  id: string;
+  reference: string;
+  status: string;
+  total: number;
+  created_at: string;
+  outlet_name: string | null;
+  payment_name: string | null;
+};
 export function CustomerDirectory() {
-  const { data, error, loading, refresh } = useData<RecordData[]>('/admin/customers');
-  const { notice } = useApp();
+  const { notice, locations } = useApp();
+  const { range, setRange, query, key, label: rangeText } = useRange('30d');
+  const { data, setData, error, loading, refresh } = useData<AdminCustomer[]>(
+    '/admin/customers' + query,
+    30000,
+    'customers:' + key,
+  );
+  // Shown only to administrators who may see email settings; others simply get no warning.
+  const { data: email } = useData<{ source: string }>('/admin/email-settings');
+  const [view, setView] = useState<string | null>(null);
+  const [edit, setEdit] = useState<RecordData | null>(null);
+  const [remove, setRemove] = useState<AdminCustomer | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState('');
+  const areaName = (id: string | null) => locations.find((l) => l.id === id)?.name || '';
+  const set = (k: string, v: unknown) => setEdit((e) => (e ? { ...e, [k]: v } : e));
+  function start(c?: AdminCustomer) {
+    setFormError('');
+    setEdit(
+      c
+        ? { ...c, location_id: c.location_id || '', password: '' }
+        : { name: '', email: '', phone: '', address: '', location_id: '', admin_notes: '', password: '', verified: true },
+    );
+  }
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    if (!edit) return;
+    setBusy(true);
+    setFormError('');
+    try {
+      await api('/admin/customers' + (edit.id ? '/' + edit.id : ''), {
+        method: edit.id ? 'PUT' : 'POST',
+        body: JSON.stringify({ ...edit, password: edit.password || undefined }),
+      });
+      refresh();
+      notice(
+        edit.id
+          ? 'Customer saved.'
+          : edit.verified
+            ? 'Customer added. They can sign in right away.'
+            : 'Customer added. A verification code has been emailed to them.',
+      );
+      setEdit(null);
+    } catch (e) {
+      setFormError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  /** Flips a switch at once and saves just that setting; the list reloads only if the save fails. */
+  async function quick(c: AdminCustomer, change: { active?: boolean; verified?: boolean }, done: string) {
+    setData(
+      (rows) =>
+        rows &&
+        rows.map((x) =>
+          x.id === c.id
+            ? {
+                ...x,
+                ...(change.active !== undefined ? { active: Number(change.active) } : {}),
+                ...(change.verified !== undefined
+                  ? { email_verified_at: change.verified ? x.email_verified_at || new Date().toISOString() : null }
+                  : {}),
+              }
+            : x,
+        ),
+    );
+    try {
+      await api('/admin/customers/' + c.id, { method: 'PATCH', body: JSON.stringify(change) });
+      notice(done);
+    } catch (e) {
+      notice((e as Error).message);
+      refresh();
+    }
+  }
+  /** A one-off action from the detail view. */
+  async function act(c: AdminCustomer, path: string, done: (r: RecordData) => string) {
+    setBusy(true);
+    try {
+      notice(done(await api<RecordData>('/admin/customers/' + c.id + path, { method: 'POST' })));
+      refresh();
+    } catch (e) {
+      notice((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const list = data || [];
+  const pending = list.filter((c) => !c.email_verified_at);
+  const statsBusy = loading && !data;
+  const sum = (get: (c: AdminCustomer) => number) => list.reduce((n, c) => n + (get(c) || 0), 0);
+  const joined = list.filter((c) => inRange(c.created_at, range));
+  const buyers = list.filter((c) => c.orders_range > 0).length;
+  const current = view ? list.find((c) => c.id === view) : undefined;
   return (
-    <DataTable
-      rows={data}
-      loading={loading}
-      error={error}
-      onRetry={refresh}
-      rowKey={(c) => c.id}
-      search={(c) => `${c.name} ${c.email} ${c.phone}`}
-      searchPlaceholder="Search name, email or phone"
-      empty="No customer accounts yet."
-      filters={[
-        {
-          key: 'status',
-          label: 'Statuses',
-          options: [
-            { value: 'active', label: 'Active' },
-            { value: 'disabled', label: 'Disabled' },
-          ],
-          test: (c, v) => (v === 'active' ? !!c.active : !c.active),
-        },
-        {
-          key: 'orders',
-          label: 'Order history',
-          options: [
-            { value: 'none', label: 'No orders' },
-            { value: 'some', label: 'Has ordered' },
-          ],
-          test: (c, v) => (v === 'none' ? c.orders === 0 : c.orders > 0),
-        },
-      ]}
-      columns={[
-        {
-          key: 'name',
-          header: 'Customer',
-          sort: (c) => c.name.toLowerCase(),
-          render: (c) => (
-            <div className="cell-main">
-              <span className="avatar sm">{c.name.slice(0, 1)}</span>
-              <span className="cell-stack">
-                <strong>{c.name}</strong>
-                <small>{c.email}</small>
-              </span>
-            </div>
-          ),
-        },
-        { key: 'phone', header: 'Phone', render: (c) => <a href={'tel:' + c.phone}>{c.phone}</a> },
-        { key: 'orders', header: 'Orders', sort: (c) => c.orders, render: (c) => c.orders },
-        { key: 'spent', header: 'Delivered spend', sort: (c) => c.spent, render: (c) => money(c.spent) },
-        { key: 'joined', header: 'Joined', sort: (c) => c.created_at, render: (c) => date(c.created_at) },
-        {
-          key: 'active',
-          header: 'Access',
-          render: (c) => (
-            <Toggle
-              checked={!!c.active}
-              onChange={async (v) => {
-                try {
-                  await api('/admin/customers/' + c.id, { method: 'PATCH', body: JSON.stringify({ active: v }) });
-                  refresh();
-                  notice(v ? 'Account enabled.' : 'Account disabled and signed out.');
-                } catch (e) {
-                  notice((e as Error).message);
-                }
-              }}
-            />
-          ),
-        },
-      ]}
-      actions={(c) => (
-        <IconAction label="Email customer" href={'mailto:' + c.email}>
-          <Mail size={16} />
-        </IconAction>
+    <div className="stack">
+      {email?.source === 'none' && (
+        <div className="alert warn">
+          <MailWarning size={16} /> Email is not set up, so verification codes cannot be sent and new customers cannot sign
+          up. <a href="/admin?tab=settings">Add your SMTP details in Store settings.</a>
+        </div>
       )}
-    />
+      <FilterBar title="Customers" hint={`Showing ${rangeText.toLowerCase()}`} range={range} onRange={setRange} />
+      <div className="stats">
+        <Stat
+          icon={<Users size={20} />}
+          label="Customers"
+          value={list.length}
+          hint={`${list.length - pending.length} verified · ${list.filter((c) => !c.active).length} blocked · live`}
+          tone="blue"
+          loading={statsBusy}
+        />
+        <Stat
+          icon={<UserPlus size={20} />}
+          label="New sign-ups"
+          value={joined.length}
+          hint={`${joined.filter((c) => c.email_verified_at).length} verified their email`}
+          tone="green"
+          loading={loading}
+        />
+        <Stat
+          icon={<ShoppingBag size={20} />}
+          label="Orders"
+          value={sum((c) => c.orders_range)}
+          hint={`from ${buyers} customer${buyers === 1 ? '' : 's'}`}
+          tone="orange"
+          loading={loading}
+        />
+        <Stat
+          icon={<Wallet size={20} />}
+          label="Delivered spend"
+          value={money(sum((c) => c.spent_range))}
+          hint="Order totals delivered in this period"
+          tone="purple"
+          loading={loading}
+        />
+        <Stat
+          icon={<MailWarning size={20} />}
+          label="Awaiting verification"
+          value={pending.length}
+          hint="Signed up but cannot sign in yet · live"
+          tone="red"
+          quiet={!pending.length}
+          loading={statsBusy}
+        />
+      </div>
+      <DataTable
+        rows={data}
+        loading={loading}
+        error={error}
+        onRetry={refresh}
+        rowKey={(c) => c.id}
+        onRowClick={(c) => setView(c.id)}
+        search={(c) => `${c.name} ${c.email} ${c.phone} ${c.address}`}
+        searchPlaceholder="Search name, email, phone"
+        empty="No customer accounts yet."
+        toolbar={
+          <button className="button" onClick={() => start()}>
+            <Plus size={16} /> Add customer
+          </button>
+        }
+        filters={[
+          {
+            key: 'status',
+            label: 'Statuses',
+            options: [
+              { value: 'active', label: 'Can sign in' },
+              { value: 'blocked', label: 'Blocked' },
+            ],
+            test: (c, v) => (v === 'active' ? !!c.active : !c.active),
+          },
+          {
+            key: 'email',
+            label: 'Email statuses',
+            options: [
+              { value: 'verified', label: 'Verified' },
+              { value: 'pending', label: 'Awaiting verification' },
+            ],
+            test: (c, v) => (v === 'verified') === !!c.email_verified_at,
+          },
+          {
+            key: 'orders',
+            label: 'Order history',
+            options: [
+              { value: 'none', label: 'No orders' },
+              { value: 'some', label: 'Has ordered' },
+              { value: 'open', label: 'Order in progress' },
+              { value: 'repeat', label: 'Repeat customer' },
+            ],
+            test: (c, v) =>
+              v === 'none' ? c.orders === 0 : v === 'some' ? c.orders > 0 : v === 'open' ? c.active_orders > 0 : c.orders > 1,
+          },
+          {
+            key: 'area',
+            label: 'Areas',
+            options: locations.map((l) => ({ value: l.id, label: l.name })),
+            test: (c, v) => c.location_id === v,
+          },
+        ]}
+        columns={[
+          {
+            key: 'name',
+            header: 'Customer',
+            sort: (c) => c.name.toLowerCase(),
+            render: (c) => (
+              <div className="cell-main">
+                <span className="avatar sm">{c.name.slice(0, 1)}</span>
+                <span className="cell-stack">
+                  <strong>{c.name}</strong>
+                  <small>{c.email}</small>
+                </span>
+              </div>
+            ),
+          },
+          {
+            key: 'phone',
+            header: 'Contact',
+            render: (c) => (
+              <span className="cell-stack">
+                <span>{c.phone || '—'}</span>
+                <small>{areaName(c.location_id) || 'No area'}</small>
+              </span>
+            ),
+          },
+          {
+            key: 'email',
+            header: 'Email',
+            render: (c) =>
+              c.email_verified_at ? (
+                <Badge tone="success">Verified</Badge>
+              ) : (
+                <span className="cell-stack">
+                  <Badge tone="warn">Awaiting code</Badge>
+                  {c.code_sent_at && <small>Sent {date(c.code_sent_at)}</small>}
+                </span>
+              ),
+          },
+          {
+            key: 'orders',
+            header: 'Orders',
+            sort: (c) => c.orders,
+            render: (c) => (
+              <span className="cell-stack">
+                <strong>{c.orders}</strong>
+                <small>
+                  {c.active_orders
+                    ? c.active_orders + ' in progress'
+                    : c.last_order_at
+                      ? 'Last ' + date(c.last_order_at)
+                      : 'None yet'}
+                </small>
+              </span>
+            ),
+          },
+          {
+            key: 'spent',
+            header: 'Delivered spend',
+            sort: (c) => c.spent,
+            render: (c) => <strong>{money(c.spent)}</strong>,
+          },
+          {
+            key: 'joined',
+            header: 'Joined',
+            sort: (c) => c.created_at,
+            render: (c) => (
+              <span className="cell-stack">
+                <span>{date(c.created_at)}</span>
+                <small>{c.last_login_at ? 'Signed in ' + date(c.last_login_at) : 'Never signed in'}</small>
+              </span>
+            ),
+          },
+          {
+            key: 'active',
+            header: 'Can sign in',
+            render: (c) => (
+              <Toggle
+                checked={!!c.active}
+                onChange={(v) => quick(c, { active: v }, v ? 'Account unblocked.' : 'Account blocked and signed out.')}
+              />
+            ),
+          },
+        ]}
+        actions={(c) => (
+          <>
+            <IconAction label="View customer" onClick={() => setView(c.id)}>
+              <Eye size={16} />
+            </IconAction>
+            <IconAction label="Edit customer" onClick={() => start(c)}>
+              <Edit3 size={16} />
+            </IconAction>
+            <IconAction label="Delete customer" tone="danger" onClick={() => setRemove(c)}>
+              <Trash2 size={16} />
+            </IconAction>
+          </>
+        )}
+      />
+      <Modal open={!!current} onClose={() => setView(null)} title={current ? 'Customer · ' + current.name : 'Customer'} size="xl">
+        {current && (
+          <CustomerPanel
+            customer={current}
+            area={areaName(current.location_id)}
+            busy={busy}
+            onActive={(v) => quick(current, { active: v }, v ? 'Account unblocked.' : 'Account blocked and signed out.')}
+            onVerified={(v) =>
+              quick(
+                current,
+                { verified: v },
+                v ? 'Email marked as verified. The customer can sign in.' : 'Email marked as unverified. The customer was signed out.',
+              )
+            }
+            onSendCode={() => act(current, '/send-code', () => 'A new verification code has been emailed.')}
+            onSignOut={() =>
+              act(current, '/sign-out', (r) =>
+                r.sessions ? `Signed out of ${r.sessions} device${r.sessions === 1 ? '' : 's'}.` : 'The customer was not signed in anywhere.',
+              )
+            }
+            onEdit={() => {
+              setView(null);
+              start(current);
+            }}
+            onDelete={() => {
+              setView(null);
+              setRemove(current);
+            }}
+          />
+        )}
+      </Modal>
+      <Modal open={!!edit} onClose={() => !busy && setEdit(null)} title={edit?.id ? 'Edit customer' : 'Add customer'} size="lg">
+        {edit && (
+          <form className="stack" onSubmit={save}>
+            <div className="form-grid">
+              <h4 className="span-2 form-section">Customer</h4>
+              <label>
+                Full name
+                <input required maxLength={100} value={edit.name} onChange={(e) => set('name', e.target.value)} />
+              </label>
+              <label>
+                Phone
+                <input required type="tel" value={edit.phone} onChange={(e) => set('phone', e.target.value)} placeholder="03XXXXXXXXX" />
+              </label>
+              <label>
+                Email
+                <input required type="email" value={edit.email} onChange={(e) => set('email', e.target.value)} />
+                <small>The customer signs in with this address.</small>
+              </label>
+              <label>
+                Delivery area <span className="muted">(optional)</span>
+                <select value={edit.location_id} onChange={(e) => set('location_id', e.target.value)}>
+                  <option value="">No area</option>
+                  {locations.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="span-2">
+                Address <span className="muted">(optional)</span>
+                <input maxLength={500} value={edit.address} onChange={(e) => set('address', e.target.value)} />
+              </label>
+
+              <h4 className="span-2 form-section">Sign-in</h4>
+              <label>
+                {edit.id ? 'New password (optional)' : 'Password'}
+                <input
+                  type="password"
+                  required={!edit.id}
+                  minLength={10}
+                  maxLength={100}
+                  autoComplete="new-password"
+                  value={edit.password}
+                  onChange={(e) => set('password', e.target.value)}
+                />
+                <small>
+                  {edit.id ? 'Setting one signs the customer out everywhere. Leave blank to keep it.' : 'At least 10 characters.'}
+                </small>
+              </label>
+              <label className="span-2">
+                Internal notes <span className="muted">(optional, administrators only)</span>
+                <textarea rows={2} maxLength={2000} value={edit.admin_notes} onChange={(e) => set('admin_notes', e.target.value)} />
+              </label>
+            </div>
+            {!edit.id && (
+              <Toggle
+                checked={!!edit.verified}
+                onChange={(v) => set('verified', v)}
+                label="Email already verified (turn off to email the customer a 6-digit code first)"
+              />
+            )}
+            {formError && <ErrorBox error={formError} />}
+            <div className="form-foot">
+              <button type="button" className="button ghost" onClick={() => setEdit(null)}>
+                Cancel
+              </button>
+              <button className="button" disabled={busy}>
+                {busy ? 'Saving…' : 'Save customer'}
+              </button>
+            </div>
+          </form>
+        )}
+      </Modal>
+      <Confirm
+        open={!!remove}
+        title="Delete customer?"
+        confirm="Delete"
+        danger
+        busy={busy}
+        onClose={() => setRemove(null)}
+        onConfirm={async () => {
+          setBusy(true);
+          try {
+            const r = await api<{ erased: boolean }>('/admin/customers/' + remove!.id, { method: 'DELETE' });
+            setRemove(null);
+            refresh();
+            notice(r.erased ? 'Account closed and personal details erased. Past orders were kept.' : 'Customer deleted.');
+          } catch (e) {
+            notice((e as Error).message);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {remove?.active_orders
+          ? `“${remove.name}” has ${remove.active_orders} order${remove.active_orders === 1 ? '' : 's'} in progress, so the account cannot be deleted yet. Finish or cancel ${remove.active_orders === 1 ? 'it' : 'them'} first, or block the account instead.`
+          : remove?.orders
+            ? `“${remove.name}” has ${remove.orders} past order${remove.orders === 1 ? '' : 's'}. The account will be closed and the name, email, phone and address erased. The orders stay in your records with the delivery details they were placed with. This cannot be undone.`
+            : `“${remove?.name}” has no orders, so the account will be removed completely. This cannot be undone.`}
+      </Confirm>
+    </div>
   );
 }
-export function AuditLog() {
-  const { data, error, loading } = useData<RecordData[]>('/admin/audit', 20000);
+
+/** Everything about one customer: contact, account controls and recent orders. */
+function CustomerPanel({
+  customer: c,
+  area,
+  busy,
+  onActive,
+  onVerified,
+  onSendCode,
+  onSignOut,
+  onEdit,
+  onDelete,
+}: {
+  customer: AdminCustomer;
+  area: string;
+  busy: boolean;
+  onActive: (v: boolean) => void;
+  onVerified: (v: boolean) => void;
+  onSendCode: () => void;
+  onSignOut: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const { data: orders, loading, error } = useData<CustomerOrder[]>('/admin/customers/' + c.id + '/orders');
   return (
-    <DataTable
-      rows={data}
-      loading={loading}
-      error={error}
-      rowKey={(r) => r.id}
-      pageSize={20}
-      search={(r) => `${r.name} ${r.target}`}
-      searchPlaceholder="Search administrator or resource"
-      empty="No activity yet."
-      filters={[
-        {
-          key: 'method',
-          label: 'Actions',
-          options: ['POST', 'PUT', 'PATCH', 'DELETE'].map((m) => ({ value: m, label: m })),
-          test: (r, v) => r.action === v,
-        },
-      ]}
-      columns={[
-        { key: 'who', header: 'Administrator', render: (r) => <strong>{r.name || '—'}</strong> },
-        {
-          key: 'action',
-          header: 'Action',
-          render: (r) => (
-            <Badge tone={r.action === 'DELETE' ? 'danger' : r.action === 'POST' ? 'success' : 'info'}>{r.action}</Badge>
-          ),
-        },
-        { key: 'target', header: 'Resource', render: (r) => <code>{r.target}</code> },
-        { key: 'time', header: 'Time', sort: (r) => r.created_at, render: (r) => date(r.created_at) },
-      ]}
-    />
+    <div className="order-panel">
+      <div className="op-hero">
+        <div className="op-hero-top">
+          <div className="panel-badges">
+            <Badge tone={c.active ? 'success' : 'danger'}>{c.active ? 'Can sign in' : 'Blocked'}</Badge>
+            <Badge tone={c.email_verified_at ? 'success' : 'warn'}>
+              {c.email_verified_at ? 'Email verified' : 'Awaiting verification'}
+            </Badge>
+            {c.active_orders > 0 && <Badge tone="info">{c.active_orders} order{c.active_orders === 1 ? '' : 's'} in progress</Badge>}
+          </div>
+          <span className="op-ref">
+            <Mail size={14} />
+            {c.email}
+            <CopyButton value={c.email} label="email" />
+          </span>
+        </div>
+        <div className="op-meta">
+          <MetaItem icon={<ShoppingBag size={17} />} label="Orders">
+            {c.orders}
+          </MetaItem>
+          <MetaItem icon={<Wallet size={17} />} label="Delivered spend" tone="brand">
+            {money(c.spent)}
+          </MetaItem>
+          <MetaItem icon={<CalendarClock size={17} />} label="Joined">
+            {date(c.created_at)}
+          </MetaItem>
+          <MetaItem icon={<History size={17} />} label="Last sign-in">
+            {c.last_login_at ? date(c.last_login_at) : 'Never'}
+          </MetaItem>
+        </div>
+      </div>
+
+      {!c.email_verified_at && (
+        <div className="alert warn">
+          <MailWarning size={16} /> This customer has not entered their email code yet, so they cannot sign in.
+          {c.code_sent_at && ' The last code was sent ' + date(c.code_sent_at) + '.'}
+        </div>
+      )}
+
+      <div className="op-grid">
+        <div className="op-col">
+          <PanelSection icon={<UserRound size={16} />} title="Contact">
+            <div className="op-person">
+              <span className="op-avatar">{c.name.slice(0, 1).toUpperCase()}</span>
+              <span className="op-person-text">
+                <strong>{c.name}</strong>
+                <small>{c.phone || 'No phone'}</small>
+              </span>
+              {c.phone && (
+                <a className="op-chip" href={'tel:' + c.phone}>
+                  <Phone size={13} /> Call
+                </a>
+              )}
+              <a className="op-chip" href={'mailto:' + c.email}>
+                <Mail size={13} /> Email
+              </a>
+            </div>
+            <dl className="op-kv">
+              <dt>Area</dt>
+              <dd>{area || '—'}</dd>
+              <dt>Address</dt>
+              <dd>{c.address || '—'}</dd>
+              {c.cancelled > 0 && (
+                <>
+                  <dt>Cancelled</dt>
+                  <dd>
+                    {c.cancelled} order{c.cancelled === 1 ? '' : 's'}
+                  </dd>
+                </>
+              )}
+            </dl>
+          </PanelSection>
+          <PanelSection icon={<ShieldCheck size={16} />} title="Account controls">
+            <div className="toggle-list">
+              <Toggle checked={!!c.active} onChange={onActive} label="Can sign in (turn off to block the account)" />
+              <Toggle
+                checked={!!c.email_verified_at}
+                onChange={onVerified}
+                label="Email verified (turn off to require a new code)"
+              />
+            </div>
+            <div className="panel-actions">
+              {!c.email_verified_at && (
+                <RowAction icon={<Send size={14} />} disabled={busy} onClick={onSendCode}>
+                  Email a new code
+                </RowAction>
+              )}
+              <RowAction icon={<LogOut size={14} />} disabled={busy} onClick={onSignOut}>
+                Sign out everywhere
+              </RowAction>
+            </div>
+          </PanelSection>
+          {c.admin_notes && (
+            <PanelSection icon={<StickyNote size={16} />} title="Internal notes">
+              <p className="muted" style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
+                {c.admin_notes}
+              </p>
+            </PanelSection>
+          )}
+        </div>
+        <div className="op-col">
+          <PanelSection
+            icon={<ReceiptText size={16} />}
+            title="Recent orders"
+            aside={orders?.length ? <small className="muted">Latest {orders.length}</small> : undefined}
+          >
+            {loading && !orders ? (
+              <Loading />
+            ) : error ? (
+              <ErrorBox error={error} />
+            ) : orders?.length ? (
+              <div className="customer-orders">
+                {orders.map((o) => (
+                  <a key={o.id} href={'/orders/' + o.id} target="_blank" rel="noreferrer" className="customer-order">
+                    <span className="cell-stack">
+                      <strong>{o.reference}</strong>
+                      <small>
+                        {date(o.created_at)}
+                        {o.outlet_name && ' · ' + o.outlet_name}
+                      </small>
+                    </span>
+                    <span className="cell-stack end">
+                      <strong>{money(o.total)}</strong>
+                      <Badge value={o.status} />
+                    </span>
+                  </a>
+                ))}
+              </div>
+            ) : (
+              <small className="muted">This customer has not placed an order yet.</small>
+            )}
+          </PanelSection>
+        </div>
+      </div>
+      <div className="panel-actions op-actions">
+        <button className="button danger-ghost" onClick={onDelete}>
+          <Trash2 size={16} /> Delete
+        </button>
+        <button className="button" onClick={onEdit}>
+          <Edit3 size={16} /> Edit customer
+        </button>
+      </div>
+    </div>
   );
 }
+

@@ -1,5 +1,5 @@
 import { PGlite } from '@electric-sql/pglite';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { setTestDatabase, type Connection } from '../../apps/api/src/db.js';
 import { setTestStorage, type StoredObject } from '../../apps/api/src/storage.js';
@@ -7,9 +7,8 @@ import { setTestStorage, type StoredObject } from '../../apps/api/src/storage.js
 export const storedObjects = new Map<string, StoredObject>();
 export async function setupTestDatabase() {
   const postgres = new PGlite();
-  await postgres.exec(
-    readFileSync(resolve('supabase/migrations/202609180001_initial.sql'), 'utf8'),
-  );
+  for (const file of readdirSync(resolve('supabase/migrations')).filter((f) => f.endsWith('.sql')).sort())
+    await postgres.exec(readFileSync(resolve('supabase/migrations', file), 'utf8'));
   function connection(engine: Pick<PGlite, 'query'>): Connection {
     return {
       async query(sql, params) {

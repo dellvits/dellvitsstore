@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { useState, useEffect } from 'react';
+import { Fragment, useState, useEffect } from 'react';
 import {
   ArrowRight,
   Check,
@@ -21,11 +21,20 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { useApp } from './Provider';
+import { useApp, maxQuantity, orderLimit } from './Provider';
 import { ProductCard, OutletCard, Empty, ErrorBox, Quantity, Skeleton } from './UI';
+import { PaymentLogo } from './Checkout';
 import { useData } from '@/lib/useData';
-import { money } from '@/lib/api';
-import type { Product, Outlet } from '@/lib/types';
+import { money, openingHours } from '@/lib/api';
+import type { Category, Product, Outlet, PaymentMethod } from '@/lib/types';
+import { AdSlot } from './Ads';
+
+/** Splits a comma- or line-separated product list into its items. */
+const listItems = (s: string) =>
+  s
+    .split(/,|\n/)
+    .map((x) => x.trim())
+    .filter(Boolean);
 
 function NeedsArea() {
   const { openLocation } = useApp();
@@ -39,7 +48,7 @@ function NeedsArea() {
 }
 
 export function Catalog({ outletId }: { outletId?: string }) {
-  const { data: categories } = useData<{ name: string }[]>('/categories');
+  const { data: categories } = useData<Category[]>('/categories');
   const params = useSearchParams();
   const router = useRouter();
   const { area, areaStatus, openLocation } = useApp();
@@ -80,13 +89,20 @@ export function Catalog({ outletId }: { outletId?: string }) {
     );
   return (
     <div className="container page">
+      {!outletId && <AdSlot placement="search" inline />}
       {outlet ? (
         <div className="outlet-hero">
           <img src={outlet.image} alt="" />
           <div className="outlet-hero-copy">
             <span className="chip">{outlet.category}</span>
             <h1>{outlet.name}</h1>
+            {outlet.description && <p>{outlet.description}</p>}
             <div className="outlet-hero-meta">
+              <span>
+                <Clock size={15} /> {openingHours(outlet) || 'Open 24 hours'}
+                {outlet.open === false && ' · Closed now'}
+              </span>
+              {!!outlet.minimum_order && <span>Min. order {money(outlet.minimum_order)}</span>}
               <span>
                 <MapPin size={15} /> {outlet.address}
               </span>
@@ -127,9 +143,10 @@ export function Catalog({ outletId }: { outletId?: string }) {
           </form>
         </div>
       )}
+      {outletId && <AdSlot placement="outlet" inline />}
       <div className="catalog-bar">
         <div className="chips-scroll">
-          {['All', ...(categories || []).map((c) => c.name)].map((c) => (
+          {['All', ...(categories || []).filter((c) => c.show_in_filters !== false).map((c) => c.name)].map((c) => (
             <button
               key={c}
               className={'filter-chip' + (cat === c ? ' selected' : '')}
@@ -169,8 +186,12 @@ export function Catalog({ outletId }: { outletId?: string }) {
         <>
           <p className="results-count">{items.length} items</p>
           <div className="product-grid">
-            {items.map((p) => (
-              <ProductCard product={p} key={p.id} />
+            {items.map((p, i) => (
+              <Fragment key={p.id}>
+                {/* One ad row a little way down the results, never above the first products. */}
+                {i === 8 && !outletId && <AdSlot placement="search_inline" inline className="grid-wide" />}
+                <ProductCard product={p} />
+              </Fragment>
             ))}
           </div>
         </>
@@ -186,7 +207,7 @@ export function Catalog({ outletId }: { outletId?: string }) {
 export function Outlets() {
   const { area, areaStatus, openLocation } = useApp();
   const [q, setQ] = useState('');
-  const { data: categories } = useData<{ name: string }[]>('/categories');
+  const { data: categories } = useData<Category[]>('/categories');
   const [cat, setCat] = useState('All');
   const { data, loading, error, refresh } = useData<Outlet[]>(area ? '/outlets?location=' + area.id : null);
   const list = (data || []).filter(
@@ -196,6 +217,7 @@ export function Outlets() {
   );
   return (
     <div className="container page">
+      <AdSlot placement="outlets" inline />
       <div className="catalog-head">
         <div>
           <h1>Outlets</h1>
@@ -210,7 +232,7 @@ export function Outlets() {
       </div>
       <div className="catalog-bar">
         <div className="chips-scroll">
-          {['All', ...(categories || []).map((c) => c.name)].map((c) => (
+          {['All', ...(categories || []).filter((c) => c.show_in_filters !== false).map((c) => c.name)].map((c) => (
             <button key={c} className={'filter-chip' + (cat === c ? ' selected' : '')} onClick={() => setCat(c)}>
               {c}
             </button>
@@ -245,6 +267,7 @@ export function ProductDetail({ id }: { id: string }) {
   const [qty, setQty] = useState(1);
   const [img, setImg] = useState(0);
   const { data: related } = useData<Product[]>(p ? `/products?location=${p.location_id}&outlet=${p.outlet_id}` : null);
+  const { data: payments } = useData<PaymentMethod[]>('/payments?products=' + encodeURIComponent(id));
   if (loading && !p)
     return (
       <div className="container page">
@@ -260,6 +283,9 @@ export function ProductDetail({ id }: { id: string }) {
   const line = cart.find((i) => i.product.id === p.id);
   const wrongArea = !!area && area.id !== p.location_id;
   const more = (related || []).filter((r) => r.id !== p.id).slice(0, 4);
+  const included = listItems(p.includes);
+  const excluded = listItems(p.excludes);
+  const unpayable = payments?.length === 0;
   return (
     <div className="container page">
       <nav className="breadcrumbs" aria-label="Breadcrumb">
@@ -319,9 +345,11 @@ export function ProductDetail({ id }: { id: string }) {
             <span className={p.stock > 0 ? 'ok' : 'bad'}>
               {p.stock > 0 ? (p.stock < 10 ? `Only ${p.stock} left` : 'In stock') : 'Sold out'}
             </span>
+            {orderLimit(p) < Math.min(p.stock, 99) && <span>Max {orderLimit(p)} per order</span>}
           </div>
           <p className="detail-desc">{p.description}</p>
           <div className="buy-box">
+            {unpayable && <div className="alert warn">This item cannot be ordered online right now.</div>}
             {wrongArea && (
               <div className="alert warn">
                 Not available in {area!.name}.{' '}
@@ -332,15 +360,15 @@ export function ProductDetail({ id }: { id: string }) {
             )}
             {line ? (
               <div className="buy-row">
-                <Quantity value={line.quantity} onChange={(v) => quantity(p.id, v)} max={Math.min(p.stock, 99)} />
+                <Quantity value={line.quantity} onChange={(v) => quantity(p.id, v)} max={maxQuantity(p)} />
                 <button className="button large grow" onClick={() => router.push('/cart')}>
                   In cart · Go to cart <ArrowRight size={18} />
                 </button>
               </div>
             ) : (
               <div className="buy-row">
-                <Quantity value={qty} onChange={(v) => setQty(Math.max(1, v))} max={Math.min(p.stock, 99)} />
-                <button className="button large grow" disabled={!p.stock || wrongArea} onClick={() => add(p, qty)}>
+                <Quantity value={qty} onChange={(v) => setQty(Math.max(1, v))} max={maxQuantity(p)} />
+                <button className="button large grow" disabled={!p.stock || wrongArea || unpayable} onClick={() => add(p, qty)}>
                   <ShoppingCart size={18} /> Add to cart · {money(p.effective_price * qty)}
                 </button>
               </div>
@@ -348,7 +376,7 @@ export function ProductDetail({ id }: { id: string }) {
             {!line && (
               <button
                 className="button ghost full"
-                disabled={!p.stock || wrongArea}
+                disabled={!p.stock || wrongArea || unpayable}
                 onClick={() => {
                   if (add(p, qty)) router.push('/checkout');
                 }}
@@ -365,38 +393,50 @@ export function ProductDetail({ id }: { id: string }) {
               <ShieldCheck size={16} /> OTP-verified handover
             </span>
           </div>
-          <div className="included">
-            <div>
-              <h3>What’s included</h3>
-              <ul>
-                {p.includes
-                  .split(/,|\n/)
-                  .map((s) => s.trim())
-                  .filter(Boolean)
-                  .map((s) => (
-                    <li key={s}>
-                      <Check size={15} /> {s}
-                    </li>
-                  ))}
-              </ul>
+          {!!payments?.length && (
+            <div className="pay-accepted">
+              <h3>Payment options</h3>
+              <div>
+                {payments.map((m) => (
+                  <span className="pay-name" key={m.id}>
+                    <PaymentLogo method={m} className="pay-mini" size={13} />
+                    {m.name}
+                  </span>
+                ))}
+              </div>
             </div>
-            <div>
-              <h3>Not included</h3>
-              <ul className="excluded">
-                {p.excludes
-                  .split(/,|\n/)
-                  .map((s) => s.trim())
-                  .filter(Boolean)
-                  .map((s) => (
-                    <li key={s}>
-                      <X size={15} /> {s}
-                    </li>
-                  ))}
-              </ul>
+          )}
+          {(included.length > 0 || excluded.length > 0) && (
+            <div className={'included' + (included.length && excluded.length ? '' : ' single')}>
+              {included.length > 0 && (
+                <div>
+                  <h3>What’s included</h3>
+                  <ul>
+                    {included.map((s) => (
+                      <li key={s}>
+                        <Check size={15} /> {s}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {excluded.length > 0 && (
+                <div>
+                  <h3>Not included</h3>
+                  <ul className="excluded">
+                    {excluded.map((s) => (
+                      <li key={s}>
+                        <X size={15} /> {s}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
-          </div>
+          )}
         </div>
       </div>
+      <AdSlot placement="product" inline className="spaced" />
       {more.length > 0 && (
         <section className="section">
           <div className="section-head">

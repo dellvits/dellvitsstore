@@ -116,6 +116,14 @@ export async function notifyCancelled(o: Row, by: string, reason: string) {
 }
 
 /** A rider can take a delivery when active, on duty, in the area and below capacity. */
+/** The same checks from a dispatch-list row, which already carries the rider's state and load. */
+function listedRiderProblem(r: Row, o: Row) {
+  if (!r.active) return 'This rider account is disabled.';
+  if (r.available === 0) return 'This rider is off duty.';
+  const own = o.rider_id === r.id && !terminal.includes(o.status) ? 1 : 0;
+  if (r.load - own >= r.capacity) return 'This rider has reached their delivery capacity.';
+  return '';
+}
 export async function riderProblem(riderId: string, o: Row) {
   const r = await one("SELECT * FROM users WHERE id=? AND role='rider'", riderId);
   if (!r || !r.active) return 'This rider account is disabled.';
@@ -192,14 +200,12 @@ export function installWorkflow(app: Express) {
   app.get('/api/admin/orders/:id/riders', requireRole('admin'), async (req, res) => {
     const o = await load(String(req.params.id));
     res.json(
-      await Promise.all(
-        (
-          await all(
-            "SELECT u.id,u.name,u.phone,u.login_id,u.location_id,u.active,COALESCE(s.available,1) available,COALESCE(s.capacity,5) capacity,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status NOT IN ('delivered','cancelled')) load,s.updated_at FROM users u LEFT JOIN rider_state s ON s.user_id=u.id WHERE u.role='rider' AND u.location_id=? ORDER BY available DESC,load ASC,u.name",
-            o.location_id,
-          )
-        ).map(async (r) => ({ ...r, problem: await riderProblem(r.id, o) })),
-      ),
+      (
+        await all(
+          "SELECT u.id,u.name,u.phone,u.login_id,u.location_id,u.active,COALESCE(s.available,1) available,COALESCE(s.capacity,5) capacity,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status NOT IN ('delivered','cancelled')) load,s.updated_at FROM users u LEFT JOIN rider_state s ON s.user_id=u.id WHERE u.role='rider' AND u.location_id=? ORDER BY available DESC,load ASC,u.name",
+          o.location_id,
+        )
+      ).map((r) => ({ ...r, problem: listedRiderProblem(r, o) })),
     );
   });
 
@@ -491,7 +497,10 @@ export function installWorkflow(app: Express) {
 
 /** Workflow fields added to every serialized order. */
 export async function serializeFlow(o: Row, role?: string) {
-  const f = await flow(o.id);
+  return flowView(await flow(o.id), o, role);
+}
+/** The same fields from a flow row that is already loaded. */
+export function flowView(f: Row, o: Row, role?: string) {
   return {
     flow: {
       sent_at: f.sent_at,

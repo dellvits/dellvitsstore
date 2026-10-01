@@ -10,7 +10,6 @@ import {
   Building2,
   Check,
   Copy,
-  CreditCard,
   Crosshair,
   ImageUp,
   LoaderCircle,
@@ -23,23 +22,13 @@ import {
   UserRound,
   Zap,
 } from 'lucide-react';
-import { useApp } from './Provider';
+import { useApp, maxQuantity } from './Provider';
 import { money, api, currentPosition, distanceKm } from '@/lib/api';
 import { useData } from '@/lib/useData';
 import { checkoutId } from '@/lib/id';
 import { methodLogo } from '@/lib/paymentProviders';
-import {
-  cardBrands,
-  detectBrand,
-  formatCardNumber,
-  tokenizeCard,
-  validateCard,
-  type CardErrors,
-  type CardInput,
-} from '@/lib/cardGateways';
-const emptyCard: CardInput = { number: '', name: '', expiry: '', cvc: '' };
 import type { Order, PaymentMethod } from '@/lib/types';
-import { Empty, Quantity, ErrorBox, Loading, Confirm } from './UI';
+import { Empty, Quantity, ErrorBox, Confirm, PageLoading } from './UI';
 const DeliveryMap = dynamic(() => import('./DeliveryMap'), {
   ssr: false,
   loading: () => <div className="map-placeholder">Loading map…</div>,
@@ -51,7 +40,7 @@ export function Cart() {
   const [confirm, setConfirm] = useState(false);
   const subtotal = cart.reduce((n, i) => n + i.product.effective_price * i.quantity, 0);
   const savings = cart.reduce((n, i) => n + (i.product.price - i.product.effective_price) * i.quantity, 0);
-  if (!ready) return <Loading />;
+  if (!ready) return <PageLoading />;
   if (!cart.length)
     return (
       <div className="container page">
@@ -94,7 +83,7 @@ export function Cart() {
                     {i.product.discount > 0 && <del>{money(i.product.price)}</del>}
                   </span>
                 </div>
-                <Quantity small value={i.quantity} onChange={(q) => quantity(i.product.id, q)} max={i.product.stock} />
+                <Quantity small value={i.quantity} onChange={(q) => quantity(i.product.id, q)} max={maxQuantity(i.product)} />
                 <strong className="cart-line-total">{money(i.product.effective_price * i.quantity)}</strong>
                 <button
                   className="icon-action danger"
@@ -193,115 +182,6 @@ export function AccountDetails({ method }: { method: Partial<PaymentMethod> }) {
   );
 }
 
-/** A small brand logo that falls back to a generic card icon until the image exists. */
-function BrandLogo({ src, name }: { src: string; name: string }) {
-  const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [src]);
-  return failed ? (
-    <span className="card-brand-fallback" title={name}>
-      {name === 'American Express' ? 'AMEX' : name.toUpperCase()}
-    </span>
-  ) : (
-    <img src={src} alt={name} title={name} onError={() => setFailed(true)} />
-  );
-}
-
-export function CardFields({
-  value,
-  onChange,
-  accepted,
-  errors,
-}: {
-  value: CardInput;
-  onChange: (v: CardInput) => void;
-  accepted: string[];
-  errors: CardErrors;
-}) {
-  const digits = value.number.replace(/\D/g, '');
-  const brand = detectBrand(digits);
-  const cvcLength = brand?.cvc || 3;
-  return (
-    <div className="card-form">
-      <div className="card-brands" aria-label="Accepted cards">
-        {cardBrands
-          .filter((b) => accepted.includes(b.name))
-          .map((b) => (
-            <span key={b.name} className={'card-brand' + (brand && brand.name !== b.name ? ' dim' : '')}>
-              <BrandLogo src={b.logo} name={b.name} />
-            </span>
-          ))}
-      </div>
-      <div className="form-grid">
-        <label className="span-2">
-          Card number
-          <span className="card-number">
-            <input
-              required
-              inputMode="numeric"
-              autoComplete="cc-number"
-              placeholder="1234 5678 9012 3456"
-              value={formatCardNumber(digits)}
-              maxLength={23}
-              aria-invalid={!!errors.number}
-              onChange={(e) => onChange({ ...value, number: e.target.value.replace(/\D/g, '').slice(0, 19) })}
-            />
-            <span className="card-number-brand">
-              {brand ? <BrandLogo src={brand.logo} name={brand.name} /> : <CreditCard size={18} />}
-            </span>
-          </span>
-          {errors.number && <small className="error-text">{errors.number}</small>}
-        </label>
-        <label className="span-2">
-          Name on card
-          <input
-            required
-            autoComplete="cc-name"
-            maxLength={100}
-            value={value.name}
-            aria-invalid={!!errors.name}
-            onChange={(e) => onChange({ ...value, name: e.target.value })}
-          />
-          {errors.name && <small className="error-text">{errors.name}</small>}
-        </label>
-        <label>
-          Expiry date
-          <input
-            required
-            inputMode="numeric"
-            autoComplete="cc-exp"
-            placeholder="MM/YY"
-            maxLength={5}
-            value={value.expiry}
-            aria-invalid={!!errors.expiry}
-            onChange={(e) => {
-              const d = e.target.value.replace(/\D/g, '').slice(0, 4);
-              onChange({ ...value, expiry: d.length > 2 ? `${d.slice(0, 2)}/${d.slice(2)}` : d });
-            }}
-          />
-          {errors.expiry && <small className="error-text">{errors.expiry}</small>}
-        </label>
-        <label>
-          Security code (CVV)
-          <input
-            required
-            type="password"
-            inputMode="numeric"
-            autoComplete="cc-csc"
-            placeholder={'•'.repeat(cvcLength)}
-            maxLength={cvcLength}
-            value={value.cvc}
-            aria-invalid={!!errors.cvc}
-            onChange={(e) => onChange({ ...value, cvc: e.target.value.replace(/\D/g, '').slice(0, cvcLength) })}
-          />
-          {errors.cvc && <small className="error-text">{errors.cvc}</small>}
-        </label>
-      </div>
-      <small className="muted with-icon">
-        <Lock size={13} /> Your card details go straight to our secure payment gateway and are never stored by us.
-      </small>
-    </div>
-  );
-}
 export const paymentIcon = (type?: string) =>
   type === 'cod'
     ? Banknote
@@ -309,9 +189,7 @@ export const paymentIcon = (type?: string) =>
       ? Smartphone
       : type === 'raast'
         ? Zap
-        : type === 'card'
-          ? CreditCard
-          : Building2;
+        : Building2;
 /** A payment method's provider logo (or uploaded logo), falling back to its type icon if the image is missing. */
 export function PaymentLogo({
   method,
@@ -323,14 +201,14 @@ export function PaymentLogo({
   size?: number;
 }) {
   const src = methodLogo(method);
-  const [failed, setFailed] = useState(false);
-  // Try the image again whenever it changes or the component remounts (e.g. a logo was added later).
-  useEffect(() => setFailed(false), [src]);
+  // Remember which image failed rather than a flag, so a new logo is tried again and an error that fires
+  // before an effect runs can't leave an empty box.
+  const [failedSrc, setFailedSrc] = useState('');
   const I = paymentIcon(method.type);
-  const show = !!src && !failed;
+  const show = !!src && failedSrc !== src;
   return (
     <span className={className + (show ? ' has-logo' : '')}>
-      {show ? <img className="pay-logo" src={src} alt="" onError={() => setFailed(true)} /> : <I size={size} />}
+      {show ? <img className="pay-logo" src={src} alt="" onError={() => setFailedSrc(src)} /> : <I size={size} />}
     </span>
   );
 }
@@ -464,11 +342,14 @@ function AuthGate() {
 export function Checkout() {
   const { cart, clear, user, area, locations, ready, coords, notice } = useApp();
   const router = useRouter();
-  const { data: payments, error: paymentError } = useData<PaymentMethod[]>('/payments', 30000);
+  // Only the methods every product in the cart accepts.
+  const productIds = [...new Set(cart.map((i) => i.product.id))].sort().join(',');
+  const { data: payments, error: paymentError } = useData<PaymentMethod[]>(
+    productIds ? '/payments?products=' + encodeURIComponent(productIds) : null,
+    30000,
+  );
   const [payment, setPayment] = useState('');
   const [proof, setProof] = useState<Proof>({ transaction_id: '', payer_name: '', payer_account: '' });
-  const [cardInput, setCardInput] = useState<CardInput>(emptyCard);
-  const [cardErrors, setCardErrors] = useState<CardErrors>({});
   const [coupon, setCoupon] = useState('');
   const [appliedCoupon, setAppliedCoupon] = useState('');
   const [quote, setQuote] = useState<{ signature: string; total: number; delivery_fee: number; discount: number } | null>(
@@ -480,6 +361,12 @@ export function Checkout() {
   const [locating, setLocating] = useState(false);
   const [pin, setPin] = useState({ lat: 33.6442, lng: 73.0713 });
   const [loc, setLoc] = useState('');
+  const { data: site } = useData<{ settings: Record<string, any> | null }>('/site');
+  const paused = site?.settings?.checkout_enabled === false;
+  // Coupons the store offers openly in this delivery area.
+  const { data: offers } = useData<{ code: string; name: string; description: string }[]>(
+    loc ? '/coupons?location=' + encodeURIComponent(loc) : null,
+  );
   const signature = JSON.stringify({
     items: cart.map((i) => ({ product_id: i.product.id, quantity: i.quantity })),
     location_id: loc,
@@ -524,7 +411,6 @@ export function Checkout() {
   }, [ready, user, locations, area, coords, cart]);
   const method = payments?.find((p) => p.id === payment);
   const online = !!method && method.type !== 'cod';
-  const card = method?.type === 'card';
   const subtotal = cart.reduce((n, i) => n + i.product.effective_price * i.quantity, 0);
   const areaInfo = locations.find((l) => l.id === loc);
   const deliveryFee = quote?.delivery_fee ?? areaInfo?.fee ?? 0;
@@ -551,42 +437,28 @@ export function Checkout() {
     setBusy(true);
     setError('');
     try {
-      let cardToken = '';
-      if (card) {
-        const errors = validateCard(cardInput, method!.card_networks || []);
-        setCardErrors(errors);
-        if (Object.keys(errors).length) return;
-        cardToken = await tokenizeCard(cardInput, method!);
-      }
       if (!key.current) key.current = checkoutId();
-      const o = await api<Order & { payment_redirect_url?: string }>('/orders', {
+      const o = await api<Order>('/orders', {
         method: 'POST',
         body: JSON.stringify({
           items: cart.map((i) => ({ product_id: i.product.id, quantity: i.quantity })),
           delivery: { ...form, location_id: loc, ...pin },
           payment_method: payment,
-          payment: card
-            ? { card_token: cardToken }
-            : online
-              ? {
-                  transaction_id: proof.transaction_id.trim(),
-                  payer_name: proof.payer_name.trim(),
-                  payer_account: proof.payer_account.trim(),
-                  proof_id: proof.proof_id,
-                }
-              : undefined,
+          payment: online
+            ? {
+                transaction_id: proof.transaction_id.trim(),
+                payer_name: proof.payer_name.trim(),
+                payer_account: proof.payer_account.trim(),
+                proof_id: proof.proof_id,
+              }
+            : undefined,
           coupon_code: appliedCoupon,
           idempotency_key: key.current,
         }),
       });
-      setCardInput(emptyCard);
       clear();
-      if (o.payment_redirect_url) window.location.assign(o.payment_redirect_url);
-      else router.push('/orders/' + o.id);
+      router.push('/orders/' + o.id);
     } catch (e) {
-      // A declined card cancels that order, so the next attempt needs a new checkout key.
-      // Network errors keep the key, so a retry cannot charge twice.
-      if (card && !(e instanceof TypeError)) key.current = '';
       setError((e as Error).message);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } finally {
@@ -594,7 +466,7 @@ export function Checkout() {
       inflight.current = false;
     }
   }
-  if (!ready) return <Loading />;
+  if (!ready) return <PageLoading />;
   if (!cart.length)
     return (
       <div className="container page">
@@ -618,6 +490,11 @@ export function Checkout() {
           <h1>Checkout</h1>
         </div>
       </div>
+      {paused && (
+        <div className="alert warn">
+          {site?.settings?.checkout_message || 'Ordering is temporarily paused. Please try again later.'}
+        </div>
+      )}
       {error && <ErrorBox error={error} />}
       <form onSubmit={submit} className="split">
         <div className="stack">
@@ -744,7 +621,15 @@ export function Checkout() {
               </h3>
             </div>
             {paymentError && <ErrorBox error={paymentError} />}
-            {payments?.length === 0 && <ErrorBox error="Ordering is paused until a payment method is enabled." />}
+            {payments?.length === 0 && (
+              <ErrorBox
+                error={
+                  cart.length > 1
+                    ? 'The items in your cart do not share a payment method. Remove an item and order it separately.'
+                    : 'This item cannot be ordered online right now because no payment method is available for it.'
+                }
+              />
+            )}
             <div className="pay-options">
               {payments?.map((p) => {
                 return (
@@ -761,11 +646,7 @@ export function Checkout() {
                     <span className="pay-text">
                       <strong>{p.name}</strong>
                       <small>
-                        {p.type === 'cod'
-                          ? 'Pay the rider in cash'
-                          : p.type === 'card'
-                            ? 'Debit / credit card'
-                            : p.provider || p.bank_name || 'Online transfer'}
+                        {p.type === 'cod' ? 'Pay the rider in cash' : p.provider || p.bank_name || 'Online transfer'}
                       </small>
                     </span>
                     <span className="radio-dot" />
@@ -773,21 +654,7 @@ export function Checkout() {
                 );
               })}
             </div>
-            {card && method && (
-              <div className="pay-panel">
-                <CardFields
-                  value={cardInput}
-                  onChange={(v) => {
-                    setCardInput(v);
-                    setCardErrors({});
-                  }}
-                  accepted={method.card_networks || []}
-                  errors={cardErrors}
-                />
-                {method.instructions && <p className="muted small">{method.instructions}</p>}
-              </div>
-            )}
-            {online && !card && method && (
+            {online && method && (
               <div className="pay-panel">
                 <div className="pay-steps">
                   <span>
@@ -837,6 +704,26 @@ export function Checkout() {
               Apply
             </button>
           </div>
+          {!appliedCoupon && !!offers?.length && (
+            <div className="coupon-offers">
+              {offers.map((o) => (
+                <button
+                  type="button"
+                  key={o.code}
+                  onClick={() => {
+                    setCoupon(o.code);
+                    setAppliedCoupon(o.code);
+                  }}
+                >
+                  <Tag size={14} />
+                  <span>
+                    <strong>{o.code}</strong>
+                    <small>{o.description || o.name}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
           {appliedCoupon && (
             <button
               type="button"
@@ -856,8 +743,11 @@ export function Checkout() {
           </div>
           <div className="line">
             <span>Delivery</span>
-            <strong>{money(deliveryFee)}</strong>
+            <strong>{deliveryFee ? money(deliveryFee) : 'Free'}</strong>
           </div>
+          {!!areaInfo?.free_delivery_over && deliveryFee > 0 && (
+            <small className="muted">Free delivery on orders over {money(areaInfo.free_delivery_over)}.</small>
+          )}
           {!!quote?.discount && (
             <div className="line success">
               <span>Discount</span>
@@ -872,15 +762,7 @@ export function Checkout() {
             className="button large full"
             disabled={busy || !payment || quote?.signature !== signature || !!quoteError || !!paymentError}
           >
-            {busy
-              ? card
-                ? 'Processing payment…'
-                : 'Placing order…'
-              : card
-                ? `Pay ${money(total)}`
-                : online
-                  ? 'Submit payment & order'
-                  : 'Place order'}
+            {busy ? 'Placing order…' : online ? 'Submit payment & order' : 'Place order'}
             <ArrowRight size={18} />
           </button>
           <small className="muted center with-icon">

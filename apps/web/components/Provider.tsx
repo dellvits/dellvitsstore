@@ -11,6 +11,7 @@ import {
 import Link from 'next/link';
 import { Bell, CheckCircle2, X } from 'lucide-react';
 import { api, currentPosition, distanceKm } from '@/lib/api';
+import { clearDataCache } from '@/lib/useData';
 import {
   playChime,
   unlockAudio,
@@ -42,12 +43,18 @@ type Context = {
   openLocation: (v: boolean) => void;
   notifications: AppNotification[];
   unread: number;
+  /** Support messages waiting to be read, for the header's message icon. */
+  supportUnread: number;
   refreshNotifications: () => void;
   sound: boolean;
   setSound: (v: boolean) => void;
 };
 const State = createContext<Context | null>(null);
 export const useApp = () => useContext(State)!;
+/** Most of one product a single order may hold; carts saved before the limit existed use 99. */
+export const orderLimit = (p: Product) => Math.min(p.max_per_order ?? 99, 99);
+/** The highest quantity the cart allows right now: the order limit or the stock, whichever is lower. */
+export const maxQuantity = (p: Product) => Math.min(p.stock, orderLimit(p));
 
 function nearest(locations: Location[], p: { lat: number; lng: number }) {
   let best: { l: Location; km: number } | null = null;
@@ -83,6 +90,7 @@ export default function Provider({ children }: { children: ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [unread, setUnread] = useState(0);
+  const [supportUnread, setSupportUnread] = useState(0);
   const [sound, setSoundState] = useState(true);
   const seen = useRef<Set<string> | null>(null);
   const soundRef = useRef(true);
@@ -151,15 +159,23 @@ export default function Provider({ children }: { children: ReactNode }) {
   }, [detectWith, notice]);
 
   useEffect(() => {
+    // Unchanged answers keep the objects already in state, so these checks do not re-render the app.
+    const keep = <T,>(previous: T, next: T) =>
+      JSON.stringify(previous) === JSON.stringify(next) ? previous : next;
     const reload = () => {
       api<Location[]>('/locations')
         .then((l) => {
-          setLocations(l);
-          setAreaState((a) => (a ? l.find((x) => x.id === a.id) || null : a));
+          setLocations((old) => keep(old, l));
+          setAreaState((a) => (a ? keep(a, l.find((x) => x.id === a.id) || null) : a));
         })
         .catch(() => {});
       api<{ user: User | null }>('/session')
-        .then((s) => setUser(s.user))
+        .then((s) =>
+          setUser((old) => {
+            if (old && old.id !== s.user?.id) clearDataCache();
+            return keep(old, s.user);
+          }),
+        )
         .catch(() => {});
     };
     window.addEventListener('focus', reload);
@@ -172,12 +188,15 @@ export default function Provider({ children }: { children: ReactNode }) {
 
   const refreshNotifications = useCallback(() => {
     if (!user) return;
-    api<{ items: AppNotification[]; unread: number }>('/notifications?limit=8')
+    api<{ items: AppNotification[]; unread: number; support_unread?: number }>('/notifications?limit=8')
       .then((d) => {
         setNotifications(d.items);
         setUnread(d.unread);
+        setSupportUnread(d.support_unread || 0);
         const known = seen.current;
-        const fresh = known ? d.items.filter((n) => !n.read && !known.has(n.id)) : [];
+        // Silenced kinds still arrive in the inbox, without the sound or the pop-up.
+        const muted = user.notify_muted || [];
+        const fresh = known ? d.items.filter((n) => !n.read && !known.has(n.id) && !muted.includes(n.type)) : [];
         seen.current = new Set([...(known || []), ...d.items.map((n) => n.id)]);
         if (!fresh.length) return;
         if (soundRef.current) playChime();
@@ -193,6 +212,7 @@ export default function Provider({ children }: { children: ReactNode }) {
     seen.current = null;
     setNotifications([]);
     setUnread(0);
+    setSupportUnread(0);
     if (!user) return;
     refreshNotifications();
     const timer = setInterval(refreshNotifications, 12000);
@@ -228,7 +248,12 @@ export default function Provider({ children }: { children: ReactNode }) {
       return false;
     }
     const existing = cart.find((i) => i.product.id === p.id);
-    if ((existing?.quantity || 0) + q > p.stock) {
+    const wanted = (existing?.quantity || 0) + q;
+    if (wanted > orderLimit(p) && orderLimit(p) < p.stock) {
+      notice(`You can order up to ${orderLimit(p)} of this item at a time.`);
+      return false;
+    }
+    if (wanted > p.stock) {
       notice('That quantity is not available.');
       return false;
     }
@@ -241,10 +266,15 @@ export default function Provider({ children }: { children: ReactNode }) {
     notice('Added to cart');
     return true;
   }
+  /** Signing in or out: pages must not show the previous account's cached data. */
+  function changeUser(u: User | null) {
+    clearDataCache();
+    setUser(u);
+  }
   async function logout() {
     try {
       await api('/auth/logout', { method: 'POST' });
-      setUser(null);
+      changeUser(null);
     } catch (e) {
       notice((e as Error).message);
     }
@@ -253,7 +283,7 @@ export default function Provider({ children }: { children: ReactNode }) {
     <State.Provider
       value={{
         user,
-        setUser,
+        setUser: changeUser,
         ready,
         locations,
         area,
@@ -269,7 +299,7 @@ export default function Provider({ children }: { children: ReactNode }) {
             q <= 0
               ? c.filter((i) => i.product.id !== id)
               : c.map((i) =>
-                  i.product.id === id ? { ...i, quantity: Math.min(q, i.product.stock, 99) } : i,
+                  i.product.id === id ? { ...i, quantity: Math.min(q, maxQuantity(i.product)) } : i,
                 ),
           ),
         clear: () => setCart([]),
@@ -279,6 +309,7 @@ export default function Provider({ children }: { children: ReactNode }) {
         openLocation,
         notifications,
         unread,
+        supportUnread,
         refreshNotifications,
         sound,
         setSound: (v) => {

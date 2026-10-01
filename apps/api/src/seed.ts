@@ -21,7 +21,8 @@ export async function seed() {
       loc = 'rawalpindi',
     ) =>
       await run(
-        'INSERT INTO users(id,name,email,phone,address,location_id,password_hash,role,login_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+        // Demo accounts are ready to use: their email counts as verified.
+        'INSERT INTO users(id,name,email,phone,address,location_id,password_hash,role,login_id,created_at,email_verified_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
         id,
         name,
         email,
@@ -32,9 +33,10 @@ export async function seed() {
         role,
         login,
         new Date().toISOString(),
+        new Date().toISOString(),
       );
     await createUser('admin-1', 'Dellvit Admin', 'admin@dellvit.local', 'admin', null);
-    await run("INSERT INTO admin_access VALUES('admin-1',1,'[]') ON CONFLICT DO NOTHING");
+    await run("INSERT INTO admin_access(user_id,super,permissions) VALUES('admin-1',1,'[]') ON CONFLICT DO NOTHING");
     for (const name of ['Food', 'Groceries', 'Parcels', 'More'])
       await run(
         'INSERT INTO platform_records VALUES(?,?,?) ON CONFLICT DO NOTHING',
@@ -59,7 +61,6 @@ export async function seed() {
         iban: 'PK36MEZN0000000123456789',
         instructions: 'Transfer the order total, then enter the transaction ID from your receipt.',
         require_proof: false,
-        position: 1,
       },
       'demo-wallet': {
         name: 'Easypaisa (demo)',
@@ -69,7 +70,6 @@ export async function seed() {
         mobile_number: '03001234567',
         instructions: 'Send money to this Easypaisa account and enter the TID.',
         require_proof: false,
-        position: 2,
       },
     }))
       await run(
@@ -280,7 +280,7 @@ export async function seed() {
     for (const [i, p] of products.entries()) {
       const [name, desc, cat, price, stock, unit, outlet, loc, discount, deal, img, inc, exc] = p;
       await run(
-        'INSERT INTO products VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        'INSERT INTO products(id,outlet_id,name,description,category,price,stock,unit,location_id,discount,deal,images,includes,excludes,delivery_minutes,active,max_per_order,payment_methods) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         'product-' + (i + 1),
         outlet,
         name,
@@ -297,17 +297,33 @@ export async function seed() {
         exc,
         cat === 'Parcels' ? 45 : 30,
         1,
+        10,
+        JSON.stringify(['cod', 'demo-bank', 'demo-wallet']),
       );
     }
     await run(
-      'INSERT INTO settings VALUES(?,?)',
-      'ad',
+      'INSERT INTO platform_records VALUES(?,?,?)',
+      'ads',
+      'homepage-banner',
       JSON.stringify({
+        name: 'Dellvit picks',
+        advertiser: '',
         title: 'Your next favourite is around the corner.',
         description: 'Discover local flavours and everyday essentials with Dellvit.',
         label: 'DELLVIT PICKS',
         link: '/search',
+        button: 'Explore now',
         image: '/images/rider.webp',
+        format: 'banner',
+        theme: 'brand',
+        placements: ['bottom'],
+        devices: 'all',
+        location_ids: [],
+        starts_at: '',
+        ends_at: '',
+        max_views: 0,
+        notes: '',
+        position: 0,
         active: true,
       }),
     );

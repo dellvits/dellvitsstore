@@ -4,6 +4,8 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import {
   Bell,
+  Megaphone,
+  MessagesSquare,
   ChevronDown,
   LayoutDashboard,
   LogIn,
@@ -20,7 +22,8 @@ import {
 import { useData } from '@/lib/useData';
 import { useApp } from './Provider';
 import { LocationPicker } from './UI';
-import { NotificationBell } from './Notifications';
+import { NotificationBell, inboxPath } from './Notifications';
+import { MessageButton } from './Support';
 
 export const portalPath = (role?: string) =>
   role === 'customer'
@@ -126,6 +129,7 @@ export function Header() {
   const [menu, setMenu] = useState(false);
   const router = useRouter();
   const count = cart.reduce((n, i) => n + i.quantity, 0);
+  const { data: site } = useData<{ settings: Record<string, any> | null }>('/site');
   useEffect(() => setMenu(false), [path]);
   if (path.startsWith('/admin') || path.startsWith('/portal/')) return <LocationPicker />;
   const links: [string, string][] = [
@@ -135,6 +139,11 @@ export function Header() {
   ];
   return (
     <>
+      {site?.settings?.notice_enabled && site.settings.notice && (
+        <div className="site-notice" role="status">
+          <Megaphone size={14} /> {site.settings.notice}
+        </div>
+      )}
       <header className="site-header">
         <div className="header-row container">
           <Link href="/" aria-label="Dellvit home" className="brand">
@@ -161,6 +170,7 @@ export function Header() {
             ))}
           </nav>
           <div className="header-actions">
+            <MessageButton />
             <NotificationBell />
             <Link href="/cart" className="header-icon" aria-label={`Cart, ${count} items`}>
               <ShoppingCart size={19} />
@@ -220,8 +230,19 @@ export function Header() {
                   <Link href={portalPath(user.role)}>
                     <LayoutDashboard size={17} /> {user.role === 'customer' ? 'My account' : 'Portal'}
                   </Link>
-                  <Link href="/notifications">
+                  <Link href={inboxPath(user)}>
                     <Bell size={17} /> Notifications
+                  </Link>
+                  <Link
+                    href={
+                      user.role === 'admin'
+                        ? '/admin?tab=messages'
+                        : user.role === 'customer'
+                          ? '/support'
+                          : `/portal/${user.role}?tab=support`
+                    }
+                  >
+                    <MessagesSquare size={17} /> {user.role === 'admin' ? 'Messages' : 'Support chat'}
                   </Link>
                   <button
                     onClick={async () => {
@@ -258,18 +279,36 @@ export function Footer() {
   if (path.startsWith('/admin') || path.startsWith('/portal/')) return null;
   const email = settings?.support_email || 'dellvitsupport@gmail.com';
   const phone = settings?.support_phone || '0316 9212708';
+  const socials = (
+    [
+      ['Facebook', settings?.facebook_url],
+      ['Instagram', settings?.instagram_url],
+      ['TikTok', settings?.tiktok_url],
+      ['YouTube', settings?.youtube_url],
+    ] as [string, string | undefined][]
+  ).filter((x): x is [string, string] => !!x[1]);
   return (
     <footer className="footer">
       <div className="container footer-grid">
         <div className="footer-brand">
           <img src="/images/logo.webp" alt="Dellvit" width="112" height="63" />
-          <p>Local favourites and everyday essentials, delivered.</p>
+          <p>{settings?.tagline || 'Local favourites and everyday essentials, delivered.'}</p>
+          {socials.length > 0 && (
+            <div className="footer-social">
+              {socials.map(([title, href]) => (
+                <a key={title} href={href} target="_blank" rel="noopener noreferrer">
+                  {title}
+                </a>
+              ))}
+            </div>
+          )}
         </div>
         <div>
           <h4>Explore</h4>
           <Link href="/search">Products</Link>
           <Link href="/outlets">Outlets</Link>
           <Link href="/orders">Track order</Link>
+          <Link href="/support">Support chat</Link>
         </div>
         <div>
           <h4>Partners</h4>
@@ -281,12 +320,19 @@ export function Footer() {
           <h4>Support</h4>
           <a href={'mailto:' + email}>{email}</a>
           <a href={'tel:' + phone.replace(/\s/g, '')}>{phone}</a>
+          {settings?.whatsapp && (
+            <a href={'https://wa.me/' + settings.whatsapp.replace(/\D/g, '')} target="_blank" rel="noopener noreferrer">
+              Chat on WhatsApp
+            </a>
+          )}
           <span>{settings?.support_address || '6th Road, Rawalpindi'}</span>
+          {settings?.support_hours && <span>{settings.support_hours}</span>}
         </div>
       </div>
       <div className="container footer-bottom">
         <span>
           © {new Date().getFullYear()} {settings?.name || 'Dellvit'}
+          {settings?.footer_note && ' · ' + settings.footer_note}
         </span>
         <div>
           <Link href="/about">About</Link>

@@ -3,26 +3,34 @@ import { PostgresRateLimitStore } from './rate-limit-store.js';
 import {
   installPlatform,
   areaSettings,
+  areaColumns,
+  areaFields,
+  saveAreaSettings,
+  deliveryFee,
   couponDiscount,
   paymentMethods,
+  allPaymentMethods,
+  productPaymentIds,
   records,
   isOnline,
+  adDay,
 } from './platform.js';
+import { installSupport } from './support.js';
 import { installNotifications, notify, adminsWith, outletUser } from './notifications.js';
 import {
   installRiders,
   commissionSchema,
-  riderSettings,
+  riderDefaults,
+  vehicleTypes,
+  payoutMethods,
   saveRiderSettings,
   recordEarning,
-  riderBalance,
 } from './riders.js';
 import {
   installPayments,
   paymentSnapshot,
   paymentSubmission,
   validateSubmission,
-  chargeCardOrder,
 } from './payments.js';
 import {
   installWorkflow,
@@ -30,12 +38,22 @@ import {
   createFlow,
   flow,
   markPaymentVerified,
-  serializeFlow,
+  flowView,
   canCancel,
   cancelOrder,
   notifyCancelled,
 } from './workflow.js';
-import { installFinance, recordSettlement, outletSettings, saveOutletSettings } from './finance.js';
+import {
+  installFinance,
+  recordSettlement,
+  outletSettings,
+  outletDefaults,
+  outletOwnSettings,
+  saveOutletSettings,
+  outletPublicColumns,
+  outletOpen,
+  withinHours,
+} from './finance.js';
 import express, { type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -46,6 +64,15 @@ import sharp from 'sharp';
 import { randomUUID, randomInt } from 'node:crypto';
 import { objects } from './storage.js';
 import { z } from 'zod';
+import { range, between } from './range.js';
+import {
+  installAccounts,
+  needsVerification,
+  sendVerificationCode,
+  startSession,
+  verifyResponse,
+} from './accounts.js';
+import { mailReady } from './mail.js';
 import { one, all, run, transaction, afterCommit, type Row } from './db.js';
 import {
   session,
@@ -63,14 +90,7 @@ app.disable('x-powered-by');
 app.use(helmet());
 app.use(cors({ origin, credentials: true }));
 app.use(
-  express.json({
-    limit: '100kb',
-    // Card gateway adapters verify webhook signatures against the exact bytes received.
-    verify: (req, _res, buf) => {
-      if (req.url?.startsWith('/api/payments/card/webhook'))
-        (req as typeof req & { rawBody?: Buffer }).rawBody = buf;
-    },
-  }),
+  express.json({ limit: '100kb' }),
 );
 app.use(cookieParser());
 app.use(session);
@@ -116,14 +136,25 @@ const writeLimit = rateLimit({
   legacyHeaders: false,
   message: { error: 'Please wait a moment before trying again.' },
 });
+// Ad views and clicks are counted from the storefront; this keeps one visitor from inflating them.
+const trackLimit = rateLimit({
+  store: new PostgresRateLimitStore('track:'),
+  windowMs: 60000,
+  limit: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Please wait a moment before trying again.' },
+});
 const upload = multer({
   storage: multer.memoryStorage(),
   // Leave room for multipart framing under Vercel Functions' request body limit.
   limits: { fileSize: 4 * 1024 * 1024, files: 1 },
 });
 installNotifications(app);
+installAccounts(app, authLimit);
 installRiders(app);
 installPayments(app, { upload: upload.single('file') });
+installSupport(app, { upload: upload.single('file'), writeLimit });
 installWorkflow(app);
 installFinance(app);
 const money = (paisa: number) => 'PKR ' + (paisa / 100).toLocaleString('en-PK');
@@ -155,6 +186,7 @@ async function product(p: Row): Promise<Row> {
   return {
     ...p,
     images: await JSON.parse(p.images),
+    payment_methods: productPaymentIds(p),
     effective_price: Math.round((p.price * (100 - p.discount)) / 100),
   };
 }
@@ -175,86 +207,124 @@ async function orderVisible(req: AuthRequest, o: Row) {
     (req.user && o.user_id === req.user.id) || (!o.user_id && o.guest_session === req.sessionHash)
   );
 }
-async function serializeOrder(o: Row, req: AuthRequest) {
-  const { guest_session, otp, otp_attempts, otp_locked_until, idempotency_key, ...safe } = o;
-  const own =
-    (req.user?.role === 'customer' && o.user_id === req.user.id) ||
-    (!o.user_id && o.guest_session === req.sessionHash);
-  const outlet = await one(
-    'SELECT name,address,lat,lng,phone FROM outlets WHERE id=?',
-    o.outlet_id,
-  );
-  const rider = o.rider_id
-    ? await one('SELECT name,phone FROM users WHERE id=?', o.rider_id)
-    : null;
-  const d = await one('SELECT * FROM order_details WHERE order_id=?', o.id);
-  const privatePayment = own || req.user?.role === 'admin';
-  const payment = d
-    ? {
-        discount: d.discount,
-        coupon_code: d.coupon_code,
-        payment_name: d.payment_name,
-        payment_type: d.payment_type === 'manual' ? 'bank' : d.payment_type,
-        payment_instructions: d.payment_instructions,
-        payment_status: d.payment_status,
-        payment_note: d.payment_note,
-        payment_updated_at: d.payment_updated_at,
-        payment_details: await JSON.parse(d.payment_details || '{}'),
-        ...(privatePayment
-          ? {
-              transaction_id: d.transaction_id,
-              payer_name: d.payer_name,
-              payer_account: d.payer_account,
-              proof_url: d.proof_id ? '/api/payment-proofs/' + d.proof_id : null,
-            }
-          : {}),
-      }
-    : {};
-  const staff = req.user?.role && req.user.role !== 'customer';
-  return {
-    ...safe,
-    ...payment,
-    ...(await serializeFlow(o, req.user?.role || 'customer')),
-    outlet_id: o.outlet_id,
-    rider_location:
-      !['delivered', 'cancelled'].includes(o.status) && o.rider_id
-        ? (await one(
-            'SELECT lat,lng,accuracy,updated_at FROM rider_state WHERE user_id=? AND lat IS NOT NULL',
-            o.rider_id,
-          )) || null
-        : null,
-    ...(own ? { otp } : {}),
-    outlet,
-    rider,
-    items: await all('SELECT * FROM order_items WHERE order_id=?', o.id),
-    events: (
-      await all(
-        'SELECT status,created_at,note,actor FROM order_events WHERE order_id=? ORDER BY created_at,sort_order',
-        o.id,
-      )
-    ).filter(
-      (e) =>
-        staff ||
-        !['rider_rejected', 'cancel_requested', 'cancel_request_dismissed', 'reminder'].includes(
-          e.status,
-        ),
+/** Serializes orders in five parallel queries, however many orders there are. */
+async function serializeOrders(orders: Row[], req: AuthRequest) {
+  if (!orders.length) return [];
+  const ids = orders.map((o) => o.id);
+  const marks = ids.map(() => '?').join(',');
+  const [links, details, flows, items, events] = await Promise.all([
+    all(
+      `SELECT o.id,t.id outlet_found,t.name outlet_name,t.address outlet_address,t.lat outlet_lat,t.lng outlet_lng,t.phone outlet_phone,u.id rider_found,u.name rider_name,u.phone rider_phone,s.lat rider_lat,s.lng rider_lng,s.accuracy rider_accuracy,s.updated_at rider_updated_at FROM orders o LEFT JOIN outlets t ON t.id=o.outlet_id LEFT JOIN users u ON u.id=o.rider_id LEFT JOIN rider_state s ON s.user_id=o.rider_id WHERE o.id IN (${marks})`,
+      ...ids,
     ),
+    all(`SELECT * FROM order_details WHERE order_id IN (${marks})`, ...ids),
+    all(`SELECT * FROM order_flow WHERE order_id IN (${marks})`, ...ids),
+    all(`SELECT * FROM order_items WHERE order_id IN (${marks})`, ...ids),
+    all(
+      `SELECT order_id,status,created_at,note,actor FROM order_events WHERE order_id IN (${marks}) ORDER BY created_at,sort_order`,
+      ...ids,
+    ),
+  ]);
+  const byOrder = (rows: Row[], key = 'order_id') => new Map(rows.map((r) => [r[key], r]));
+  const grouped = (rows: Row[]) => {
+    const map = new Map<string, Row[]>();
+    for (const r of rows) {
+      const list = map.get(r.order_id);
+      if (list) list.push(r);
+      else map.set(r.order_id, [r]);
+    }
+    return map;
   };
+  const link = byOrder(links, 'id'),
+    detail = byOrder(details),
+    flowOf = byOrder(flows),
+    itemsOf = grouped(items),
+    eventsOf = grouped(events);
+  const role = req.user?.role || 'customer';
+  const staff = role !== 'customer';
+  return await Promise.all(
+    orders.map(async (o) => {
+      const { guest_session, otp, otp_attempts, otp_locked_until, idempotency_key, ...safe } = o;
+      const own =
+        (req.user?.role === 'customer' && o.user_id === req.user.id) ||
+        (!o.user_id && o.guest_session === req.sessionHash);
+      const l = link.get(o.id) || {};
+      const d = detail.get(o.id);
+      const privatePayment = own || req.user?.role === 'admin';
+      const payment = d
+        ? {
+            discount: d.discount,
+            coupon_code: d.coupon_code,
+            payment_name: d.payment_name,
+            payment_type: d.payment_type === 'manual' ? 'bank' : d.payment_type,
+            payment_instructions: d.payment_instructions,
+            payment_status: d.payment_status,
+            payment_note: d.payment_note,
+            payment_updated_at: d.payment_updated_at,
+            payment_details: JSON.parse(d.payment_details || '{}'),
+            ...(privatePayment
+              ? {
+                  transaction_id: d.transaction_id,
+                  payer_name: d.payer_name,
+                  payer_account: d.payer_account,
+                  proof_url: d.proof_id ? '/api/payment-proofs/' + d.proof_id : null,
+                }
+              : {}),
+          }
+        : {};
+      return {
+        ...safe,
+        ...payment,
+        // Orders from before the workflow tables get their flow row on first read.
+        ...flowView(flowOf.get(o.id) || (await flow(o.id)), o, role),
+        outlet_id: o.outlet_id,
+        rider_location:
+          !['delivered', 'cancelled'].includes(o.status) && o.rider_id && l.rider_lat != null
+            ? {
+                lat: l.rider_lat,
+                lng: l.rider_lng,
+                accuracy: l.rider_accuracy,
+                updated_at: l.rider_updated_at,
+              }
+            : null,
+        ...(own ? { otp } : {}),
+        outlet: l.outlet_found
+          ? {
+              name: l.outlet_name,
+              address: l.outlet_address,
+              lat: l.outlet_lat,
+              lng: l.outlet_lng,
+              phone: l.outlet_phone,
+            }
+          : undefined,
+        rider: o.rider_id && l.rider_found ? { name: l.rider_name, phone: l.rider_phone } : null,
+        items: itemsOf.get(o.id) || [],
+        events: (eventsOf.get(o.id) || [])
+          .filter(
+            (e) =>
+              staff ||
+              ![
+                'rider_rejected',
+                'cancel_requested',
+                'cancel_request_dismissed',
+                'reminder',
+              ].includes(e.status),
+          )
+          .map(({ order_id, ...e }) => e),
+      };
+    }),
+  );
 }
+const serializeOrder = async (o: Row, req: AuthRequest) => (await serializeOrders([o], req))[0];
 app.get('/api/health', async (_req, res) => {
   await one('SELECT key FROM settings LIMIT 1');
   res.json({ ok: true, service: 'dellvit-api' });
 });
 app.get('/api/locations', async (_req, res) =>
   res.json(
-    (
-      await Promise.all(
-        (await all('SELECT * FROM locations')).map(async (l) => ({
-          ...l,
-          ...(await areaSettings(l.id)),
-        })),
-      )
-    ).filter((l) => l.active),
+    await all(
+      `SELECT l.*,${areaColumns} FROM locations l LEFT JOIN area_settings a ON a.location_id=l.id WHERE COALESCE(a.active,1)=1 ORDER BY l.name`,
+    ),
   ),
 );
 app.get('/api/session', async (req: AuthRequest, res) => {
@@ -275,8 +345,25 @@ app.post(
         location_id: location,
       })
       .parseAsync(req.body);
-    if (await one('SELECT id FROM users WHERE email=?', p.email))
-      fail('An account already uses this email.', 409);
+    const existing = await one('SELECT * FROM users WHERE email=?', p.email);
+    if (existing && existing.active && needsVerification(existing)) {
+      // The sign-up was started but never finished: send the visitor on to the code page.
+      const { retry_in } = await sendVerificationCode(existing);
+      return res
+        .status(409)
+        .json(
+          verifyResponse(
+            existing,
+            'This email is registered but not verified yet. Enter the code we emailed you.',
+            retry_in,
+          ),
+        );
+    }
+    if (existing) fail('An account already uses this email.', 409);
+    if ((await records('settings', true))[0]?.signup_enabled === false)
+      fail('New accounts cannot be created right now. Please try again later.', 403);
+    if (!(await mailReady()))
+      fail('Sign-up is unavailable because email is not set up yet. Please contact support.', 503);
     const uid = id();
     await run(
       'INSERT INTO users(id,name,email,phone,address,location_id,password_hash,role,created_at) VALUES(?,?,?,?,?,?,?,?,?)',
@@ -290,18 +377,9 @@ app.post(
       'customer',
       now(),
     );
-    if (req.sessionHash)
-      await run(
-        'UPDATE orders SET user_id=?,guest_session=NULL WHERE guest_session=? AND user_id IS NULL',
-        uid,
-        req.sessionHash,
-      );
-    if (req.sessionHash) await run('DELETE FROM sessions WHERE token_hash=?', req.sessionHash);
-    const token = await newSession(req, res, uid);
-    res.status(201).json({
-      user: await publicUser((await one('SELECT * FROM users WHERE id=?', uid))!),
-      ...(req.headers['x-client'] === 'mobile' ? { token } : {}),
-    });
+    // No session yet: the account opens once the emailed code is entered.
+    const { retry_in } = await sendVerificationCode({ id: uid, name: p.name, email: p.email });
+    res.status(201).json({ verify: true, email: p.email, retry_in });
   }),
 );
 app.post(
@@ -318,20 +396,20 @@ app.post(
       fail('Email / ID or password is incorrect.', 401);
     if (req.path.endsWith('/admin-login') !== (u.role === 'admin'))
       fail('Use the separate sign-in page for your account type.', 403);
-    if (req.sessionHash) {
-      if (u.role === 'customer')
-        await run(
-          'UPDATE orders SET user_id=?,guest_session=NULL WHERE guest_session=? AND user_id IS NULL',
-          u.id,
-          req.sessionHash,
+    if (needsVerification(u)) {
+      // Answered without throwing so the fresh code is saved and emailed.
+      const { retry_in } = await sendVerificationCode(u);
+      return res
+        .status(403)
+        .json(
+          verifyResponse(
+            u,
+            'Verify your email to finish creating your account. We sent you a 6-digit code.',
+            retry_in,
+          ),
         );
-      await run('DELETE FROM sessions WHERE token_hash=?', req.sessionHash);
     }
-    const token = await newSession(req, res, u.id);
-    res.json({
-      user: await publicUser(u),
-      ...(req.headers['x-client'] === 'mobile' ? { token } : {}),
-    });
+    res.json(await startSession(req, res, u));
   }),
 );
 app.post(
@@ -345,15 +423,22 @@ app.patch(
   '/api/profile',
   requireRole('customer', 'outlet', 'rider', 'admin'),
   atomicRoute(async (req: AuthRequest, res) => {
+    // Customers deliver to their address; staff accounts may leave it and the area empty.
+    const customer = req.user!.role === 'customer';
     const p = await z
-      .object({ name: str(100), phone, address: str(500), location_id: location })
+      .object({
+        name: str(100),
+        phone: customer ? phone : z.union([phone, z.literal('')]).default(''),
+        address: customer ? str(500) : z.string().trim().max(500).default(''),
+        location_id: customer ? location : z.union([location, z.literal('')]).nullable().optional(),
+      })
       .parseAsync(req.body);
     await run(
       'UPDATE users SET name=?,phone=?,address=?,location_id=? WHERE id=?',
       p.name,
       p.phone,
       p.address,
-      p.location_id,
+      p.location_id === undefined ? req.user!.location_id : p.location_id || null,
       req.user!.id,
     );
     res.json(await publicUser((await one('SELECT * FROM users WHERE id=?', req.user!.id))!));
@@ -414,36 +499,56 @@ app.get('/api/products/:id', async (req, res) => {
   if (!p) fail('Product not found.', 404);
   res.json(await product(p));
 });
+/** Active outlets as the storefront shows them; `open` says whether they take orders right now. */
+const publicOutlets = `SELECT o.id,o.name,o.location_id,o.address,o.phone,o.image,o.category,o.active,${outletPublicColumns} FROM outlets o LEFT JOIN outlet_settings s ON s.outlet_id=o.id WHERE o.active=1`;
+const withOpen = (o: Row) => ({ ...o, open: outletOpen(o) });
 app.get('/api/outlets', async (req, res) =>
   res.json(
-    req.query.location
+    (req.query.location
       ? await all(
-          'SELECT id,name,location_id,address,phone,image,category,active FROM outlets WHERE active=1 AND location_id=?',
+          publicOutlets + ' AND o.location_id=? ORDER BY featured DESC,o.name',
           String(req.query.location),
         )
-      : await all(
-          'SELECT id,name,location_id,address,phone,image,category,active FROM outlets WHERE active=1',
-        ),
+      : await all(publicOutlets + ' ORDER BY featured DESC,o.name')
+    ).map(withOpen),
   ),
 );
 app.get('/api/outlets/:id', async (req, res) => {
-  const o = await one(
-    'SELECT id,name,location_id,address,phone,image,category FROM outlets WHERE id=? AND active=1',
-    String(req.params.id),
-  );
+  const o = await one(publicOutlets + ' AND o.id=?', String(req.params.id));
   if (!o) fail('Outlet not found.', 404);
-  res.json(o);
+  res.json(withOpen(o));
 });
-app.get('/api/ad', async (_req, res) =>
-  res.json(
-    await JSON.parse((await one('SELECT value FROM settings WHERE key=?', 'ad'))?.value || 'null'),
-  ),
-);
+/** Counts ads a visitor has seen, and one they clicked. Unknown ads are ignored. */
+app.post('/api/ads/track', trackLimit, async (req, res) => {
+  const p = z
+    .object({
+      views: z.array(z.string().min(1).max(100)).max(20).default([]),
+      click: z.string().min(1).max(100).optional(),
+    })
+    .parse(req.body);
+  const views = [...new Set(p.views)];
+  const ids = [...new Set([...views, ...(p.click ? [p.click] : [])])];
+  const marks = (list: string[]) => list.map(() => '?').join(',');
+  if (ids.length)
+    await run(
+      `INSERT INTO ad_stats AS s(ad_id,day,views,clicks)
+       SELECT id,CAST(? AS TEXT),CASE WHEN ${views.length ? `id IN (${marks(views)})` : '1=0'} THEN 1 ELSE 0 END,CASE WHEN id=? THEN 1 ELSE 0 END
+       FROM platform_records WHERE kind='ads' AND id IN (${marks(ids)})
+       ON CONFLICT(ad_id,day) DO UPDATE SET views=s.views+excluded.views,clicks=s.clicks+excluded.clicks`,
+      adDay(),
+      ...views,
+      p.click || '',
+      ...ids,
+    );
+  res.json({ ok: true });
+});
 app.post(
   '/api/contact',
   writeLimit,
   atomicRoute(async (req, res) => {
     const p = await z.object({ name: str(100), email, message: str(3000) }).parseAsync(req.body);
+    if ((await records('settings', true))[0]?.contact_form_enabled === false)
+      fail('The contact form is closed right now. Please call or email us instead.', 403);
     await run('INSERT INTO messages VALUES(?,?,?,?,?)', id(), p.name, p.email, p.message, now());
     await notify(await adminsWith('messages'), {
       type: 'message',
@@ -479,7 +584,9 @@ app.get('/api/home', async (req, res) => {
             products: await Promise.all(
               (
                 await all(
-                  base + ' AND p.category=? ORDER BY p.stock>0 DESC,p.sort_order DESC LIMIT 8',
+                  base +
+                    ' AND p.category=? ORDER BY p.stock>0 DESC,p.sort_order DESC LIMIT ' +
+                    Math.min(24, Math.max(1, Math.round(Number(c.home_limit)) || 8)),
                   loc,
                   c.name,
                 )
@@ -488,10 +595,12 @@ app.get('/api/home', async (req, res) => {
           })),
       )
     ).filter((c) => c.products.length),
-    outlets: await all(
-      'SELECT o.id,o.name,o.location_id,o.address,o.phone,o.image,o.category,(SELECT COUNT(*) FROM products p WHERE p.outlet_id=o.id AND p.active=1) products,(SELECT MIN(delivery_minutes) FROM products p WHERE p.outlet_id=o.id AND p.active=1) delivery_minutes FROM outlets o WHERE o.active=1 AND o.location_id=? ORDER BY products DESC',
-      loc,
-    ),
+    outlets: (
+      await all(
+        `SELECT o.id,o.name,o.location_id,o.address,o.phone,o.image,o.category,${outletPublicColumns},(SELECT COUNT(*) FROM products p WHERE p.outlet_id=o.id AND p.active=1) products,(SELECT MIN(delivery_minutes) FROM products p WHERE p.outlet_id=o.id AND p.active=1) delivery_minutes FROM outlets o LEFT JOIN outlet_settings s ON s.outlet_id=o.id WHERE o.active=1 AND o.location_id=? ORDER BY featured DESC,products DESC`,
+        loc,
+      )
+    ).map(withOpen),
   });
 });
 const delivery = z.object({
@@ -520,7 +629,6 @@ app.post('/api/orders', writeLimit, async (req: AuthRequest, res) => {
   if (req.user.role !== 'customer') fail('Use a customer account to place an order.', 403);
   const p = await cart.parseAsync(req.body);
   let created = false;
-  let cardMethod: Row | undefined;
   const result = await transaction(async () => {
     const prior = await one('SELECT * FROM orders WHERE idempotency_key=?', p.idempotency_key);
     if (prior) {
@@ -539,30 +647,51 @@ app.post('/api/orders', writeLimit, async (req: AuthRequest, res) => {
         if (x.location_id !== p.delivery.location_id)
           fail('Every item must be available in your delivery area.');
         if (x.stock < item.quantity) fail(`${x.name} has only ${x.stock} available.`, 409);
+        if (item.quantity > x.max_per_order)
+          fail(`You can order up to ${x.max_per_order} of ${x.name} at a time.`);
         return { ...(await product(x)), quantity: item.quantity };
       }),
     );
     if (new Set(lines.map((x) => x.outlet_id)).size !== 1)
       fail('Please order from one outlet at a time.');
-    if (!(await outletSettings(lines[0].outlet_id)).accepting)
+    const shop = await outletSettings(lines[0].outlet_id);
+    if (!shop.accepting)
       fail('This outlet is not accepting orders right now. Please try again later.');
+    if (!withinHours(shop))
+      fail(`This outlet takes orders from ${shop.opens_at} to ${shop.closes_at}. Please order then.`);
     const center = (await one('SELECT * FROM locations WHERE id=?', p.delivery.location_id))!;
     const km = Math.hypot((p.delivery.lat - center.lat) * 111, (p.delivery.lng - center.lng) * 92);
     const area = await areaSettings(center.id);
     if (!area.active) fail('Delivery is paused in this area.');
+    if (!withinHours(area))
+      fail(`Delivery in this area runs from ${area.opens_at} to ${area.closes_at}. Please order then.`);
     if (km > area.radius) fail(`Delivery pin must be within ${area.radius} km of the area centre.`);
     const payment = (await paymentMethods()).find((m) => m.id === p.payment_method);
     if (!payment) fail('Choose an enabled payment method.');
+    if (lines.some((x) => !x.payment_methods.includes(payment.id)))
+      fail(
+        lines.length > 1
+          ? `${payment.name} is not accepted for every item in your cart.`
+          : `${payment.name} is not accepted for this item.`,
+      );
     await validateSubmission(payment, p.payment, req.user!.id);
     const outlet = lines[0].outlet_id;
     const subtotal = lines.reduce((s, x) => s + x.effective_price * x.quantity, 0);
     const siteSettings = (await records('settings', true))[0];
     if (siteSettings?.checkout_enabled === false)
-      fail('Ordering is temporarily paused. Please try again later.');
+      fail(siteSettings.checkout_message || 'Ordering is temporarily paused. Please try again later.');
     if (siteSettings && subtotal < siteSettings.minimum_order)
       fail(`The minimum order subtotal is PKR ${(siteSettings.minimum_order / 100).toFixed(2)}.`);
-    const fee = area.fee;
-    const { discount, coupon } = await couponDiscount(p.coupon_code, subtotal);
+    if (subtotal < shop.minimum_order)
+      fail(`The minimum order for this outlet is PKR ${(shop.minimum_order / 100).toFixed(2)}.`);
+    if (subtotal < area.minimum_order)
+      fail(`The minimum order in this area is PKR ${(area.minimum_order / 100).toFixed(2)}.`);
+    const fee = deliveryFee(area, subtotal);
+    const { discount, coupon } = await couponDiscount(p.coupon_code, subtotal, {
+      userId: req.user!.id,
+      locationId: center.id,
+      fee,
+    });
     const oid = id();
     const ref = 'DLV-' + Date.now().toString(36).toUpperCase() + '-' + randomInt(100, 1000);
     const otp = String(randomInt(100000, 1000000));
@@ -597,9 +726,6 @@ app.post('/api/orders', writeLimit, async (req: AuthRequest, res) => {
       p.idempotency_key,
     );
     const online = isOnline(payment.type);
-    const card = payment.type === 'card';
-    // The adapter needs the full record with its secret keys, not the customer-safe copy.
-    if (card) cardMethod = (await records('payments')).find((m) => m.id === payment.id);
     await run(
       'INSERT INTO order_details(order_id,discount,coupon_code,payment_name,payment_type,payment_instructions,payment_status,transaction_id,payer_name,payer_account,proof_id,payment_details,payment_updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
       oid,
@@ -608,11 +734,11 @@ app.post('/api/orders', writeLimit, async (req: AuthRequest, res) => {
       payment.name,
       payment.type,
       payment.instructions || '',
-      card ? 'pending' : online ? 'submitted' : 'due',
-      online && !card ? p.payment!.transaction_id : '',
-      online && !card ? p.payment!.payer_name : '',
-      online && !card ? p.payment!.payer_account : '',
-      online && !card ? p.payment!.proof_id || null : null,
+      online ? 'submitted' : 'due',
+      online ? p.payment!.transaction_id : '',
+      online ? p.payment!.payer_name : '',
+      online ? p.payment!.payer_account : '',
+      online ? p.payment!.proof_id || null : null,
       JSON.stringify(paymentSnapshot(payment)),
       online ? now() : null,
     );
@@ -637,10 +763,6 @@ app.post('/api/orders', writeLimit, async (req: AuthRequest, res) => {
     if (!online) await markPaymentVerified(oid);
     return (await one('SELECT * FROM orders WHERE id=?', oid))!;
   });
-  // Card orders are charged after the order (and its stock) is reserved; a decline cancels it again.
-  let redirectUrl: string | undefined;
-  if (created && cardMethod)
-    redirectUrl = (await chargeCardOrder(result, cardMethod, p.payment!.card_token!)).redirect_url;
   if (created) {
     const o = result;
     const d = (await one(
@@ -648,14 +770,7 @@ app.post('/api/orders', writeLimit, async (req: AuthRequest, res) => {
       o.id,
     ))!;
     const amount = money(o.total);
-    const pendingNote =
-      d.payment_type === 'card'
-        ? d.payment_status === 'paid'
-          ? ' · paid by card'
-          : ' · card payment pending'
-        : isOnline(d.payment_type)
-          ? ' · payment under review'
-          : '';
+    const pendingNote = isOnline(d.payment_type) ? ' · payment under review' : '';
     await notify([o.user_id], {
       type: 'order',
       title: 'Order placed',
@@ -669,7 +784,7 @@ app.post('/api/orders', writeLimit, async (req: AuthRequest, res) => {
       body: `${o.reference} from ${o.name} · ${amount} · ${verified ? 'assign a rider and send it' : 'awaiting payment verification'}`,
       link: '/admin?tab=orders',
     });
-    if (isOnline(d.payment_type) && d.payment_type !== 'card')
+    if (isOnline(d.payment_type))
       await notify(await adminsWith('payments'), {
         type: 'payment',
         title: 'Payment to verify',
@@ -677,10 +792,7 @@ app.post('/api/orders', writeLimit, async (req: AuthRequest, res) => {
         link: '/admin?tab=payments',
       });
   }
-  res.status(201).json({
-    ...(await serializeOrder(result, req)),
-    ...(redirectUrl ? { payment_redirect_url: redirectUrl } : {}),
-  });
+  res.status(201).json(await serializeOrder(result, req));
 });
 app.get('/api/orders', async (req: AuthRequest, res) => {
   let rows: Row[] = [];
@@ -702,7 +814,7 @@ app.get('/api/orders', async (req: AuthRequest, res) => {
       'SELECT * FROM orders WHERE guest_session=? ORDER BY created_at DESC',
       req.sessionHash,
     );
-  res.json(await Promise.all(rows.map(async (o) => await serializeOrder(o, req))));
+  res.json(await serializeOrders(rows, req));
 });
 app.get('/api/orders/:id', async (req: AuthRequest, res) => {
   const o = await one('SELECT * FROM orders WHERE id=?', String(req.params.id));
@@ -883,17 +995,46 @@ const productSchema = z.object({
   ),
   price: z.number().int().min(100).max(100000000),
   stock: z.number().int().min(0).max(100000),
+  max_per_order: z.number().int().min(1).max(99).default(99),
   unit: str(100),
   location_id: location,
+  sku: z
+    .string()
+    .trim()
+    .max(40)
+    .regex(/^[\w.\/-]*$/, 'SKUs use letters, numbers, dashes, dots and slashes.')
+    .default(''),
   discount: z.number().int().min(0).max(90),
-  deal: z.string().max(150).default(''),
+  deal: z.string().trim().max(150).default(''),
   images: z.array(z.string().refine(safeImage, 'Upload a product image.')).min(1).max(6),
-  includes: str(1000),
-  excludes: str(1000),
+  includes: z.string().trim().max(1000).default(''),
+  excludes: z.string().trim().max(1000).default(''),
   delivery_minutes: z.number().int().min(10).max(240),
+  payment_methods: z.array(z.string().max(100)).max(50).default([]),
   outlet_id: uuid,
   active: z.number().int().min(0).max(1).default(1),
 });
+/** Columns written by the product form, in the order saveProduct passes their values. */
+const productColumns = [
+  'outlet_id',
+  'name',
+  'description',
+  'category',
+  'price',
+  'stock',
+  'max_per_order',
+  'unit',
+  'sku',
+  'location_id',
+  'discount',
+  'deal',
+  'images',
+  'includes',
+  'excludes',
+  'delivery_minutes',
+  'payment_methods',
+  'active',
+];
 async function saveProduct(req: AuthRequest, res: Response, editing: boolean) {
   const p = await productSchema.parseAsync(req.body);
   const pid = editing ? String(req.params.id) : id();
@@ -904,6 +1045,20 @@ async function saveProduct(req: AuthRequest, res: Response, editing: boolean) {
   }
   await allowedProduct(req, p);
   if (!(await one('SELECT id FROM outlets WHERE id=?', p.outlet_id))) fail('Outlet not found.');
+  if (
+    p.sku &&
+    (await one(
+      'SELECT id FROM products WHERE outlet_id=? AND sku=? AND id<>?',
+      p.outlet_id,
+      p.sku,
+      pid,
+    ))
+  )
+    fail('Another product from this outlet already uses this SKU.', 409);
+  // Methods deleted while the form was open are dropped rather than rejected.
+  const known = new Set((await records('payments')).map((m) => m.id));
+  const methods = [...new Set(p.payment_methods)].filter((m) => known.has(m));
+  if (!methods.length) fail('Choose at least one payment method for this product.');
   const values = [
     p.outlet_id,
     p.name,
@@ -911,7 +1066,9 @@ async function saveProduct(req: AuthRequest, res: Response, editing: boolean) {
     p.category,
     p.price,
     p.stock,
+    p.max_per_order,
     p.unit,
+    p.sku,
     p.location_id,
     p.discount,
     p.deal,
@@ -919,17 +1076,37 @@ async function saveProduct(req: AuthRequest, res: Response, editing: boolean) {
     p.includes,
     p.excludes,
     p.delivery_minutes,
+    JSON.stringify(methods),
     p.active,
   ];
   if (editing)
     await run(
-      'UPDATE products SET outlet_id=?,name=?,description=?,category=?,price=?,stock=?,unit=?,location_id=?,discount=?,deal=?,images=?,includes=?,excludes=?,delivery_minutes=?,active=? WHERE id=?',
+      `UPDATE products SET ${productColumns.map((c) => c + '=?').join(',')} WHERE id=?`,
       ...values,
       pid,
     );
-  else await run('INSERT INTO products VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', pid, ...values);
+  else
+    await run(
+      `INSERT INTO products(id,${productColumns.join(',')}) VALUES(?,${productColumns.map(() => '?').join(',')})`,
+      pid,
+      ...values,
+    );
   res.json(await product((await one('SELECT * FROM products WHERE id=?', pid))!));
 }
+/** Payment methods a product form can offer: enabled and disabled, without account details. */
+app.get('/api/manage/payment-methods', requireRole('admin', 'outlet'), async (_req, res) =>
+  res.json(
+    (await allPaymentMethods()).map(({ id, name, type, provider, bank_name, logo, active }) => ({
+      id,
+      name,
+      type: type === 'manual' ? 'bank' : type,
+      provider,
+      bank_name,
+      logo,
+      active: !!active,
+    })),
+  ),
+);
 app.post(
   '/api/manage/products',
   requireRole('admin', 'outlet'),
@@ -984,49 +1161,81 @@ app.get('/api/media/:name', async (req, res) => {
 });
 app.get('/api/manage/outlet', requireRole('outlet'), async (req: AuthRequest, res) => {
   const o = await myOutlet(req);
-  res.json(o ? { ...o, ...(await outletSettings(o.id)) } : null);
+  res.json(o ? { ...o, ...(await outletOwnSettings(o.id)) } : null);
 });
 app.use('/api/admin', requireRole('admin'));
+// An area is saved in one request: its name and centre, plus any settings sent with them.
 const locationSchema = z.object({
   name: str(150),
   lat: z.number().min(-90).max(90),
   lng: z.number().min(-180).max(180),
+  ...areaFields,
 });
 app.post(
   '/api/admin/locations',
   atomicRoute(async (req, res) => {
-    const p = await locationSchema.parseAsync(req.body);
+    const { name, lat, lng, ...settings } = await locationSchema.parseAsync(req.body);
     const lid = id();
-    await run('INSERT INTO locations VALUES(?,?,?,?)', lid, p.name, p.lat, p.lng);
-    res.status(201).json({ id: lid, ...p });
+    await run('INSERT INTO locations VALUES(?,?,?,?)', lid, name, lat, lng);
+    await saveAreaSettings(lid, settings);
+    res.status(201).json({ id: lid, name, lat, lng, ...(await areaSettings(lid)) });
   }),
 );
 app.put(
   '/api/admin/locations/:id',
   atomicRoute(async (req, res) => {
-    const p = await locationSchema.parseAsync(req.body);
-    if (!(await one('SELECT id FROM locations WHERE id=?', String(req.params.id))))
+    const { name, lat, lng, ...settings } = await locationSchema.parseAsync(req.body);
+    const lid = String(req.params.id);
+    if (!(await one('SELECT id FROM locations WHERE id=?', lid)))
       fail('Delivery area not found.', 404);
-    await run(
-      'UPDATE locations SET name=?,lat=?,lng=? WHERE id=?',
-      p.name,
-      p.lat,
-      p.lng,
-      String(req.params.id),
-    );
-    res.json({ id: String(req.params.id), ...p });
+    await run('UPDATE locations SET name=?,lat=?,lng=? WHERE id=?', name, lat, lng, lid);
+    await saveAreaSettings(lid, settings);
+    res.json({ id: lid, name, lat, lng, ...(await areaSettings(lid)) });
   }),
 );
-app.get('/api/admin/outlets', async (_req, res) =>
-  res.json(
-    await Promise.all(
-      (await all('SELECT * FROM outlets')).map(async (o) => ({
-        ...o,
-        ...(await outletSettings(o.id)),
-      })),
-    ),
-  ),
+/** An area can go only while nothing refers to it; otherwise it is paused instead. */
+app.delete(
+  '/api/admin/locations/:id',
+  atomicRoute(async (req, res) => {
+    const lid = String(req.params.id);
+    if (!(await one('SELECT id FROM locations WHERE id=?', lid)))
+      fail('Delivery area not found.', 404);
+    const used = (await one(
+      'SELECT (SELECT COUNT(*) FROM outlets WHERE location_id=?) outlets,(SELECT COUNT(*) FROM products WHERE location_id=?) products,(SELECT COUNT(*) FROM users WHERE location_id=?) accounts,(SELECT COUNT(*) FROM orders WHERE location_id=?) orders',
+      lid,
+      lid,
+      lid,
+      lid,
+    ))!;
+    const reasons = Object.entries(used)
+      .filter(([, n]) => n > 0)
+      .map(([k, n]) => `${n} ${k}`);
+    if (reasons.length)
+      fail(`This area is still used by ${reasons.join(', ')}. Pause it instead.`, 409);
+    await run('DELETE FROM area_settings WHERE location_id=?', lid);
+    await run('DELETE FROM locations WHERE id=?', lid);
+    res.json({ ok: true });
+  }),
 );
+app.get('/api/admin/outlets', async (_req, res) => {
+  // Two queries however many outlets there are.
+  const settings = new Map(
+    (await all('SELECT * FROM outlet_settings')).map((s) => [s.outlet_id, s]),
+  );
+  res.json(
+    (
+      await all(
+        'SELECT o.*,(SELECT COUNT(*) FROM products p WHERE p.outlet_id=o.id AND p.active=1) products,(SELECT COUNT(*) FROM orders x WHERE x.outlet_id=o.id) orders,(SELECT COALESCE(SUM(subtotal),0) FROM order_settlements t WHERE t.outlet_id=o.id) sales,(SELECT COALESCE(SUM(outlet_payable),0) FROM order_settlements t WHERE t.outlet_id=o.id) payable FROM outlets o ORDER BY o.name',
+      )
+    ).map((o) => {
+      const s = { ...outletDefaults, ...settings.get(o.id) };
+      return { ...o, ...s, open: outletOpen(s) };
+    }),
+  );
+});
+const flag = z.number().int().min(0).max(1);
+/** A time of day as HH:MM, or empty for none. */
+const hour = z.union([z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), z.literal('')]);
 const outletSchema = z.object({
   name: str(150),
   phone,
@@ -1044,6 +1253,17 @@ const outletSchema = z.object({
   ),
   active: z.number().int().min(0).max(1).default(1),
   commission_rate: z.number().min(0).max(100).optional(),
+  accepting: flag.optional(),
+  featured: flag.optional(),
+  description: z.string().trim().max(500).optional(),
+  minimum_order: z.number().int().min(0).max(10000000).optional(),
+  opens_at: hour.optional(),
+  closes_at: hour.optional(),
+  owner_name: z.string().trim().max(100).optional(),
+  payout_bank: z.string().trim().max(100).optional(),
+  payout_title: z.string().trim().max(100).optional(),
+  payout_account: z.string().trim().max(40).optional(),
+  notes: z.string().trim().max(2000).optional(),
 });
 async function saveOutlet(req: AuthRequest, res: Response, edit: boolean) {
   const p = await outletSchema.parseAsync(req.body);
@@ -1051,6 +1271,15 @@ async function saveOutlet(req: AuthRequest, res: Response, edit: boolean) {
   const old = edit ? await one('SELECT * FROM outlets WHERE id=?', oid) : null;
   if (edit && !old) fail('Outlet not found.', 404);
   if (!edit && !p.password) fail('Set a password for the outlet account.');
+  const before = await outletSettings(oid);
+  const opens = p.opens_at ?? before.opens_at,
+    closes = p.closes_at ?? before.closes_at;
+  if (!opens !== !closes) fail('Set both an opening and a closing time, or leave both empty.');
+  if (opens && opens === closes) fail('Opening and closing times must differ.');
+  // A new outlet starts on its category's commission unless one is given.
+  const categoryRate = edit
+    ? undefined
+    : (await records('categories')).find((c) => c.name === p.category)?.commission_rate;
   const uid = old?.user_id || id();
   await transaction(async () => {
     if (edit) {
@@ -1114,8 +1343,20 @@ async function saveOutlet(req: AuthRequest, res: Response, edit: boolean) {
         p.category,
       );
     }
-    if (p.commission_rate !== undefined)
-      await saveOutletSettings(oid, { commission_rate: p.commission_rate });
+    await saveOutletSettings(oid, {
+      commission_rate: p.commission_rate ?? categoryRate ?? undefined,
+      accepting: p.accepting,
+      featured: p.featured,
+      description: p.description,
+      minimum_order: p.minimum_order,
+      opens_at: p.opens_at,
+      closes_at: p.closes_at,
+      owner_name: p.owner_name,
+      payout_bank: p.payout_bank,
+      payout_title: p.payout_title,
+      payout_account: p.payout_account,
+      notes: p.notes,
+    });
   });
   res.json({
     ...(await one('SELECT * FROM outlets WHERE id=?', oid)),
@@ -1130,37 +1371,95 @@ app.put(
   '/api/admin/outlets/:id',
   atomicRoute(async (req: AuthRequest, res) => await saveOutlet(req, res, true)),
 );
-app.get('/api/admin/riders', async (_req, res) =>
-  res.json(
-    await Promise.all(
-      (
-        await all(
-          "SELECT u.id,u.name,u.email,u.phone,u.address,u.location_id,u.login_id,u.active,u.created_at,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status NOT IN ('delivered','cancelled')) active_orders,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status='delivered') delivered FROM users u WHERE u.role='rider' ORDER BY u.created_at DESC",
-        )
-      ).map(async (r) => {
-        const s = await riderSettings(r.id);
-        return {
-          ...r,
-          commission_type: s.commission_type,
-          commission_value: s.commission_value,
-          commission_base: s.commission_base,
-          ...(await riderBalance(r.id)),
-        };
-      }),
-    ),
-  ),
+/** The switches in the outlet table: change one flag without re-validating the whole outlet. */
+app.patch(
+  '/api/admin/outlets/:id',
+  atomicRoute(async (req: AuthRequest, res) => {
+    const p = z
+      .object({ active: flag.optional(), accepting: flag.optional(), featured: flag.optional() })
+      .parse(req.body);
+    const oid = String(req.params.id);
+    const o = await one('SELECT user_id FROM outlets WHERE id=?', oid);
+    if (!o) fail('Outlet not found.', 404);
+    if (p.active !== undefined) {
+      await run('UPDATE outlets SET active=? WHERE id=?', p.active, oid);
+      await run('UPDATE users SET active=? WHERE id=?', p.active, o.user_id);
+    }
+    if (p.accepting !== undefined || p.featured !== undefined)
+      await saveOutletSettings(oid, { accepting: p.accepting, featured: p.featured });
+    const s = await outletSettings(oid);
+    res.json({ ok: true, accepting: s.accepting, featured: s.featured, open: outletOpen(s) });
+  }),
 );
+/** Every rider with settings, duty state, load and balances: one query however many riders. */
+app.get('/api/admin/riders', async (req, res) => {
+  const period = range(req);
+  const total = (column: string, table: string, where = '') =>
+    `(SELECT COALESCE(SUM(${column}),0) FROM ${table} WHERE rider_id=u.id${where})`;
+  const settings = Object.entries(riderDefaults)
+    .map(([k, v]) => `COALESCE(g.${k},${typeof v === 'number' ? v : `'${v}'`}) ${k}`)
+    .join(',');
+  res.json(
+    (
+      await all(
+        `SELECT u.id,u.name,u.email,u.phone,u.address,u.location_id,u.login_id,u.active,u.created_at,${settings},COALESCE(s.available,1) available,COALESCE(s.capacity,5) capacity,s.lat,s.lng,s.accuracy,s.updated_at position_at,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status NOT IN ('delivered','cancelled')) active_orders,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status='delivered') delivered,(SELECT MAX(delivered_at) FROM orders WHERE rider_id=u.id AND status='delivered') last_delivery_at,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status='delivered' AND ${between('delivered_at')}) delivered_range,${total('amount', 'rider_earnings', ' AND ' + between('created_at'))} earned_range,${total('amount', 'rider_payouts', ' AND ' + between('created_at'))} paid_range,${total('cash_collected', 'rider_earnings', ' AND ' + between('created_at'))} cash_range,${total('amount', 'rider_earnings')} earned,${total('amount', 'rider_payouts')} paid,${total('amount', 'payout_requests', " AND status='pending'")} pending_payouts,${total('cash_collected', 'rider_earnings')} cash_collected,${total('amount', 'cod_deposits', " AND status IN ('approved','pending')")} cash_submitted FROM users u LEFT JOIN rider_settings g ON g.user_id=u.id LEFT JOIN rider_state s ON s.user_id=u.id WHERE u.role='rider' ORDER BY u.created_at DESC`,
+        ...Array.from({ length: 4 }, () => [period.from, period.to]).flat(),
+      )
+    ).map(({ cash_collected, cash_submitted, ...r }) => ({
+      ...r,
+      // Placeholder addresses stand in for riders saved without an email.
+      email: r.email.endsWith(riderMailDomain) ? '' : r.email,
+      balance: r.earned - r.paid,
+      cash_in_hand: cash_collected - cash_submitted,
+    })),
+  );
+});
+/** Riders sign in with their rider ID, so an email is optional; accounts still need a unique one. */
+const riderMailDomain = '@riders.dellvit.invalid';
+const optional = (max: number) => z.string().trim().max(max).optional();
 const riderSchema = z.object({
   name: str(100),
-  email,
+  email: z.union([email, z.literal('')]).default(''),
   phone,
-  address: str(500),
+  address: z.string().trim().max(500).default(''),
   location_id: location,
   login_id: z.string().regex(/^[A-Z0-9-]{3,30}$/),
   password: z.string().min(10).max(100).optional(),
   active: z.number().int().min(0).max(1).default(1),
   ...commissionSchema,
+  vehicle_type: z.enum(vehicleTypes).optional(),
+  vehicle_number: optional(20),
+  cnic: z
+    .string()
+    .trim()
+    .regex(/^(\d{5}-?\d{7}-?\d)?$/, 'A CNIC has 13 digits, for example 37405-1234567-1.')
+    .optional(),
+  license_number: optional(30),
+  emergency_name: optional(100),
+  emergency_phone: z.union([phone, z.literal('')]).optional(),
+  payout_method: z.enum(payoutMethods).optional(),
+  payout_bank: optional(100),
+  payout_title: optional(100),
+  payout_account: optional(40),
+  notes: optional(2000),
+  // Dispatch: whether the rider is on duty and how many orders they carry at once.
+  available: z.number().int().min(0).max(1).optional(),
+  capacity: z.number().int().min(1).max(50).optional(),
 });
+/** Sets a rider's duty state or capacity, keeping whichever is not given. */
+async function saveRiderState(uid: string, s: { available?: number; capacity?: number }) {
+  if (s.available === undefined && s.capacity === undefined) return;
+  const old = (await one('SELECT available,capacity FROM rider_state WHERE user_id=?', uid)) || {
+    available: 1,
+    capacity: 5,
+  };
+  await run(
+    'INSERT INTO rider_state(user_id,available,capacity) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET available=excluded.available,capacity=excluded.capacity',
+    uid,
+    s.available ?? old.available,
+    s.capacity ?? old.capacity,
+  );
+}
 async function saveRider(req: AuthRequest, res: Response, edit: boolean) {
   const p = await riderSchema.parseAsync(req.body);
   const uid = edit ? String(req.params.id) : id();
@@ -1173,6 +1472,7 @@ async function saveRider(req: AuthRequest, res: Response, edit: boolean) {
   res.json(await publicUser((await one('SELECT * FROM users WHERE id=?', uid))!));
 }
 async function saveRiderAccount(p: z.infer<typeof riderSchema>, uid: string, edit: boolean) {
+  p.email ||= p.login_id.toLowerCase() + riderMailDomain;
   if (edit) {
     await run(
       'UPDATE users SET name=?,email=?,phone=?,address=?,location_id=?,login_id=?,active=? WHERE id=?',
@@ -1202,7 +1502,9 @@ async function saveRiderAccount(p: z.infer<typeof riderSchema>, uid: string, edi
       p.active,
       now(),
     );
+  const { available, capacity } = p;
   await saveRiderSettings(uid, p);
+  await saveRiderState(uid, { available, capacity });
 }
 app.post(
   '/api/admin/riders',
@@ -1211,6 +1513,25 @@ app.post(
 app.put(
   '/api/admin/riders/:id',
   atomicRoute(async (req: AuthRequest, res) => await saveRider(req, res, true)),
+);
+/** The switches in the rider table: change one setting without re-validating the whole rider. */
+app.patch(
+  '/api/admin/riders/:id',
+  atomicRoute(async (req: AuthRequest, res) => {
+    const p = z
+      .object({
+        active: flag.optional(),
+        available: flag.optional(),
+        capacity: z.number().int().min(1).max(50).optional(),
+      })
+      .parse(req.body);
+    const uid = String(req.params.id);
+    if (!(await one("SELECT id FROM users WHERE id=? AND role='rider'", uid)))
+      fail('Rider not found.', 404);
+    if (p.active !== undefined) await run('UPDATE users SET active=? WHERE id=?', p.active, uid);
+    await saveRiderState(uid, p);
+    res.json({ ok: true });
+  }),
 );
 app.get('/api/admin/outlets/:id/documents', async (req, res) =>
   res.json(
@@ -1272,33 +1593,6 @@ app.delete(
 );
 app.get('/api/admin/messages', async (_req, res) =>
   res.json(await all('SELECT * FROM messages ORDER BY created_at DESC')),
-);
-app.put(
-  '/api/admin/ad',
-  atomicRoute(async (req, res) => {
-    const p = await z
-      .object({
-        title: str(100),
-        description: str(300),
-        label: str(40),
-        link: z
-          .string()
-          .max(300)
-          .refine(
-            (s) => /^\/(?!\/)[\w/?=&%-]*$/.test(s) || /^https:\/\/[^\s]+$/.test(s),
-            'Use a relative path or HTTPS URL.',
-          ),
-        image: z.string().refine(safeImage),
-        active: z.boolean(),
-      })
-      .parseAsync(req.body);
-    await run(
-      'INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-      'ad',
-      JSON.stringify(p),
-    );
-    res.json(p);
-  }),
 );
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Endpoint not found.' }));
 app.use((err: any, _req: AuthRequest, res: Response, _next: NextFunction) => {

@@ -24,7 +24,7 @@ import { useData } from '@/lib/useData';
 import { inRange, useRange } from '@/lib/range';
 import { money, date, label, api } from '@/lib/api';
 import type { Order } from '@/lib/types';
-import { Loading, ErrorBox, Empty, Confirm, DataTable, Badge, PageTitle, FilterBar, Stat, RowAction } from './UI';
+import { Loading, ErrorBox, Empty, Confirm, DataTable, Badge, PageTitle, FilterBar, Stat, RowAction, PageLoading } from './UI';
 import { AccountDetails, PaymentName, PaymentProofFields, type Proof } from './Checkout';
 const DeliveryMap = dynamic(() => import('./DeliveryMap'), {
   ssr: false,
@@ -47,16 +47,13 @@ export const paymentLabel = (o: Pick<Order, 'payment_type' | 'payment_status'>) 
             ? 'Rejected'
             : o.payment_status === 'failed'
               ? 'Payment failed'
-              : o.payment_type === 'card'
-                ? 'Processing'
-                : 'Verifying';
+              : 'Verifying';
 export const paymentTypeLabels: Record<string, string> = {
   cod: 'Cash on delivery',
   bank: 'Bank transfer',
   manual: 'Bank transfer',
   wallet: 'Mobile wallet',
   raast: 'Raast',
-  card: 'Card',
 };
 export function PaymentStatusBadge({ order }: { order: Pick<Order, 'payment_type' | 'payment_status'> }) {
   const tone =
@@ -111,7 +108,7 @@ export function Orders() {
   const { range, setRange, label: rangeText } = useRange('7d');
   const [cancel, setCancel] = useState<Order | null>(null);
   const [busy, setBusy] = useState(false);
-  if (!ready) return <Loading />;
+  if (!ready) return <PageLoading />;
   if (!user)
     return (
       <div className="container page">
@@ -292,11 +289,14 @@ export function Countdown({
   deadline,
   done = false,
   pending = false,
+  doneLabel = 'Completed',
 }: {
   deadline: string;
   done?: boolean;
   /** The order is not confirmed yet, so the countdown has not started. */
   pending?: boolean;
+  /** Text once the order is closed, e.g. "Delivered" or "Cancelled". */
+  doneLabel?: string;
 }) {
   const [t, setT] = useState(Date.now());
   useEffect(() => {
@@ -307,7 +307,7 @@ export function Countdown({
   if (pending && !done) return <span className="muted">Starts after confirmation</span>;
   return (
     <span className={seconds === 0 && !done ? 'late' : ''}>
-      {done ? 'Completed' : seconds > 0 ? `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s` : 'Overdue'}
+      {done ? doneLabel : seconds > 0 ? `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s` : 'Overdue'}
     </span>
   );
 }
@@ -321,7 +321,6 @@ function PaymentCard({ o, refresh }: { o: Order; refresh: () => void }) {
   });
   const [busy, setBusy] = useState(false);
   const online = o.payment_type && o.payment_type !== 'cod';
-  const card = o.payment_type === 'card';
   async function resubmit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -353,20 +352,11 @@ function PaymentCard({ o, refresh }: { o: Order; refresh: () => void }) {
           <>
             <span>Transaction ID</span>
             <strong>{o.transaction_id || '—'}</strong>
-            {!card && (
-              <>
-                <span>Sender</span>
-                <strong>{o.payer_name || '—'}</strong>
-              </>
-            )}
+            <span>Sender</span>
+            <strong>{o.payer_name || '—'}</strong>
           </>
         )}
       </div>
-      {card && o.payment_status === 'failed' && o.payment_note && (
-        <div className="alert error">
-          <AlertTriangle size={16} /> {o.payment_note}
-        </div>
-      )}
       {online && o.proof_url && (
         <a href={o.proof_url} target="_blank" rel="noreferrer" className="proof-link">
           <img src={o.proof_url} alt="Payment receipt" /> View receipt
@@ -375,9 +365,7 @@ function PaymentCard({ o, refresh }: { o: Order; refresh: () => void }) {
       {online && o.payment_status !== 'paid' && o.payment_status !== 'rejected' && o.status !== 'cancelled' && (
         <div className="alert info">
           <Clock size={16} />{' '}
-          {card
-            ? 'Waiting for your bank to confirm the card payment.'
-            : 'We’re verifying your payment. The outlet will accept your order once it’s confirmed.'}
+We’re verifying your payment. The outlet will accept your order once it’s confirmed.
         </div>
       )}
       {o.payment_status === 'rejected' && o.status !== 'cancelled' && (

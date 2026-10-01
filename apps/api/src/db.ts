@@ -39,8 +39,10 @@ function database(): DatabaseAdapter {
             ? { ca: process.env.DATABASE_SSL_CA.replace(/\\n/g, '\n') }
             : {}),
         },
-    max: 3,
-    idleTimeoutMillis: 10_000,
+    // Opening a connection costs several round trips, so idle ones are kept between page polls.
+    max: Number(process.env.DATABASE_POOL_MAX) || 5,
+    idleTimeoutMillis: 60_000,
+    keepAlive: true,
     connectionTimeoutMillis: 10_000,
     allowExitOnIdle: true,
   });
@@ -50,11 +52,12 @@ function database(): DatabaseAdapter {
     async transaction(fn) {
       const client = await pool.connect();
       try {
-        await client.query('BEGIN');
-        await client.query("SET LOCAL statement_timeout = '30s'");
-        // Preserve SQLite's serialized writers across Vercel instances for stock,
-        // coupon limits, idempotency, workflow transitions and account balances.
-        await client.query('SELECT pg_advisory_xact_lock(73288001)');
+        // One round trip opens the transaction. The lock preserves SQLite's serialized writers
+        // across Vercel instances for stock, coupon limits, idempotency, workflow transitions
+        // and account balances.
+        await client.query(
+          "BEGIN; SET LOCAL statement_timeout = '30s'; SELECT pg_advisory_xact_lock(73288001)",
+        );
         const result = await fn(client);
         await client.query('COMMIT');
         return result;
@@ -78,7 +81,7 @@ export function setTestDatabase(value: DatabaseAdapter) {
 }
 
 export const applicationTables =
-  'locations users sessions outlets products orders order_items order_events documents messages settings admin_access platform_records area_settings rider_state audit_log order_details coupon_uses notifications push_subscriptions rider_settings rider_earnings rider_payouts payout_requests order_flow payment_proofs outlet_settings order_settlements cod_deposits rate_limits'.split(
+  'locations users sessions outlets products orders order_items order_events documents messages settings admin_access platform_records area_settings rider_state audit_log order_details coupon_uses notifications push_subscriptions rider_settings rider_earnings rider_payouts payout_requests order_flow payment_proofs outlet_settings order_settlements cod_deposits rate_limits email_codes ad_stats support_threads support_messages'.split(
     ' ',
   );
 const tables = new Set(applicationTables);

@@ -1,13 +1,15 @@
 import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
 import { Catalog, Outlets, ProductDetail } from '@/components/Catalog';
-import { Auth, Account } from '@/components/Auth';
+import { Auth, VerifyEmail } from '@/components/Auth';
+import { Account } from '@/components/Account';
 import { Cart, Checkout } from '@/components/Checkout';
 import { Orders, OrderDetail } from '@/components/Orders';
 import { About, Contact } from '@/components/Info';
 import Portal from '@/components/Portals';
-import { Loading } from '@/components/UI';
+import { PageLoading } from '@/components/UI';
 import { NotificationsPage } from '@/components/Notifications';
+import { SupportPage } from '@/components/Support';
 export async function generateMetadata({ params }: { params: Promise<{ slug: string[] }> }) {
   const { slug } = await params;
   const titles: Record<string, string> = {
@@ -16,6 +18,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
     products: 'Product details',
     login: 'Log in',
     signup: 'Create account',
+    verify: 'Verify your email',
     account: 'Your account',
     cart: 'Your basket',
     checkout: 'Checkout',
@@ -23,12 +26,13 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
     about: 'About us',
     contact: 'Contact us',
     notifications: 'Notifications',
+    support: 'Support chat',
     admin: 'Administration',
     portal: 'Your portal',
   };
   return {
     title: titles[slug[0]] || 'Dellvit',
-    ...(['account', 'cart', 'checkout', 'orders', 'admin', 'portal', 'notifications'].includes(slug[0])
+    ...(['account', 'cart', 'checkout', 'orders', 'admin', 'portal', 'notifications', 'support'].includes(slug[0])
       ? { robots: { index: false, follow: false } }
       : {}),
   };
@@ -53,6 +57,9 @@ export default async function Page({ params }: { params: Promise<{ slug: string[
       case 'signup':
         content = <Auth signup />;
         break;
+      case 'verify':
+        content = <VerifyEmail />;
+        break;
       case 'account':
         content = <Account />;
         break;
@@ -74,6 +81,9 @@ export default async function Page({ params }: { params: Promise<{ slug: string[
       case 'notifications':
         content = <NotificationsPage />;
         break;
+      case 'support':
+        content = <SupportPage />;
+        break;
       case 'admin':
         content = <Portal role="admin" />;
         break;
@@ -81,5 +91,5 @@ export default async function Page({ params }: { params: Promise<{ slug: string[
         notFound();
     }
   } else notFound();
-  return <Suspense fallback={<Loading />}>{content}</Suspense>;
+  return <Suspense fallback={<PageLoading />}>{content}</Suspense>;
 }
