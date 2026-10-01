@@ -392,8 +392,8 @@ export function Footer() {
       </div>
       <div className="container footer-bottom">
         <span>
-          © {new Date().getFullYear()} {settings?.name || 'Dellvit'}
-          {settings?.footer_note && ' · ' + settings.footer_note}
+          © {new Date().getFullYear()} {settings?.name || 'Dellvit'}. All rights reserved. Powered by Intelloplex.
+          {settings?.footer_note && ' ' + settings.footer_note}
         </span>
         <div>
           <Link href="/about">About</Link>
