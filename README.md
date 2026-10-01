@@ -6,7 +6,7 @@ Responsive Next.js storefront and role-based workspaces backed by Express, Supab
 
 Requires Node.js 24. Run commands from the project root. On PowerShell, use `npm.cmd` if script execution policy blocks `npm`.
 
-```powershell
+```powershell 
 npm.cmd install
 # Create apps/api/.env from its example and fill in Supabase/R2 credentials first.
 npm.cmd run db:migrate
