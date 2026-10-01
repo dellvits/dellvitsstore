@@ -14,10 +14,21 @@ export const metadata: Metadata = {
     'Order food, groceries and everyday essentials from local outlets. Dellvit brings your neighbourhood to your doorstep.',
   icons: { icon: '/images/app-logo.webp', apple: '/images/app-logo.webp' },
 };
-export const viewport: Viewport = { themeColor: '#d91e45' };
+export const viewport: Viewport = {
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: '#d91e45' },
+    { media: '(prefers-color-scheme: dark)', color: '#1b1421' },
+  ],
+};
+// Runs before the page is painted, so a chosen theme never flashes the other one first. With no
+// choice saved, the device's own light or dark setting applies through CSS.
+const themeScript = `try{var t=localStorage.getItem('dellvit-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}`;
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={sans.variable}>
+    <html lang="en" className={sans.variable} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
       <body>
         <Provider>
           <a href="#main" className="skip-link">

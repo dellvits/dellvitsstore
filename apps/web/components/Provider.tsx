@@ -48,7 +48,11 @@ type Context = {
   refreshNotifications: () => void;
   sound: boolean;
   setSound: (v: boolean) => void;
+  /** The colour theme: the device's own setting, or light or dark chosen here. */
+  theme: Theme;
+  setTheme: (t: Theme) => void;
 };
+export type Theme = 'system' | 'light' | 'dark';
 const State = createContext<Context | null>(null);
 export const useApp = () => useContext(State)!;
 /** Most of one product a single order may hold; carts saved before the limit existed use 99. */
@@ -91,6 +95,7 @@ export default function Provider({ children }: { children: ReactNode }) {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [unread, setUnread] = useState(0);
   const [supportUnread, setSupportUnread] = useState(0);
+  const [theme, setThemeState] = useState<Theme>('system');
   const [sound, setSoundState] = useState(true);
   const seen = useRef<Set<string> | null>(null);
   const soundRef = useRef(true);
@@ -133,6 +138,8 @@ export default function Provider({ children }: { children: ReactNode }) {
       const c = JSON.parse(read('dellvit-coords') || 'null');
       if (c && typeof c.lat === 'number') setCoords(c);
     } catch {}
+    const savedTheme = read('dellvit-theme');
+    if (savedTheme === 'light' || savedTheme === 'dark') setThemeState(savedTheme);
     setSoundState(read('dellvit-sound') !== 'off');
     soundRef.current = read('dellvit-sound') !== 'off';
     setHydrated(true);
@@ -311,6 +318,14 @@ export default function Provider({ children }: { children: ReactNode }) {
         unread,
         supportUnread,
         refreshNotifications,
+        theme,
+        setTheme: (t) => {
+          setThemeState(t);
+          write('dellvit-theme', t);
+          // No attribute means "follow the device"; the stylesheet does the rest.
+          if (t === 'system') delete document.documentElement.dataset.theme;
+          else document.documentElement.dataset.theme = t;
+        },
         sound,
         setSound: (v) => {
           setSoundState(v);

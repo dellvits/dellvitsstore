@@ -81,6 +81,7 @@ import {
   PageLoading,
 } from './UI';
 import { NotificationBell } from './Notifications';
+import { ThemeSwitch } from './Shell';
 import {
   RecordManager,
   PaymentsWorkspace,
@@ -248,6 +249,7 @@ export default function Portal({ role }: { role: 'admin' | 'outlet' | 'rider' })
             <Link href="/" className="button ghost small hide-sm">
               <Store size={15} /> View store
             </Link>
+            <ThemeSwitch />
             <MessageButton />
             <NotificationBell />
           </div>

@@ -32,7 +32,7 @@ import { Badge, Confirm, DataTable, Empty, ErrorBox, FilterBar, Loading, PageLoa
 import { NotificationSettings, inboxPath } from './Notifications';
 import { Password } from './Auth';
 import { Countdown, PaymentStatusBadge, stageLabel } from './Orders';
-import { portalPath } from './Shell';
+import { portalPath, themes } from './Shell';
 
 type Session = { id: string; current: boolean; created_at: string | null; user_agent: string; expires_at: string };
 type Offer = { code: string; name: string; description: string };
@@ -275,7 +275,7 @@ function Overview({ user }: { user: User }) {
 }
 
 function Profile({ user }: { user: User }) {
-  const { setUser, locations, notice } = useApp();
+  const { setUser, locations, notice, theme, setTheme } = useApp();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const customer = user.role === 'customer';
@@ -394,6 +394,17 @@ function Profile({ user }: { user: User }) {
             </div>
           )}
         </dl>
+        <div className="field appearance">
+          <span className="field-label">Appearance</span>
+          <div className="segmented">
+            {themes.map(([key, title, Icon]) => (
+              <button type="button" key={key} className={theme === key ? 'selected' : ''} aria-pressed={theme === key} onClick={() => setTheme(key)}>
+                <Icon size={14} /> {title}
+              </button>
+            ))}
+          </div>
+          <small className="muted">Device default follows your phone or computer. The choice is kept on this device.</small>
+        </div>
         {user.is_owner && (
           <div className="alert info">
             <ShieldCheck size={16} /> This is the owner account. Other administrators cannot edit, disable or delete it.

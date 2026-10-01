@@ -6,6 +6,7 @@ import {
   ArrowRight,
   Bell,
   CircleCheck,
+  ClipboardPaste,
   Clock,
   Eye,
   EyeOff,
@@ -221,6 +222,27 @@ export function VerifyEmail() {
       setBusy(false);
     }
   }
+  // The button in the email carries the code, so the page fills it in and checks it by itself.
+  const linked = useRef(false);
+  useEffect(() => {
+    const given = (search.get('code') || '').replace(/\D/g, '');
+    if (linked.current || !email || given.length !== CODE_LENGTH) return;
+    linked.current = true;
+    setCode(given);
+    verify(given);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [email]);
+  /** Takes a code copied from the email straight from the clipboard. */
+  async function paste() {
+    try {
+      const copied = (await navigator.clipboard.readText()).replace(/\D/g, '').slice(0, CODE_LENGTH);
+      if (copied.length !== CODE_LENGTH) return setError('Copy the 6-digit code from the email first, then tap Paste.');
+      setCode(copied);
+      verify(copied);
+    } catch {
+      setError('Your browser did not allow pasting. Type the code instead.');
+    }
+  }
   async function resend() {
     if (sending || wait > 0) return;
     setSending(true);
@@ -294,6 +316,9 @@ export function VerifyEmail() {
                   disabled={busy}
                 />
                 {error && <ErrorBox error={error} />}
+                <button type="button" className="button ghost full" disabled={busy} onClick={paste}>
+                  <ClipboardPaste size={16} /> Paste the code I copied
+                </button>
                 <button className="button large full" disabled={busy || code.length < CODE_LENGTH}>
                   {busy ? 'Checking…' : 'Verify email'}
                   <ArrowRight size={18} />

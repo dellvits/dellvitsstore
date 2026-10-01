@@ -133,25 +133,25 @@ const button = (href: string, label: string) =>
 /** The 6-digit code that proves a customer owns their email address. */
 export function verificationEmail(p: { to: string; name: string; code: string; minutes: number }): Mail {
   const name = escape(p.name.split(' ')[0] || 'there');
-  const digits = p.code
-    .split('')
-    .map(
-      (d) =>
-        `<td style="width:44px;height:54px;border:1px solid #eadfe6;border-radius:12px;background:#fdf6f8;text-align:center;font-size:26px;font-weight:800;color:${ink};font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;">${d}</td><td style="width:8px;"></td>`,
-    )
-    .join('');
+  // One box, so a long press or a double click selects the whole code for copying. Email
+  // cannot run a copy button; the button below opens the site with the code already filled in.
+  const digits = `<td style="padding:14px 22px;border:1px dashed #e3b9c5;border-radius:14px;background:#fdf6f8;text-align:center;font-size:32px;font-weight:800;letter-spacing:8px;color:${ink};font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;">${p.code}</td>`;
+  const link = `${site()}/verify?email=${encodeURIComponent(p.to)}&code=${p.code}`;
   return {
     to: p.to,
-    subject: `${p.code} is your Dellvit verification code`,
-    text: `Hi ${p.name.split(' ')[0] || 'there'},\n\nYour Dellvit verification code is ${p.code}. It expires in ${p.minutes} minutes.\n\nEnter it at ${site()}/verify to finish creating your account. If you did not sign up, you can ignore this email.`,
+    // The code stays out of the subject and the preview line, where others could read it.
+    subject: 'Verification Code',
+    text: `Hi ${p.name.split(' ')[0] || 'there'},\n\nYour Dellvit verification code is ${p.code}. It expires in ${p.minutes} minutes.\n\nEnter it at ${site()}/verify, or open this link to fill it in for you: ${link}\n\nIf you did not sign up, you can ignore this email.`,
     html: layout({
-      preheader: `Your verification code is ${p.code}. It expires in ${p.minutes} minutes.`,
+      preheader: `Open this email for your Dellvit code. It expires in ${p.minutes} minutes.`,
       heading: 'Confirm your email',
       body:
         paragraph(`Hi ${name}, welcome to Dellvit. Enter this code to finish creating your account:`) +
         `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:20px 0;"><tr>${digits}</tr></table>` +
-        paragraph(`The code expires in <strong>${p.minutes} minutes</strong> and can be used once.`) +
-        button(`${site()}/verify?email=${encodeURIComponent(p.to)}`, 'Enter the code') +
+        note('Tap and hold the code (or double-click it) to copy it.') +
+        paragraph(`<br>The code expires in <strong>${p.minutes} minutes</strong> and can be used once.`) +
+        button(link, 'Verify my email') +
+        note('The button opens Dellvit with your code already filled in, so there is nothing to copy.') +
         note(
           'Never share this code. Dellvit staff will not ask for it. If you did not create an account, you can safely ignore this email.',
         ),

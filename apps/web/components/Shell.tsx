@@ -4,8 +4,12 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import {
   Bell,
+  Check,
   Megaphone,
   MessagesSquare,
+  Monitor,
+  Moon,
+  Sun,
   ChevronDown,
   LayoutDashboard,
   LogIn,
@@ -20,7 +24,7 @@ import {
   X,
 } from 'lucide-react';
 import { useData } from '@/lib/useData';
-import { useApp } from './Provider';
+import { useApp, type Theme } from './Provider';
 import { LocationPicker } from './UI';
 import { NotificationBell, inboxPath } from './Notifications';
 import { MessageButton } from './Support';
@@ -63,6 +67,62 @@ function SearchBox({ onDone }: { onDone?: () => void }) {
         Search
       </button>
     </form>
+  );
+}
+
+export const themes: [Theme, string, typeof Sun][] = [
+  ['system', 'Device default', Monitor],
+  ['light', 'Light', Sun],
+  ['dark', 'Dark', Moon],
+];
+/** The header button that switches between the device's theme, light and dark. */
+export function ThemeSwitch() {
+  const { theme, setTheme } = useApp();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [open]);
+  const Current = themes.find(([k]) => k === theme)![2];
+  return (
+    <div className="theme-menu" ref={ref}>
+      <button
+        className={'header-icon' + (open ? ' active' : '')}
+        aria-label="Colour theme"
+        title="Colour theme"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        <Current size={19} />
+      </button>
+      {open && (
+        <div className="dropdown" role="menu">
+          {themes.map(([key, title, Icon]) => (
+            <button
+              key={key}
+              role="menuitemradio"
+              aria-checked={theme === key}
+              className={'theme-option' + (theme === key ? ' selected' : '')}
+              onClick={() => {
+                setTheme(key);
+                setOpen(false);
+              }}
+            >
+              <Icon size={16} /> {title}
+              {theme === key && <Check size={15} />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -170,6 +230,7 @@ export function Header() {
             ))}
           </nav>
           <div className="header-actions">
+            <ThemeSwitch />
             <MessageButton />
             <NotificationBell />
             <Link href="/cart" className="header-icon" aria-label={`Cart, ${count} items`}>

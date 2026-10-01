@@ -14,7 +14,10 @@ const { db, one, run } = await import('../apps/api/src/db.js');
 const { outbox } = await import('../apps/api/src/mail.js');
 /** The code in the latest verification email sent to an address. */
 const emailedCode = (to: string) =>
-  outbox.filter((m) => m.to === to && /^\d{6} /.test(m.subject)).at(-1)!.subject.slice(0, 6);
+  outbox
+    .filter((m) => m.to === to && m.subject === 'Verification Code')
+    .at(-1)!
+    .text.match(/code is (\d{6})/)![1];
 await seed();
 after(async () => {
   await new Promise((resolve) => setImmediate(resolve));
