@@ -18,6 +18,9 @@ export type Location = {
 export type AdminArea = Required<Location> & {
   outlets: number;
   products: number;
+  /** Outlets and products that are not deleted, closed ones included: these stop the area being deleted. */
+  all_outlets: number;
+  all_products: number;
   riders: number;
   riders_on_duty: number;
   active_orders: number;

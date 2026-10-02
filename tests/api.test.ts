@@ -912,7 +912,7 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     for (const key of ['active', 'radius', 'fee', 'minimum_order', 'free_delivery_over', 'opens_at'])
       assert.equal(after[key], pindi[key], key);
 
-    // An area in use cannot be deleted; an unused one can, in a single saved request.
+    // An area with live outlets or products cannot be deleted; an unused one can, in a single saved request.
     assert.equal(
       (await request('DELETE', '/admin/locations/rawalpindi', undefined, admin)).status,
       409,
@@ -932,6 +932,35 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
       200,
     );
     assert.ok(!(await areas()).some((a: any) => a.id === made.data.id));
+
+    // An area whose outlets and products are all deleted goes too: it is hidden, its history
+    // stays, and accounts in it are left without an area.
+    const old = await request(
+      'POST',
+      '/admin/locations',
+      { name: 'Old area', lat: 33.7, lng: 73.1 },
+      admin,
+    );
+    const gone = () => request('DELETE', '/admin/locations/' + old.data.id, undefined, admin);
+    const before = (await one('SELECT location_id FROM products WHERE id=?', 'product-3'))!;
+    await run('UPDATE products SET location_id=? WHERE id=?', old.data.id, 'product-3');
+    const home = (await one('SELECT location_id FROM users WHERE id=?', 'customer-1'))!.location_id;
+    await run('UPDATE users SET location_id=? WHERE id=?', old.data.id, 'customer-1');
+    const refused = await gone();
+    assert.equal(refused.status, 409);
+    assert.match(refused.data.error, /still has 1 product\./);
+    assert.equal((await areas()).find((a: any) => a.id === old.data.id).all_products, 1);
+    await run("UPDATE products SET active=0,deleted_at='2026-01-01' WHERE id=?", 'product-3');
+    const closed = await gone();
+    assert.equal(closed.status, 200, JSON.stringify(closed.data));
+    assert.equal(closed.data.kept, true);
+    assert.ok(!(await areas()).some((a: any) => a.id === old.data.id));
+    assert.ok(!(await request('GET', '/locations')).data.some((l: any) => l.id === old.data.id));
+    assert.ok((await one('SELECT deleted_at FROM locations WHERE id=?', old.data.id))!.deleted_at);
+    assert.equal((await one('SELECT location_id FROM users WHERE id=?', 'customer-1'))!.location_id, null);
+    assert.equal((await gone()).status, 404);
+    await run('UPDATE products SET location_id=?,active=1,deleted_at=NULL WHERE id=?', before.location_id, 'product-3');
+    await run('UPDATE users SET location_id=? WHERE id=?', home, 'customer-1');
     // The refused checkouts above must not use up the order limit the later tests rely on.
     await run("DELETE FROM rate_limits WHERE key LIKE 'write:%'");
   });

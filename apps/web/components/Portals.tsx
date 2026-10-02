@@ -2387,7 +2387,14 @@ function LocationManager() {
   const live = list.filter((a) => a.active);
   const statsBusy = loading && !data;
   const sum = (get: (a: AdminArea) => number) => list.reduce((n, a) => n + (get(a) || 0), 0);
-  const inUse = (a: AdminArea) => a.outlets + a.products + a.riders + a.orders + a.active_orders > 0;
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  /** Why an area cannot be deleted yet, or nothing when it can. */
+  const blocked = (a: AdminArea) =>
+    a.active_orders
+      ? `has ${plural(a.active_orders, 'order')} in progress, so it cannot be deleted yet. Finish or cancel ${a.active_orders === 1 ? 'it' : 'them'} first, or pause the area instead.`
+      : a.all_outlets || a.all_products
+        ? `still has ${[a.all_outlets && plural(a.all_outlets, 'outlet'), a.all_products && plural(a.all_products, 'product')].filter(Boolean).join(' and ')}, so it cannot be deleted yet. Move them to another area or delete them first, or pause the area instead.`
+        : '';
   return (
     <div className="stack">
       <FilterBar title="Delivery areas" hint={`Showing ${rangeText.toLowerCase()}`} range={range} onRange={setRange} />
@@ -2704,9 +2711,9 @@ function LocationManager() {
           }
         }}
       >
-        {remove && inUse(remove)
-          ? `“${remove.name}” still has outlets, products, riders or orders, so it cannot be deleted. Pause it instead to stop new orders.`
-          : `“${remove?.name}” will be removed permanently. Areas that customers, outlets or orders refer to cannot be deleted.`}
+        {remove && blocked(remove)
+          ? `“${remove.name}” ${blocked(remove)}`
+          : `“${remove?.name}” will be removed permanently and customers can no longer choose it. This cannot be undone. Past orders are kept. ${remove?.riders ? plural(remove.riders, 'rider') + ' in it will have no area until you give ' + (remove.riders === 1 ? 'that rider' : 'them') + ' a new one. ' : ''}To close it for a while instead, turn off “Taking orders”.`}
       </Confirm>
     </div>
   );

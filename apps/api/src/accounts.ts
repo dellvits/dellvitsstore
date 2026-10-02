@@ -135,7 +135,7 @@ const phoneField = z
 const areaField = z
   .string()
   .refine(
-    async (v) => !v || !!(await one('SELECT id FROM locations WHERE id=?', v)),
+    async (v) => !v || !!(await one('SELECT id FROM locations WHERE id=? AND deleted_at IS NULL', v)),
     'Choose a supported delivery area.',
   );
 const customerFields = {

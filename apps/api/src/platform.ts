@@ -1038,7 +1038,7 @@ export function installPlatform(app: Express) {
     const r = range(req);
     res.json(
       await all(
-        `SELECT l.*,${areaColumns},(SELECT COUNT(*) FROM outlets WHERE location_id=l.id AND active=1) outlets,(SELECT COUNT(*) FROM products WHERE location_id=l.id AND active=1) products,(SELECT COUNT(*) FROM users WHERE role='rider' AND location_id=l.id AND active=1) riders,(SELECT COUNT(*) FROM users u LEFT JOIN rider_state s ON s.user_id=u.id WHERE u.role='rider' AND u.location_id=l.id AND u.active=1 AND COALESCE(s.available,1)=1) riders_on_duty,(SELECT COUNT(*) FROM orders WHERE location_id=l.id AND status NOT IN ('delivered','cancelled')) active_orders,(SELECT COUNT(*) FROM orders WHERE location_id=l.id AND ${between('created_at')}) orders,(SELECT COALESCE(SUM(total),0) FROM orders WHERE location_id=l.id AND status='delivered' AND ${between('created_at')}) sales FROM locations l LEFT JOIN area_settings a ON a.location_id=l.id ORDER BY l.name`,
+        `SELECT l.*,${areaColumns},(SELECT COUNT(*) FROM outlets WHERE location_id=l.id AND active=1) outlets,(SELECT COUNT(*) FROM products WHERE location_id=l.id AND active=1) products,(SELECT COUNT(*) FROM outlets WHERE location_id=l.id AND deleted_at IS NULL) all_outlets,(SELECT COUNT(*) FROM products WHERE location_id=l.id AND deleted_at IS NULL) all_products,(SELECT COUNT(*) FROM users WHERE role='rider' AND location_id=l.id AND active=1) riders,(SELECT COUNT(*) FROM users u LEFT JOIN rider_state s ON s.user_id=u.id WHERE u.role='rider' AND u.location_id=l.id AND u.active=1 AND COALESCE(s.available,1)=1) riders_on_duty,(SELECT COUNT(*) FROM orders WHERE location_id=l.id AND status NOT IN ('delivered','cancelled')) active_orders,(SELECT COUNT(*) FROM orders WHERE location_id=l.id AND ${between('created_at')}) orders,(SELECT COALESCE(SUM(total),0) FROM orders WHERE location_id=l.id AND status='delivered' AND ${between('created_at')}) sales FROM locations l LEFT JOIN area_settings a ON a.location_id=l.id WHERE l.deleted_at IS NULL ORDER BY l.name`,
         r.from,
         r.to,
         r.from,
@@ -1069,7 +1069,7 @@ export function installPlatform(app: Express) {
     atomicRoute(async (req, res) => {
       const p = z.object({ active: z.boolean() }).parse(req.body);
       const id = String(req.params.id);
-      if (!(await one('SELECT id FROM locations WHERE id=?', id))) return res.sendStatus(404);
+      if (!(await one('SELECT id FROM locations WHERE id=? AND deleted_at IS NULL', id))) return res.sendStatus(404);
       await saveAreaSettings(id, p);
       res.json({ ok: true });
     }),

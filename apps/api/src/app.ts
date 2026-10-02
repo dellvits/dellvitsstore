@@ -172,7 +172,7 @@ const phone = z
 const location = z
   .string()
   .refine(
-    async (v) => !!(await one('SELECT id FROM locations WHERE id=?', v)),
+    async (v) => !!(await one('SELECT id FROM locations WHERE id=? AND deleted_at IS NULL', v)),
     'Choose a supported delivery area.',
   );
 const uuid = z.string().max(100);
@@ -323,7 +323,7 @@ app.get('/api/health', async (_req, res) => {
 app.get('/api/locations', async (_req, res) =>
   res.json(
     await all(
-      `SELECT l.*,${areaColumns} FROM locations l LEFT JOIN area_settings a ON a.location_id=l.id WHERE COALESCE(a.active,1)=1 ORDER BY l.name`,
+      `SELECT l.*,${areaColumns} FROM locations l LEFT JOIN area_settings a ON a.location_id=l.id WHERE l.deleted_at IS NULL AND COALESCE(a.active,1)=1 ORDER BY l.name`,
     ),
   ),
 );
@@ -562,7 +562,7 @@ app.post(
 /** Homepage feed for one delivery area: nearby picks, home categories and outlets. */
 app.get('/api/home', async (req, res) => {
   const loc = String(req.query.location || '');
-  if (!loc || !(await one('SELECT id FROM locations WHERE id=?', loc)))
+  if (!loc || !(await one('SELECT id FROM locations WHERE id=? AND deleted_at IS NULL', loc)))
     return res.json({ nearby: [], categories: [], outlets: [] });
   const base =
     'SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.active=1 AND o.active=1 AND p.location_id=?';
@@ -1190,35 +1190,53 @@ app.put(
   atomicRoute(async (req, res) => {
     const { name, lat, lng, ...settings } = await locationSchema.parseAsync(req.body);
     const lid = String(req.params.id);
-    if (!(await one('SELECT id FROM locations WHERE id=?', lid)))
-      fail('Delivery area not found.', 404);
+    if (!(await one('SELECT id FROM locations WHERE id=? AND deleted_at IS NULL', lid))) fail('Delivery area not found.', 404);
     await run('UPDATE locations SET name=?,lat=?,lng=? WHERE id=?', name, lat, lng, lid);
     await saveAreaSettings(lid, settings);
     res.json({ id: lid, name, lat, lng, ...(await areaSettings(lid)) });
   }),
 );
-/** An area can go only while nothing refers to it; otherwise it is paused instead. */
+/**
+ * Deleting an area never loses an order. An area with an order in progress, or with outlets or
+ * products that are not deleted, cannot go. Accounts in it are left without an area. With no
+ * history the area is removed outright; with past orders or deleted outlets and products it is
+ * closed and hidden for good.
+ */
 app.delete(
   '/api/admin/locations/:id',
   atomicRoute(async (req, res) => {
     const lid = String(req.params.id);
-    if (!(await one('SELECT id FROM locations WHERE id=?', lid)))
-      fail('Delivery area not found.', 404);
+    if (!(await one('SELECT id FROM locations WHERE id=? AND deleted_at IS NULL', lid))) fail('Delivery area not found.', 404);
     const used = (await one(
-      'SELECT (SELECT COUNT(*) FROM outlets WHERE location_id=?) outlets,(SELECT COUNT(*) FROM products WHERE location_id=?) products,(SELECT COUNT(*) FROM users WHERE location_id=?) accounts,(SELECT COUNT(*) FROM orders WHERE location_id=?) orders',
-      lid,
-      lid,
-      lid,
-      lid,
+      "SELECT (SELECT COUNT(*) FROM orders WHERE location_id=? AND status NOT IN ('delivered','cancelled')) active,(SELECT COUNT(*) FROM outlets WHERE location_id=? AND deleted_at IS NULL) outlets,(SELECT COUNT(*) FROM products WHERE location_id=? AND deleted_at IS NULL) products,(SELECT COUNT(*) FROM orders WHERE location_id=?)+(SELECT COUNT(*) FROM outlets WHERE location_id=?)+(SELECT COUNT(*) FROM products WHERE location_id=?) history",
+      ...Array.from({ length: 6 }, () => lid),
     ))!;
-    const reasons = Object.entries(used)
-      .filter(([, n]) => n > 0)
-      .map(([k, n]) => `${n} ${k}`);
+    const count = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+    const active = Number(used.active);
+    if (active)
+      fail(
+        `This area has ${count(active, 'order')} in progress. Finish or cancel ${active === 1 ? 'it' : 'them'} first.`,
+        409,
+      );
+    const reasons = [
+      Number(used.outlets) && count(Number(used.outlets), 'outlet'),
+      Number(used.products) && count(Number(used.products), 'product'),
+    ].filter(Boolean);
     if (reasons.length)
-      fail(`This area is still used by ${reasons.join(', ')}. Pause it instead.`, 409);
-    await run('DELETE FROM area_settings WHERE location_id=?', lid);
-    await run('DELETE FROM locations WHERE id=?', lid);
-    res.json({ ok: true });
+      fail(
+        `This area still has ${reasons.join(' and ')}. Move them to another area or delete them first.`,
+        409,
+      );
+    await run('UPDATE users SET location_id=NULL WHERE location_id=?', lid);
+    const kept = Number(used.history) > 0;
+    if (kept) {
+      await saveAreaSettings(lid, { active: false });
+      await run('UPDATE locations SET deleted_at=? WHERE id=?', now(), lid);
+    } else {
+      await run('DELETE FROM area_settings WHERE location_id=?', lid);
+      await run('DELETE FROM locations WHERE id=?', lid);
+    }
+    res.json({ ok: true, kept });
   }),
 );
 app.get('/api/admin/outlets', async (_req, res) => {
