@@ -1077,7 +1077,7 @@ export function installPlatform(app: Express) {
   app.get('/api/admin/tracking', requireRole('admin'), async (_req, res) =>
     res.json(
       await all(
-        "SELECT u.id,u.name,u.phone,u.active,u.location_id,s.available,s.capacity,s.lat,s.lng,s.accuracy,s.updated_at,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status NOT IN ('delivered','cancelled')) load FROM users u LEFT JOIN rider_state s ON s.user_id=u.id WHERE u.role='rider'",
+        "SELECT u.id,u.name,u.phone,u.active,u.location_id,s.available,s.capacity,s.lat,s.lng,s.accuracy,s.updated_at,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status NOT IN ('delivered','cancelled')) load FROM users u LEFT JOIN rider_state s ON s.user_id=u.id WHERE u.role='rider' AND u.deleted_at IS NULL",
       ),
     ),
   );
@@ -1089,7 +1089,7 @@ export function installPlatform(app: Express) {
         .object({ available: z.boolean(), capacity: z.number().int().min(1).max(50) })
         .parse(req.body);
       const id = String(req.params.id);
-      if (!(await one("SELECT id FROM users WHERE id=? AND role='rider'", id)))
+      if (!(await one("SELECT id FROM users WHERE id=? AND role='rider' AND deleted_at IS NULL", id)))
         return res.sendStatus(404);
       await run(
         'INSERT INTO rider_state(user_id,available,capacity) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET available=excluded.available,capacity=excluded.capacity',

@@ -125,7 +125,7 @@ function listedRiderProblem(r: Row, o: Row) {
   return '';
 }
 export async function riderProblem(riderId: string, o: Row) {
-  const r = await one("SELECT * FROM users WHERE id=? AND role='rider'", riderId);
+  const r = await one("SELECT * FROM users WHERE id=? AND role='rider' AND deleted_at IS NULL", riderId);
   if (!r || !r.active) return 'This rider account is disabled.';
   if (r.location_id !== o.location_id) return 'This rider works in another delivery area.';
   const state = await one('SELECT available,capacity FROM rider_state WHERE user_id=?', riderId);
@@ -202,7 +202,7 @@ export function installWorkflow(app: Express) {
     res.json(
       (
         await all(
-          "SELECT u.id,u.name,u.phone,u.login_id,u.location_id,u.active,COALESCE(s.available,1) available,COALESCE(s.capacity,5) capacity,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status NOT IN ('delivered','cancelled')) load,s.updated_at FROM users u LEFT JOIN rider_state s ON s.user_id=u.id WHERE u.role='rider' AND u.location_id=? ORDER BY available DESC,load ASC,u.name",
+          "SELECT u.id,u.name,u.phone,u.login_id,u.location_id,u.active,COALESCE(s.available,1) available,COALESCE(s.capacity,5) capacity,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status NOT IN ('delivered','cancelled')) load,s.updated_at FROM users u LEFT JOIN rider_state s ON s.user_id=u.id WHERE u.role='rider' AND u.deleted_at IS NULL AND u.location_id=? ORDER BY available DESC,load ASC,u.name",
           o.location_id,
         )
       ).map((r) => ({ ...r, problem: listedRiderProblem(r, o) })),

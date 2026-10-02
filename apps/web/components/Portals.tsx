@@ -1597,6 +1597,7 @@ function RiderManager() {
   const [edit, setEdit] = useState<Record<string, any> | null>(null);
   const [view, setView] = useState<string | null>(null);
   const [statement, setStatement] = useState<AdminRider | null>(null);
+  const [remove, setRemove] = useState<AdminRider | null>(null);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState('');
   const areaName = (id: string) => locations.find((l) => l.id === id)?.name || '—';
@@ -1659,6 +1660,17 @@ function RiderManager() {
   const statsBusy = loading && !data;
   const sum = (get: (r: AdminRider) => number) => list.reduce((n, r) => n + (get(r) || 0), 0);
   const current = view ? list.find((r) => r.id === view) : undefined;
+  /** Why a rider cannot be deleted yet, or nothing when they can. */
+  const blocked = (r: AdminRider) =>
+    r.active_orders
+      ? `has ${r.active_orders} order${r.active_orders === 1 ? '' : 's'} in progress, so the account cannot be deleted yet. Finish or reassign ${r.active_orders === 1 ? 'it' : 'them'} first, or disable the rider instead.`
+      : r.cash_in_hand > 0
+        ? `still holds ${money(r.cash_in_hand)} of collected cash, so the account cannot be deleted yet. Record the cash handover first.`
+        : r.pending_payouts > 0
+          ? 'has a payout request waiting for review, so the account cannot be deleted yet. Approve or reject it first.'
+          : r.balance > 0
+            ? `is still owed ${money(r.balance)} in earnings, so the account cannot be deleted yet. Pay it out first.`
+            : '';
   return (
     <div className="stack">
       <FilterBar title="Riders" hint={`Showing ${rangeText.toLowerCase()}`} range={range} onRange={setRange} />
@@ -1850,6 +1862,9 @@ function RiderManager() {
             </IconAction>
             <IconAction label="Earnings & payouts" onClick={() => setStatement(r)}>
               <Wallet size={16} />
+            </IconAction>
+            <IconAction label="Delete rider" tone="danger" onClick={() => setRemove(r)}>
+              <Trash2 size={16} />
             </IconAction>
           </>
         )}
@@ -2107,6 +2122,33 @@ function RiderManager() {
           }}
         />
       )}
+      <Confirm
+        open={!!remove}
+        title="Delete rider?"
+        confirm="Delete"
+        danger
+        busy={busy}
+        onClose={() => setRemove(null)}
+        onConfirm={async () => {
+          setBusy(true);
+          try {
+            await api('/admin/riders/' + remove!.id, { method: 'DELETE' });
+            setRemove(null);
+            refresh();
+            notice('Rider deleted.');
+          } catch (e) {
+            notice((e as Error).message);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {remove && blocked(remove)
+          ? `“${remove.name}” ${blocked(remove)}`
+          : remove?.delivered || remove?.earned
+            ? `“${remove.name}” will be removed permanently and can no longer sign in. The phone, address, documents and payout account are erased. Past orders, earnings and payouts stay in your records with the rider’s name. This cannot be undone. To stop a rider for a while instead, turn off “Active”.`
+            : `“${remove?.name}” has no deliveries, so the account will be removed completely. This cannot be undone.`}
+      </Confirm>
     </div>
   );
 }

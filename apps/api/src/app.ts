@@ -1516,7 +1516,7 @@ app.get('/api/admin/riders', async (req, res) => {
   res.json(
     (
       await all(
-        `SELECT u.id,u.name,u.email,u.phone,u.address,u.location_id,u.login_id,u.active,u.created_at,${settings},COALESCE(s.available,1) available,COALESCE(s.capacity,5) capacity,s.lat,s.lng,s.accuracy,s.updated_at position_at,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status NOT IN ('delivered','cancelled')) active_orders,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status='delivered') delivered,(SELECT MAX(delivered_at) FROM orders WHERE rider_id=u.id AND status='delivered') last_delivery_at,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status='delivered' AND ${between('delivered_at')}) delivered_range,${total('amount', 'rider_earnings', ' AND ' + between('created_at'))} earned_range,${total('amount', 'rider_payouts', ' AND ' + between('created_at'))} paid_range,${total('cash_collected', 'rider_earnings', ' AND ' + between('created_at'))} cash_range,${total('amount', 'rider_earnings')} earned,${total('amount', 'rider_payouts')} paid,${total('amount', 'payout_requests', " AND status='pending'")} pending_payouts,${total('cash_collected', 'rider_earnings')} cash_collected,${total('amount', 'cod_deposits', " AND status IN ('approved','pending')")} cash_submitted FROM users u LEFT JOIN rider_settings g ON g.user_id=u.id LEFT JOIN rider_state s ON s.user_id=u.id WHERE u.role='rider' ORDER BY u.created_at DESC`,
+        `SELECT u.id,u.name,u.email,u.phone,u.address,u.location_id,u.login_id,u.active,u.created_at,${settings},COALESCE(s.available,1) available,COALESCE(s.capacity,5) capacity,s.lat,s.lng,s.accuracy,s.updated_at position_at,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status NOT IN ('delivered','cancelled')) active_orders,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status='delivered') delivered,(SELECT MAX(delivered_at) FROM orders WHERE rider_id=u.id AND status='delivered') last_delivery_at,(SELECT COUNT(*) FROM orders WHERE rider_id=u.id AND status='delivered' AND ${between('delivered_at')}) delivered_range,${total('amount', 'rider_earnings', ' AND ' + between('created_at'))} earned_range,${total('amount', 'rider_payouts', ' AND ' + between('created_at'))} paid_range,${total('cash_collected', 'rider_earnings', ' AND ' + between('created_at'))} cash_range,${total('amount', 'rider_earnings')} earned,${total('amount', 'rider_payouts')} paid,${total('amount', 'payout_requests', " AND status='pending'")} pending_payouts,${total('cash_collected', 'rider_earnings')} cash_collected,${total('amount', 'cod_deposits', " AND status IN ('approved','pending')")} cash_submitted FROM users u LEFT JOIN rider_settings g ON g.user_id=u.id LEFT JOIN rider_state s ON s.user_id=u.id WHERE u.role='rider' AND u.deleted_at IS NULL ORDER BY u.created_at DESC`,
         ...Array.from({ length: 4 }, () => [period.from, period.to]).flat(),
       )
     ).map(({ cash_collected, cash_submitted, ...r }) => ({
@@ -1577,7 +1577,7 @@ async function saveRiderState(uid: string, s: { available?: number; capacity?: n
 async function saveRider(req: AuthRequest, res: Response, edit: boolean) {
   const p = await riderSchema.parseAsync(req.body);
   const uid = edit ? String(req.params.id) : id();
-  if (edit && !(await one("SELECT id FROM users WHERE id=? AND role='rider'", uid)))
+  if (edit && !(await one("SELECT id FROM users WHERE id=? AND role='rider' AND deleted_at IS NULL", uid)))
     fail('Rider not found.', 404);
   if (!edit && !p.password) fail('Set a rider password.');
   if (p.commission_type === 'percent' && p.commission_value > 100)
@@ -1640,11 +1640,84 @@ app.patch(
       })
       .parse(req.body);
     const uid = String(req.params.id);
-    if (!(await one("SELECT id FROM users WHERE id=? AND role='rider'", uid)))
+    if (!(await one("SELECT id FROM users WHERE id=? AND role='rider' AND deleted_at IS NULL", uid)))
       fail('Rider not found.', 404);
     if (p.active !== undefined) await run('UPDATE users SET active=? WHERE id=?', p.active, uid);
     await saveRiderState(uid, p);
     res.json({ ok: true });
+  }),
+);
+/**
+ * Deleting a rider never loses an order or a payment record. A rider with a delivery in progress,
+ * cash still in hand, earnings not yet paid or a request waiting for review cannot be deleted. With
+ * no history the account is removed outright; otherwise it is closed for good, its sign-in and
+ * personal details are erased, and the name stays on past orders and payments.
+ */
+app.delete(
+  '/api/admin/riders/:id',
+  atomicRoute(async (req, res) => {
+    const uid = String(req.params.id);
+    if (!(await one("SELECT id FROM users WHERE id=? AND role='rider' AND deleted_at IS NULL", uid)))
+      fail('Rider not found.', 404);
+    const sum = (column: string, table: string, where = '') =>
+      `(SELECT COALESCE(SUM(${column}),0) FROM ${table} WHERE rider_id=?${where})`;
+    const rows = (table: string, where = '') =>
+      `(SELECT COUNT(*) FROM ${table} WHERE rider_id=?${where})`;
+    const r = (await one(
+      `SELECT ${rows('orders', " AND status NOT IN ('delivered','cancelled')")} active,${sum('amount', 'rider_earnings')}-${sum('amount', 'rider_payouts')} balance,${sum('cash_collected', 'rider_earnings')}-${sum('amount', 'cod_deposits', " AND status IN ('approved','pending')")} cash,${rows('cod_deposits', " AND status='pending'")}+${rows('payout_requests', " AND status='pending'")} pending,${['orders', 'rider_earnings', 'rider_payouts', 'payout_requests', 'cod_deposits'].map((t) => rows(t)).join('+')} history`,
+      ...Array.from({ length: 12 }, () => uid),
+    ))!;
+    const rupees = (paisa: number) => 'Rs ' + (paisa / 100).toLocaleString('en-PK');
+    const active = Number(r.active);
+    if (active)
+      fail(
+        `This rider has ${active} order${active === 1 ? '' : 's'} in progress. Finish or reassign ${active === 1 ? 'it' : 'them'} first.`,
+        409,
+      );
+    if (Number(r.cash) > 0)
+      fail(
+        `This rider still holds ${rupees(Number(r.cash))} of collected cash. Record the cash handover first.`,
+        409,
+      );
+    if (Number(r.pending))
+      fail(
+        'This rider has a cash deposit or payout request waiting for review. Approve or reject it first.',
+        409,
+      );
+    if (Number(r.balance) > 0)
+      fail(
+        `This rider is still owed ${rupees(Number(r.balance))} in earnings. Pay it out first.`,
+        409,
+      );
+    for (const table of [
+      'sessions',
+      'notifications',
+      'push_subscriptions',
+      'email_codes',
+      'rider_state',
+      'rider_settings',
+    ])
+      await run(`DELETE FROM ${table} WHERE user_id=?`, uid);
+    await deleteSupport(uid);
+    const kept = Number(r.history) > 0;
+    if (kept)
+      // The rider ID and the email are freed so a new rider can use them.
+      await run(
+        "UPDATE users SET email=?,phone='',address='',location_id=NULL,login_id=NULL,password_hash=?,active=0,deleted_at=? WHERE id=?",
+        `deleted-${uid}@deleted.invalid`,
+        hashPassword(randomUUID()),
+        now(),
+        uid,
+      );
+    else {
+      const proofs = await all('SELECT filename FROM payment_proofs WHERE user_id=?', uid);
+      await run('DELETE FROM payment_proofs WHERE user_id=?', uid);
+      await run('DELETE FROM users WHERE id=?', uid);
+      await afterCommit(async () => {
+        for (const p of proofs) await objects.delete('proofs/' + p.filename);
+      });
+    }
+    res.json({ ok: true, kept });
   }),
 );
 app.get('/api/admin/outlets/:id/documents', async (req, res) =>

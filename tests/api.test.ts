@@ -858,6 +858,69 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     assert.equal(own.data.settings.commission_type, 'fixed');
     assert.equal(own.data.settings.notes, undefined);
   });
+  await t.test('administrators delete riders without losing orders or payment records', async () => {
+    const riders = async () => (await request('GET', '/admin/riders', undefined, admin)).data;
+    const gone = (id: string, token = admin) =>
+      request('DELETE', '/admin/riders/' + id, undefined, token);
+    const body = {
+      name: 'Short Stay',
+      phone: '+92 300 5550000',
+      location_id: 'rawalpindi',
+      login_id: 'DRV-GONE',
+      password: 'rider-password-1',
+    };
+    // A rider with no history is removed outright, and the rider ID can be used again.
+    const fresh = await request('POST', '/admin/riders', body, admin);
+    assert.equal(fresh.status, 200, JSON.stringify(fresh.data));
+    assert.equal((await gone(fresh.data.id, customer)).status, 403);
+    const removed = await gone(fresh.data.id);
+    assert.equal(removed.status, 200, JSON.stringify(removed.data));
+    assert.equal(removed.data.kept, false);
+    assert.equal((await one('SELECT id FROM users WHERE id=?', fresh.data.id)), undefined);
+    assert.equal((await gone(fresh.data.id)).status, 404);
+
+    // Money still open stops the deletion; once settled the account is closed and its records stay.
+    const again = await request('POST', '/admin/riders', body, admin);
+    assert.equal(again.status, 200, JSON.stringify(again.data));
+    const uid = again.data.id;
+    const earning = randomUUID();
+    const order = (await one('SELECT id FROM orders WHERE id NOT IN (SELECT order_id FROM rider_earnings) LIMIT 1'))!.id;
+    await run(
+      "INSERT INTO rider_earnings(id,rider_id,order_id,amount,commission_type,commission_value,commission_base,base_amount,cash_collected,created_at) VALUES(?,?,?,?,'fixed',5000,'delivery_fee',0,?,?)",
+      earning,
+      uid,
+      order,
+      5000,
+      20000,
+      new Date().toISOString(),
+    );
+    const cash = await gone(uid);
+    assert.equal(cash.status, 409);
+    assert.match(cash.data.error, /still holds Rs 200 of collected cash/);
+    await run('UPDATE rider_earnings SET cash_collected=0 WHERE id=?', earning);
+    const owed = await gone(uid);
+    assert.equal(owed.status, 409);
+    assert.match(owed.data.error, /still owed Rs 50 in earnings/);
+    await run('UPDATE rider_earnings SET amount=0 WHERE id=?', earning);
+    const closed = await gone(uid);
+    assert.equal(closed.status, 200, JSON.stringify(closed.data));
+    assert.equal(closed.data.kept, true);
+    assert.ok(!(await riders()).some((r: any) => r.id === uid));
+    const row = (await one('SELECT * FROM users WHERE id=?', uid))!;
+    assert.equal(row.name, 'Short Stay');
+    assert.equal(row.phone, '');
+    assert.equal(row.login_id, null);
+    assert.equal(row.active, 0);
+    assert.ok(row.deleted_at);
+    assert.equal((await one('SELECT user_id FROM rider_settings WHERE user_id=?', uid)), undefined);
+    assert.equal((await gone(uid)).status, 404);
+    assert.equal(
+      (await request('POST', '/auth/login', { login: 'DRV-GONE', password: body.password })).status >= 400,
+      true,
+    );
+    await run('DELETE FROM rider_earnings WHERE id=?', earning);
+    await run('DELETE FROM users WHERE id=?', uid);
+  });
   await t.test('delivery area fees, minimums, hours and deletion', async () => {
     const areas = async () => (await request('GET', '/admin/area-settings', undefined, admin)).data;
     const pindi = (await areas()).find((a: any) => a.id === 'rawalpindi');

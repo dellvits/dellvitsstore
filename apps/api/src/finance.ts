@@ -383,7 +383,7 @@ export function installFinance(app: Express) {
     // Three queries, run together, however many riders there are.
     const [rows, totals, deposits] = await Promise.all([
       all(
-        `SELECT u.id,u.name,u.login_id,u.phone,u.location_id,u.active,(SELECT COALESCE(SUM(cash_collected),0) FROM rider_earnings WHERE rider_id=u.id) collected,(SELECT COALESCE(SUM(amount),0) FROM cod_deposits WHERE rider_id=u.id AND status='approved') approved,(SELECT COALESCE(SUM(amount),0) FROM cod_deposits WHERE rider_id=u.id AND status='pending') pending FROM users u WHERE u.role='rider' ORDER BY u.name`,
+        `SELECT u.id,u.name,u.login_id,u.phone,u.location_id,u.active,(SELECT COALESCE(SUM(cash_collected),0) FROM rider_earnings WHERE rider_id=u.id) collected,(SELECT COALESCE(SUM(amount),0) FROM cod_deposits WHERE rider_id=u.id AND status='approved') approved,(SELECT COALESCE(SUM(amount),0) FROM cod_deposits WHERE rider_id=u.id AND status='pending') pending FROM users u WHERE u.role='rider' AND u.deleted_at IS NULL ORDER BY u.name`,
       ),
       one(
         `SELECT (SELECT COALESCE(SUM(cash_collected),0) FROM rider_earnings WHERE ${between('created_at')}) collected_range,(SELECT COALESCE(SUM(amount),0) FROM cod_deposits WHERE status='approved' AND ${between('created_at')}) approved_range`,
@@ -410,7 +410,7 @@ export function installFinance(app: Express) {
   });
   app.get('/api/admin/cash/riders/:id', requireRole('admin'), async (req, res) => {
     const id = String(req.params.id);
-    if (!(await one("SELECT id FROM users WHERE id=? AND role='rider'", id)))
+    if (!(await one("SELECT id FROM users WHERE id=? AND role='rider' AND deleted_at IS NULL", id)))
       fail('Rider not found.', 404);
     res.json(await cashStatement(id, req));
   });
@@ -515,7 +515,7 @@ export function installFinance(app: Express) {
     // Four queries, run together, however many riders and requests there are.
     const [rows, totals, requestRows, payouts] = await Promise.all([
       all(
-        `SELECT u.id,u.name,u.login_id,${earned('u.id')} earned,${paid('u.id')} paid,(SELECT COALESCE(SUM(amount),0) FROM payout_requests WHERE rider_id=u.id AND status='pending') pending FROM users u WHERE u.role='rider' ORDER BY u.name`,
+        `SELECT u.id,u.name,u.login_id,${earned('u.id')} earned,${paid('u.id')} paid,(SELECT COALESCE(SUM(amount),0) FROM payout_requests WHERE rider_id=u.id AND status='pending') pending FROM users u WHERE u.role='rider' AND u.deleted_at IS NULL ORDER BY u.name`,
       ),
       one(
         `SELECT (SELECT COALESCE(SUM(amount),0) FROM rider_payouts WHERE ${between('created_at')}) paid_range,(SELECT COALESCE(SUM(amount),0) FROM rider_earnings WHERE ${between('created_at')}) earned_range`,

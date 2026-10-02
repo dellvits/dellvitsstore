@@ -191,7 +191,7 @@ export function installRiders(app: Express) {
   );
   app.get('/api/admin/riders/:id/earnings', requireRole('admin'), async (req, res) => {
     const id = String(req.params.id);
-    if (!(await one("SELECT id FROM users WHERE id=? AND role='rider'", id)))
+    if (!(await one("SELECT id FROM users WHERE id=? AND role='rider' AND deleted_at IS NULL", id)))
       return res.sendStatus(404);
     res.json(await statement(id, req));
   });
@@ -208,7 +208,7 @@ export function installRiders(app: Express) {
           reference: z.string().trim().max(80).default(''),
         })
         .parse(req.body);
-      if (!(await one("SELECT id FROM users WHERE id=? AND role='rider'", id)))
+      if (!(await one("SELECT id FROM users WHERE id=? AND role='rider' AND deleted_at IS NULL", id)))
         return res.sendStatus(404);
       if (p.amount > (await riderBalance(id)).balance)
         return res.status(400).json({ error: 'A payout cannot exceed the rider balance.' });
