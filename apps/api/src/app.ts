@@ -84,11 +84,15 @@ import {
   type AuthRequest,
 } from './security.js';
 export const app = express();
-const origin = process.env.WEB_ORIGIN || 'http://localhost:3000';
+// WEB_ORIGIN may list several comma-separated origins, e.g. the custom domain and its www/vercel.app aliases.
+const origins = (process.env.WEB_ORIGIN || 'http://localhost:3000')
+  .split(',')
+  .map((o) => o.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
 if (process.env.TRUST_PROXY === '1') app.set('trust proxy', 1);
 app.disable('x-powered-by');
 app.use(helmet());
-app.use(cors({ origin, credentials: true }));
+app.use(cors({ origin: origins, credentials: true }));
 app.use(
   express.json({ limit: '100kb' }),
 );
@@ -107,7 +111,7 @@ app.use('/api', (req: AuthRequest, res, next) => {
   if (
     !['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
     req.headers.origin &&
-    req.headers.origin !== origin
+    !origins.includes(req.headers.origin)
   )
     return res.status(403).json({ error: 'Request origin is not allowed.' });
   if (

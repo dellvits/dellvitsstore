@@ -27,6 +27,9 @@ type Context = {
   setUser: (u: User | null) => void;
   ready: boolean;
   locations: Location[];
+  /** True when the delivery areas could not be fetched, as opposed to there being none. */
+  locationsFailed: boolean;
+  retryLocations: () => void;
   area: Location | null;
   areaStatus: AreaStatus;
   coords: { lat: number; lng: number } | null;
@@ -85,6 +88,7 @@ export default function Provider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);
   const [locations, setLocations] = useState<Location[]>([]);
+  const [locationsFailed, setLocationsFailed] = useState(false);
   const [area, setAreaState] = useState<Location | null>(null);
   const [areaStatus, setAreaStatus] = useState<AreaStatus>('loading');
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
@@ -146,7 +150,13 @@ export default function Provider({ children }: { children: ReactNode }) {
     registerWorker();
     const unlock = () => unlockAudio();
     window.addEventListener('pointerdown', unlock, { once: true });
-    Promise.all([api<{ user: User | null }>('/session'), api<Location[]>('/locations')])
+    Promise.all([
+      api<{ user: User | null }>('/session'),
+      api<Location[]>('/locations').catch((e) => {
+        setLocationsFailed(true);
+        throw e;
+      }),
+    ])
       .then(([s, l]) => {
         setUser(s.user);
         setLocations(l);
@@ -173,6 +183,7 @@ export default function Provider({ children }: { children: ReactNode }) {
       api<Location[]>('/locations')
         .then((l) => {
           setLocations((old) => keep(old, l));
+          setLocationsFailed(false);
           setAreaState((a) => (a ? keep(a, l.find((x) => x.id === a.id) || null) : a));
         })
         .catch(() => {});
@@ -293,6 +304,14 @@ export default function Provider({ children }: { children: ReactNode }) {
         setUser: changeUser,
         ready,
         locations,
+        locationsFailed,
+        retryLocations: () =>
+          api<Location[]>('/locations')
+            .then((l) => {
+              setLocations(l);
+              setLocationsFailed(false);
+            })
+            .catch(() => setLocationsFailed(true)),
         area,
         areaStatus,
         coords,

@@ -83,7 +83,9 @@ export async function sendMail(mail: Mail) {
   }
 }
 
-const site = () => process.env.WEB_ORIGIN || 'http://localhost:3000';
+// The first WEB_ORIGIN entry is the public address used in email links.
+const site = () =>
+  (process.env.WEB_ORIGIN || 'http://localhost:3000').split(',')[0].trim().replace(/\/+$/, '');
 const escape = (value: string) =>
   value.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const brand = '#d91e45';

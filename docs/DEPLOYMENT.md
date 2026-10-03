@@ -57,14 +57,14 @@ Add these variables to the **Production** environment:
 | `R2_ACCESS_KEY_ID`     | R2 Access Key ID                                                                               |
 | `R2_SECRET_ACCESS_KEY` | R2 Secret Access Key                                                                           |
 | `R2_BUCKET_NAME`       | `dellvit-uploads`, or your actual bucket name                                                  |
-| `WEB_ORIGIN`           | Your exact public site origin, e.g. `https://dellvit.vercel.app`, **without a trailing slash** |
+| `WEB_ORIGIN`           | Your exact public site origin(s), comma-separated, with `https://` and **without a trailing slash**, e.g. `https://www.dellvit.com,https://dellvit.com,https://dellvit.vercel.app`. The first one is used in email links |
 | `NODE_ENV`             | `production`                                                                                   |
 | `TRUST_PROXY`          | `1` for Vercel's trusted proxy                                                                 |
 | `DATABASE_SSL_CA`      | Only if needed: the Supabase CA certificate PEM                                                |
 
-The site address is an example; use the actual domain assigned to your project. Update `WEB_ORIGIN` if you later switch to a custom domain, then redeploy. An incorrect origin causes browser writes to return 403.
+The site address is an example; use the actual domain assigned to your project. Update `WEB_ORIGIN` if you later switch to a custom domain, then redeploy. List the domain visitors actually land on after Vercel's redirects (for example `www.` when the bare domain redirects to `www`). An incorrect origin causes browser writes to return 403 "Request origin is not allowed".
 
-Remove obsolete `DATABASE_PATH`, `UPLOAD_DIR`, `API_INTERNAL_URL`, and manually configured `PORT` values from Vercel. Never prefix database or R2 secrets with `NEXT_PUBLIC_`. For Preview deployments, use a separate Supabase database and R2 bucket and configure that preview's exact `WEB_ORIGIN`; the current API permits one browser origin.
+Remove obsolete `DATABASE_PATH`, `UPLOAD_DIR`, `API_INTERNAL_URL`, and manually configured `PORT` values from Vercel. Never prefix database or R2 secrets with `NEXT_PUBLIC_`. For Preview deployments, use a separate Supabase database and R2 bucket and add that preview's exact origin to its `WEB_ORIGIN`.
 
 [Vercel Services documentation](https://vercel.com/docs/services)
 

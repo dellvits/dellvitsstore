@@ -105,7 +105,7 @@ The API defaults to port 4000 and the web app to port 3000. Browser requests use
 | `R2_ACCESS_KEY_ID`     | R2 S3 Access Key ID                                       |
 | `R2_SECRET_ACCESS_KEY` | R2 S3 Secret Access Key                                   |
 | `R2_BUCKET_NAME`       | Private bucket for images, receipts and documents         |
-| `WEB_ORIGIN`           | Exact web origin allowed for authenticated browser writes |
+| `WEB_ORIGIN`           | Exact web origin(s), comma-separated, allowed for authenticated browser writes |
 | `PORT`                 | API port                                                  |
 | `NODE_ENV`             | Production enables HTTPS-only cookies                     |
 | `TRUST_PROXY`          | Set only for the trusted reverse proxy configuration      |

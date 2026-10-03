@@ -956,7 +956,18 @@ export function IconAction({
   );
 }
 export function LocationPicker() {
-  const { locations, area, setArea, locationOpen, openLocation, detectArea, areaStatus } = useApp();
+  const {
+    ready,
+    locations,
+    locationsFailed,
+    retryLocations,
+    area,
+    setArea,
+    locationOpen,
+    openLocation,
+    detectArea,
+    areaStatus,
+  } = useApp();
   const [q, setQ] = useState('');
   return (
     <Modal open={locationOpen} onClose={() => openLocation(false)} title="Delivery location" size="sm">
@@ -976,7 +987,7 @@ export function LocationPicker() {
           <small>We’ll find the nearest delivery area</small>
         </div>
       </button>
-      {areaStatus === 'outside' && (
+      {areaStatus === 'outside' && locations.length > 0 && (
         <div className="alert warn">We don’t deliver to your current location yet. Pick an area below.</div>
       )}
       <div className="input-icon">
@@ -996,9 +1007,19 @@ export function LocationPicker() {
             </button>
           ))}
       </div>
-      {!locations.length && (
-        <ErrorBox error="Delivery areas could not load. Check that the API is running." />
-      )}
+      {!locations.length &&
+        (locationsFailed ? (
+          <ErrorBox
+            error="We couldn’t load delivery areas right now. Please check your connection and try again."
+            retry={retryLocations}
+          />
+        ) : !ready ? (
+          <Loading label="Loading delivery areas…" />
+        ) : (
+          <Empty title="No delivery areas yet" icon={<MapPin size={26} />}>
+            We aren’t delivering anywhere just yet. Please check back soon.
+          </Empty>
+        ))}
     </Modal>
   );
 }
