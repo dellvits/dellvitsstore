@@ -1,3 +1,5 @@
+/** Fired when a request is refused because maintenance mode has just started. */
+export const MAINTENANCE_EVENT = 'dellvit-maintenance';
 /** A failed request. `code` names failures the app reacts to, such as `verify_email`. */
 export type ApiError = Error & { code?: string; data?: Record<string, any> };
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -12,6 +14,9 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const data = await response
     .json()
     .catch(() => ({ error: 'Could not read the server response.' }));
+  // Maintenance mode just started: the layout swaps in the maintenance page.
+  if (data.code === 'maintenance' && typeof window !== 'undefined')
+    window.dispatchEvent(new Event(MAINTENANCE_EVENT));
   if (!response.ok)
     throw Object.assign(new Error(data.error || 'Request failed.'), { code: data.code, data });
   return data as T;

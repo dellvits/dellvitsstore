@@ -1,5 +1,7 @@
 import type { Metadata } from 'next';
 import { createElement, Fragment, type ReactNode } from 'react';
+import { serverApi } from './seo';
+import type { MaintenanceInfo } from '@/components/Maintenance';
 
 /** Search engine verification and analytics saved in Store settings. */
 export type HeadSettings = {
@@ -9,28 +11,15 @@ export type HeadSettings = {
   google_tag_manager_id: string;
   facebook_pixel_id: string;
   custom_head_code: string;
+  /** Search engines are asked not to index the store. */
+  noindex: boolean;
+  /** Set while maintenance mode is on. */
+  maintenance: MaintenanceInfo;
 };
 
-// On Vercel the API is served from the site's own domain; locally it runs beside Next.js.
-const apiBase = () =>
-  process.env.VERCEL
-    ? process.env.WEB_ORIGIN?.split(',')[0].trim().replace(/\/+$/, '') ||
-      `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-    : process.env.API_INTERNAL_URL || 'http://127.0.0.1:4000';
-
-/** Read on the server and cached for a minute, so saved changes reach every page shortly after. */
-export async function headSettings(): Promise<Partial<HeadSettings>> {
-  try {
-    const res = await fetch(`${apiBase()}/api/site/head`, {
-      next: { revalidate: 60 },
-      signal: AbortSignal.timeout(4000),
-    });
-    return res.ok ? await res.json() : {};
-  } catch {
-    // Without the API (for example during a local build) the pages render without these tags.
-    return {};
-  }
-}
+/** Without the API (for example during a local build) the pages render without these tags. */
+export const headSettings = async (): Promise<Partial<HeadSettings>> =>
+  (await serverApi<HeadSettings>('/site/head')) || {};
 
 // The API validates these too; checking again keeps anything else out of the inline scripts.
 const valid = {
@@ -42,9 +31,12 @@ const valid = {
 export function headMetadata(s: Partial<HeadSettings>): Metadata {
   const other: Record<string, string> = {};
   if (s.bing_site_verification) other['msvalidate.01'] = s.bing_site_verification;
-  return s.google_site_verification || s.bing_site_verification
-    ? { verification: { google: s.google_site_verification || undefined, other } }
-    : {};
+  return {
+    ...(s.google_site_verification || s.bing_site_verification
+      ? { verification: { google: s.google_site_verification || undefined, other } }
+      : {}),
+    ...(s.noindex ? { robots: { index: false, follow: false } } : {}),
+  };
 }
 
 export function AnalyticsTags({ s }: { s: Partial<HeadSettings> }) {

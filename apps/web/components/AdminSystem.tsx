@@ -14,6 +14,11 @@ import {
   KeyRound,
   LayoutPanelTop,
   ChartLine,
+  Copy,
+  ExternalLink,
+  ListTree,
+  Mail,
+  Wrench,
   Lock,
   LogOut,
   Megaphone,
@@ -35,6 +40,7 @@ import { useRange } from '@/lib/range';
 import { useApp } from './Provider';
 import { Badge, Confirm, DataTable, ErrorBox, FilterBar, IconAction, Loading, Modal, Stat, Toggle } from './UI';
 import { EmailSettings } from './Platform';
+import { MaintenancePage } from './Maintenance';
 
 /* ---------- Admin access ---------- */
 type Admin = {
@@ -729,6 +735,20 @@ const settingsDefaults: Settings = {
   google_tag_manager_id: '',
   facebook_pixel_id: '',
   custom_head_code: '',
+  search_indexing: true,
+  site_url: '',
+  sitemap_enabled: true,
+  sitemap_pages: true,
+  sitemap_outlets: true,
+  sitemap_products: true,
+  sitemap_categories: true,
+  sitemap_images: true,
+  sitemap_frequency: 'daily',
+  maintenance_enabled: false,
+  maintenance_title: '',
+  maintenance_message: '',
+  maintenance_until: '',
+  maintenance_show_contact: true,
 };
 function Section({ id, icon, title, hint, children }: { id: string; icon: ReactNode; title: string; hint: string; children: ReactNode }) {
   return (
@@ -744,17 +764,139 @@ function Section({ id, icon, title, hint, children }: { id: string; icon: ReactN
     </section>
   );
 }
-const sections = [
-  ['store', 'Store'],
-  ['contact', 'Contact'],
-  ['social', 'Social'],
-  ['orders', 'Orders'],
-  ['notice', 'Notice bar'],
-  ['access', 'Customer access'],
-  ['home', 'Home page'],
-  ['tracking', 'SEO and analytics'],
-  ['email', 'Email'],
+const settingsTabs = [
+  ['store', 'Store', Store],
+  ['contact', 'Contact', Phone],
+  ['social', 'Social', Globe],
+  ['orders', 'Orders', ShoppingCart],
+  ['notice', 'Notice bar', Megaphone],
+  ['access', 'Customer access', BadgeCheck],
+  ['home', 'Home page', LayoutPanelTop],
+  ['tracking', 'SEO and analytics', ChartLine],
+  ['sitemap', 'Sitemap', ListTree],
+  ['maintenance', 'Maintenance', Wrench],
+  ['email', 'Email', Mail],
 ] as const;
+type SettingsTab = (typeof settingsTabs)[number][0];
+const isSettingsTab = (v: string): v is SettingsTab => settingsTabs.some(([id]) => id === v);
+/** The tab holding a setting, so a save the server rejects opens the field it is about. */
+function tabOf(field: string): SettingsTab | null {
+  if (field.startsWith('maintenance_')) return 'maintenance';
+  if (field.startsWith('sitemap_') || field === 'search_indexing' || field === 'site_url') return 'sitemap';
+  if (field.startsWith('show_')) return 'home';
+  const tabs: Record<string, SettingsTab> = {
+    name: 'store',
+    tagline: 'store',
+    about_title: 'store',
+    about_description: 'store',
+    support_email: 'contact',
+    support_phone: 'contact',
+    support_address: 'contact',
+    support_hours: 'contact',
+    whatsapp: 'contact',
+    footer_note: 'social',
+    checkout_enabled: 'orders',
+    checkout_message: 'orders',
+    minimum_order: 'orders',
+    notice_enabled: 'notice',
+    notice: 'notice',
+    signup_enabled: 'access',
+    contact_form_enabled: 'access',
+    chat_enabled: 'access',
+    chat_greeting: 'access',
+  };
+  if (field.endsWith('_url') && field !== 'site_url') return 'social';
+  if (/^(google|bing|facebook_pixel|custom_head)/.test(field)) return 'tracking';
+  return tabs[field] || null;
+}
+/** A saved ISO time as the value a datetime-local field expects, in the admin's own time zone. */
+const localInput = (iso: string) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+};
+type SitemapPreview = {
+  indexing: boolean;
+  enabled: boolean;
+  pages: boolean;
+  outlets: unknown[];
+  products: unknown[];
+  categories: unknown[];
+};
+/** What the live sitemap.xml lists right now, from the last saved settings. */
+function SitemapStatus({ version }: { version: number }) {
+  const { notice } = useApp();
+  const { data, loading } = useData<SitemapPreview>('/site/sitemap?v=' + version);
+  const origin = typeof window === 'undefined' ? '' : window.location.origin;
+  const links = data?.enabled ? 1 + (data.pages ? 4 : 0) + data.categories.length + data.outlets.length + data.products.length : 0;
+  return (
+    <section className="card settings-section">
+      <div className="settings-section-head">
+        <span className="n-icon order">
+          <ListTree size={16} />
+        </span>
+        <div>
+          <h3>Your sitemap now</h3>
+          <small className="muted">Updates by itself within about a minute when outlets and products are added, changed or hidden</small>
+        </div>
+      </div>
+      {loading && !data ? (
+        <Loading />
+      ) : !data ? (
+        <ErrorBox error="The sitemap details could not load." />
+      ) : (
+        <>
+          {!data.indexing ? (
+            <div className="alert warn">Search engines are asked to stay away from the store, so no sitemap is published.</div>
+          ) : (
+            !data.enabled && <div className="alert warn">The sitemap is switched off.</div>
+          )}
+          <div className="sitemap-status">
+            <div>
+              <b>{links.toLocaleString('en-PK')}</b>
+              <small>Links in total</small>
+            </div>
+            <div>
+              <b>{data.outlets.length.toLocaleString('en-PK')}</b>
+              <small>Outlets</small>
+            </div>
+            <div>
+              <b>{data.products.length.toLocaleString('en-PK')}</b>
+              <small>Products</small>
+            </div>
+            <div>
+              <b>{data.categories.length.toLocaleString('en-PK')}</b>
+              <small>Categories</small>
+            </div>
+          </div>
+        </>
+      )}
+      <div className="settings-links">
+        <a className="button ghost" href="/sitemap.xml" target="_blank" rel="noopener noreferrer">
+          <ExternalLink size={15} /> Open sitemap.xml
+        </a>
+        <a className="button ghost" href="/robots.txt" target="_blank" rel="noopener noreferrer">
+          <ExternalLink size={15} /> Open robots.txt
+        </a>
+        <button
+          type="button"
+          className="button ghost"
+          onClick={() =>
+            navigator.clipboard
+              .writeText(origin + '/sitemap.xml')
+              .then(() => notice('Sitemap address copied.'))
+              .catch(() => notice('Copy failed. The address is ' + origin + '/sitemap.xml'))
+          }
+        >
+          <Copy size={15} /> Copy address
+        </button>
+      </div>
+      <small className="muted">
+        Submit <b>{origin}/sitemap.xml</b> once in Google Search Console → Sitemaps (and Bing Webmaster Tools). After that, search
+        engines read the new version by themselves.
+      </small>
+    </section>
+  );
+}
 
 export function SettingsManager() {
   const { notice } = useApp();
@@ -764,6 +906,18 @@ export function SettingsManager() {
   const [saved, setSaved] = useState('');
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState('');
+  const [tab, setTabState] = useState<SettingsTab>('store');
+  const [sitemapVersion, setSitemapVersion] = useState(0);
+  const [preview, setPreview] = useState(false);
+  // The open tab is kept in the address (#sitemap), so a reload or a shared link opens it again.
+  useEffect(() => {
+    const h = window.location.hash.slice(1);
+    if (isSettingsTab(h)) setTabState(h);
+  }, []);
+  const setTab = (t: SettingsTab) => {
+    setTabState(t);
+    window.history.replaceState(null, '', '#' + t);
+  };
   useEffect(() => {
     if (!data) return;
     const next = { ...settingsDefaults, ...(data.find((d) => d.id === 'global') || {}) };
@@ -788,9 +942,13 @@ export function SettingsManager() {
       const { id, ...body } = form!;
       await api('/admin/records/settings/global', { method: 'PUT', body: JSON.stringify({ ...body, active: true, position: 0 }) });
       refresh();
+      setSitemapVersion(Date.now());
       notice('Settings saved.');
     } catch (err) {
-      setFormError((err as Error).message);
+      const message = (err as Error).message;
+      const field = tabOf(/^(\w+):/.exec(message)?.[1] || '');
+      if (field) setTab(field);
+      setFormError(message);
     } finally {
       setBusy(false);
     }
@@ -802,9 +960,9 @@ export function SettingsManager() {
         <Stat
           icon={<ShoppingCart size={20} />}
           label="Ordering"
-          value={on(form.checkout_enabled) ? 'Open' : 'Paused'}
+          value={form.maintenance_enabled ? 'Maintenance' : on(form.checkout_enabled) ? 'Open' : 'Paused'}
           hint={form.minimum_order ? `Minimum PKR ${(form.minimum_order / 100).toLocaleString('en-PK')}` : 'No store-wide minimum'}
-          tone={on(form.checkout_enabled) ? 'green' : 'orange'}
+          tone={on(form.checkout_enabled) && !form.maintenance_enabled ? 'green' : 'orange'}
         />
         <Stat
           icon={<UserPlus size={20} />}
@@ -828,15 +986,16 @@ export function SettingsManager() {
           tone={email?.source === 'none' ? 'orange' : 'green'}
         />
       </div>
-      <nav className="settings-nav" aria-label="Settings sections">
-        {sections.map(([id, title]) => (
-          <a key={id} href={'#settings-' + id} className="chip">
-            {title}
-          </a>
+      <div className="seg-tabs settings-tabs" role="tablist" aria-label="Settings">
+        {settingsTabs.map(([id, title, Icon]) => (
+          <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>
+            <Icon size={15} /> {title}
+            {id === 'maintenance' && form.maintenance_enabled && <span className="tab-count">On</span>}
+          </button>
         ))}
-      </nav>
-      <form className="stack" onSubmit={save}>
-        <div className="settings-grid">
+      </div>
+      <form id="settings-form" className="stack settings-panel" onSubmit={save}>
+          {tab === 'store' && (
           <Section id="store" icon={<Store size={16} />} title="Store" hint="Your name and the About page">
             <div className="form-grid">
               <label>
@@ -858,6 +1017,8 @@ export function SettingsManager() {
               </label>
             </div>
           </Section>
+          )}
+          {tab === 'contact' && (
           <Section id="contact" icon={<Phone size={16} />} title="Contact and support" hint="Shown in the footer and on the contact page">
             <div className="form-grid">
               <label>
@@ -883,6 +1044,8 @@ export function SettingsManager() {
               </label>
             </div>
           </Section>
+          )}
+          {tab === 'social' && (
           <Section id="social" icon={<Globe size={16} />} title="Social links and footer" hint="Leave a link empty to hide it">
             <div className="form-grid">
               {(
@@ -904,6 +1067,8 @@ export function SettingsManager() {
               </label>
             </div>
           </Section>
+          )}
+          {tab === 'orders' && (
           <Section id="orders" icon={<ShoppingCart size={16} />} title="Orders and checkout" hint="Applies to every outlet and area">
             <div className="stack">
               <Toggle checked={on(form.checkout_enabled)} onChange={(v) => set('checkout_enabled', v)} label="Accept new orders" />
@@ -925,6 +1090,8 @@ export function SettingsManager() {
               </label>
             </div>
           </Section>
+          )}
+          {tab === 'notice' && (
           <Section id="notice" icon={<Megaphone size={16} />} title="Notice bar" hint="One line across the top of every store page">
             <div className="stack">
               <Toggle checked={!!form.notice_enabled} onChange={(v) => set('notice_enabled', v)} label="Show the notice bar" />
@@ -939,6 +1106,8 @@ export function SettingsManager() {
               )}
             </div>
           </Section>
+          )}
+          {tab === 'access' && (
           <Section id="access" icon={<BadgeCheck size={16} />} title="Customer access" hint="What visitors and customers can use">
             <div className="stack">
               <div className="toggle-list">
@@ -960,6 +1129,8 @@ export function SettingsManager() {
               </small>
             </div>
           </Section>
+          )}
+          {tab === 'home' && (
           <Section id="home" icon={<LayoutPanelTop size={16} />} title="Home page sections" hint="The built-in parts of the home page">
             <div className="toggle-list">
               {[
@@ -978,6 +1149,8 @@ export function SettingsManager() {
               Your own sections, banners and videos are managed in <a href="/admin?tab=content">Homepage content</a>.
             </small>
           </Section>
+          )}
+          {tab === 'tracking' && (
           <Section
             id="tracking"
             icon={<ChartLine size={16} />}
@@ -1029,8 +1202,126 @@ export function SettingsManager() {
             </div>
             <small className="muted">Saved changes reach the website within about a minute.</small>
           </Section>
-        </div>
+          )}
+          {tab === 'sitemap' && (
+            <>
+              <Section id="sitemap" icon={<ListTree size={16} />} title="Sitemap and search engines" hint="sitemap.xml and robots.txt are built from your live store">
+                <div className="toggle-list">
+                  <Toggle checked={on(form.search_indexing)} onChange={(v) => set('search_indexing', v)} label="Let search engines show the store in their results" />
+                  <Toggle
+                    checked={on(form.sitemap_enabled)}
+                    disabled={!on(form.search_indexing)}
+                    onChange={(v) => set('sitemap_enabled', v)}
+                    label="Publish sitemap.xml"
+                  />
+                </div>
+                {!on(form.search_indexing) && (
+                  <div className="alert warn">
+                    robots.txt will ask every search engine to stay away and pages are marked “noindex”. The store slowly drops out of
+                    Google.
+                  </div>
+                )}
+                <div className="form-grid">
+                  <label>
+                    Website address <span className="muted">(optional)</span>
+                    <input type="url" maxLength={300} pattern="https://.+" title="A full https:// address" {...text('site_url')} placeholder={typeof window === 'undefined' ? '' : window.location.origin} />
+                    <small>Used in sitemap links. Leave empty to use the address the website runs on.</small>
+                  </label>
+                  <label>
+                    How often your menu changes
+                    <select value={form.sitemap_frequency} onChange={(e) => set('sitemap_frequency', e.target.value)}>
+                      <option value="hourly">Every hour</option>
+                      <option value="daily">Every day</option>
+                      <option value="weekly">Every week</option>
+                      <option value="monthly">Every month</option>
+                    </select>
+                    <small>A hint for search engines about how often to come back.</small>
+                  </label>
+                </div>
+                <div className="stack">
+                  <small className="muted">What the sitemap lists</small>
+                  <div className="toggle-list">
+                    {[
+                      ['sitemap_pages', 'Main pages: Explore, Outlets, About and Contact'],
+                      ['sitemap_outlets', 'Every open outlet'],
+                      ['sitemap_products', 'Every product on sale'],
+                      ['sitemap_categories', 'Category pages'],
+                      ['sitemap_images', 'Product and outlet photos (for Google Images)'],
+                    ].map(([k, title]) => (
+                      <Toggle key={k} checked={on(form[k])} disabled={!on(form.search_indexing) || !on(form.sitemap_enabled)} onChange={(v) => set(k, v)} label={title} />
+                    ))}
+                  </div>
+                  <small className="muted">Hidden, closed and deleted outlets and products are never listed. Private pages such as checkout, orders and this dashboard are kept out of search engines.</small>
+                </div>
+              </Section>
+              <SitemapStatus version={sitemapVersion} />
+            </>
+          )}
+          {tab === 'maintenance' && (
+            <Section id="maintenance" icon={<Wrench size={16} />} title="Maintenance mode" hint="Close the store for everyone except administrators">
+              <Toggle checked={!!form.maintenance_enabled} onChange={(v) => set('maintenance_enabled', v)} label="Put the store under maintenance" />
+              <div className={'alert ' + (form.maintenance_enabled ? 'warn' : 'info')}>
+                While this is on, customers, outlets and riders, on the website and in the app, see only the maintenance page and
+                cannot order or sign in. This dashboard and the administrator sign-in page at <b>/admin/login</b> keep working.
+              </div>
+              <div className="form-grid">
+                <label className="span-2">
+                  Heading <span className="muted">(optional)</span>
+                  <input maxLength={120} {...text('maintenance_title')} placeholder="We’ll be back soon" />
+                </label>
+                <label className="span-2">
+                  Message <span className="muted">(optional)</span>
+                  <textarea
+                    rows={3}
+                    maxLength={600}
+                    {...text('maintenance_message')}
+                    placeholder={(form.name || 'Dellvit') + ' is getting a few improvements. Ordering is paused for a short while. Thank you for your patience!'}
+                  />
+                </label>
+                <label>
+                  Expected back <span className="muted">(optional)</span>
+                  <input
+                    type="datetime-local"
+                    value={localInput(form.maintenance_until || '')}
+                    onChange={(e) => set('maintenance_until', e.target.value ? new Date(e.target.value).toISOString() : '')}
+                  />
+                  <small>Shows a countdown on the page.</small>
+                </label>
+                <div className="stack">
+                  <Toggle checked={on(form.maintenance_show_contact)} onChange={(v) => set('maintenance_show_contact', v)} label="Show support email, phone and WhatsApp" />
+                </div>
+              </div>
+              <div className="settings-links">
+                <button type="button" className="button ghost" onClick={() => setPreview(true)}>
+                  <Eye size={15} /> Preview the page
+                </button>
+              </div>
+              <Modal open={preview} onClose={() => setPreview(false)} title="Maintenance page preview" size="lg">
+                {preview && (
+                  <MaintenancePage
+                    preview
+                    info={{
+                      name: form.name || 'Dellvit',
+                      title: form.maintenance_title,
+                      message: form.maintenance_message,
+                      until: form.maintenance_until,
+                      ...(on(form.maintenance_show_contact)
+                        ? { email: form.support_email, phone: form.support_phone, whatsapp: form.whatsapp, facebook_url: form.facebook_url, instagram_url: form.instagram_url }
+                        : {}),
+                    }}
+                  />
+                )}
+              </Modal>
+            </Section>
+          )}
         {formError && <ErrorBox error={formError} />}
+      </form>
+      {tab === 'email' && (
+        <div id="settings-email">
+          <EmailSettings />
+        </div>
+      )}
+      {(tab !== 'email' || dirty) && (
         <div className={'form-foot sticky-foot' + (dirty ? ' dirty' : '')}>
           {dirty && <small className="muted">You have unsaved changes.</small>}
           {dirty && (
@@ -1038,14 +1329,11 @@ export function SettingsManager() {
               Discard
             </button>
           )}
-          <button className="button" disabled={busy || !dirty}>
+          <button form="settings-form" className="button" disabled={busy || !dirty}>
             {busy ? 'Saving…' : 'Save settings'}
           </button>
         </div>
-      </form>
-      <div id="settings-email">
-        <EmailSettings />
-      </div>
+      )}
     </div>
   );
 }

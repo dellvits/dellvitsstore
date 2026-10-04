@@ -168,7 +168,8 @@ export default function Provider({ children }: { children: ReactNode }) {
         } else detectWith(l, account);
       })
       .catch((e) => {
-        notice(e.message);
+        // The maintenance page explains itself; no message on top of it.
+        if (e.code !== 'maintenance') notice(e.message);
         setAreaStatus('unknown');
       })
       .finally(() => setReady(true));

@@ -1995,6 +1995,47 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
       assert.equal((await request('DELETE', '/admin/staff/' + secondId, undefined, admin)).status, 404);
       await run("DELETE FROM rate_limits WHERE key LIKE 'auth:%'");
     });
+    await t.test('the sitemap follows its settings; maintenance mode lets only administrators in', async () => {
+      await run("DELETE FROM rate_limits WHERE key LIKE 'auth:%' OR key LIKE 'write:%'");
+      const current = (await request('GET', '/site')).data.settings;
+      const put = (extra: object) =>
+        request('PUT', '/admin/records/settings/global', { ...current, ...extra }, admin);
+      const map = (await request('GET', '/site/sitemap')).data;
+      assert.equal(map.enabled, true);
+      assert.ok(map.products.some((p: any) => p.id === 'product-1'));
+      assert.ok(map.outlets.length > 0);
+      assert.equal((await put({ sitemap_products: false, sitemap_frequency: 'weekly' })).status, 200);
+      const fewer = (await request('GET', '/site/sitemap')).data;
+      assert.equal(fewer.products.length, 0);
+      assert.equal(fewer.frequency, 'weekly');
+      assert.equal((await put({ search_indexing: false })).status, 200);
+      assert.equal((await request('GET', '/site/sitemap')).data.enabled, false);
+      assert.equal((await request('GET', '/site/head')).data.noindex, true);
+
+      assert.equal((await put({ maintenance_until: 'soon' })).status, 400);
+      const closed = await put({ maintenance_enabled: true, maintenance_title: 'Back soon' });
+      assert.equal(closed.status, 200, JSON.stringify(closed.data));
+      assert.equal((await request('GET', '/site/head')).data.maintenance.title, 'Back soon');
+      const refused = await request('GET', '/products');
+      assert.equal(refused.status, 503);
+      assert.equal(refused.data.code, 'maintenance');
+      assert.equal((await request('GET', '/orders', undefined, customer)).status, 503);
+      assert.equal(
+        (await request('POST', '/auth/login', { login: 'customer@dellvit.local', password: 'Dellvit@2026' })).status,
+        503,
+      );
+      // The maintenance page, the session check and administrators keep working.
+      assert.equal((await request('GET', '/session', undefined, customer)).status, 200);
+      assert.equal((await request('GET', '/site')).status, 200);
+      assert.equal((await request('GET', '/products', undefined, admin)).status, 200);
+      assert.equal((await request('GET', '/admin/records/settings', undefined, admin)).status, 200);
+      assert.equal((await login('admin@dellvit.local')).length > 0, true);
+
+      assert.equal((await put({})).status, 200);
+      assert.equal((await request('GET', '/products')).status, 200);
+      assert.equal((await request('GET', '/site/head')).data.maintenance, null);
+      assert.equal((await request('GET', '/site/sitemap')).data.products.length > 0, true);
+    });
     await t.test('store switches, signed-in devices and notification preferences', async () => {
       await run("DELETE FROM rate_limits WHERE key LIKE 'auth:%' OR key LIKE 'write:%'");
       const current = (await request('GET', '/site')).data.settings;

@@ -4,6 +4,7 @@ import './globals.css';
 import Provider from '@/components/Provider';
 import { Header, Footer } from '@/components/Shell';
 import PixelPageViews from '@/components/PixelPageViews';
+import MaintenanceGate from '@/components/Maintenance';
 import { headSettings, headMetadata, AnalyticsTags } from '@/lib/siteHead';
 const sans = Plus_Jakarta_Sans({
   subsets: ['latin'],
@@ -41,12 +42,14 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       <body>
         {head.facebook_pixel_id && <PixelPageViews />}
         <Provider>
-          <a href="#main" className="skip-link">
-            Skip to content
-          </a>
-          <Header />
-          <main id="main">{children}</main>
-          <Footer />
+          <MaintenanceGate initial={head.maintenance || null}>
+            <a href="#main" className="skip-link">
+              Skip to content
+            </a>
+            <Header />
+            <main id="main">{children}</main>
+            <Footer />
+          </MaintenanceGate>
         </Provider>
       </body>
     </html>

@@ -14,6 +14,7 @@ import {
   records,
   isOnline,
   adDay,
+  maintenanceGuard,
 } from './platform.js';
 import { installSupport, deleteSupport } from './support.js';
 import { installNotifications, notify, adminsWith, outletUser } from './notifications.js';
@@ -123,6 +124,7 @@ app.use('/api', (req: AuthRequest, res, next) => {
     return res.status(403).json({ error: 'Browser requests require an Origin header.' });
   next();
 });
+app.use('/api', maintenanceGuard);
 installPlatform(app);
 const authLimit = rateLimit({
   store: new PostgresRateLimitStore('auth:'),

@@ -1,5 +1,5 @@
 import { atomicRoute } from './atomic-route.js';
-import type { Express } from 'express';
+import type { Express, Response, NextFunction } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { all, one, run, transaction, type Row } from './db.js';
@@ -389,6 +389,26 @@ const schemas: Record<string, z.ZodType> = {
     google_tag_manager_id: trackingId(/GTM-[A-Z0-9]{4,12}/, 'Use a Tag Manager ID such as GTM-ABC1234.'),
     facebook_pixel_id: trackingId(/\d{6,20}/, 'Use the Pixel ID, a long number such as 123456789012345.'),
     custom_head_code: z.string().max(20000).default(''),
+    // Search engines: robots.txt, sitemap.xml and the public address their links use.
+    search_indexing: z.boolean().default(true),
+    site_url: webLink,
+    sitemap_enabled: z.boolean().default(true),
+    sitemap_pages: z.boolean().default(true),
+    sitemap_outlets: z.boolean().default(true),
+    sitemap_products: z.boolean().default(true),
+    sitemap_categories: z.boolean().default(true),
+    sitemap_images: z.boolean().default(true),
+    sitemap_frequency: z.enum(['hourly', 'daily', 'weekly', 'monthly']).default('daily'),
+    // Maintenance mode: the storefront shows a maintenance page; only administrators get in.
+    maintenance_enabled: z.boolean().default(false),
+    maintenance_title: z.string().trim().max(120).default(''),
+    maintenance_message: z.string().trim().max(600).default(''),
+    maintenance_until: z
+      .string()
+      .max(40)
+      .refine((v) => !v || !Number.isNaN(Date.parse(v)), 'Choose a valid date and time.')
+      .default(''),
+    maintenance_show_contact: z.boolean().default(true),
   }),
   categories: z.object({
     ...base,
@@ -573,6 +593,34 @@ function pkMobile(v: string) {
       : d;
 }
 export const isOnline = (type?: string) => !!type && type !== 'cod';
+/* ---------- Maintenance mode ---------- */
+// Read at most every 15 seconds per server instance; saving Store settings here refreshes it at once.
+let maintenance = { at: 0, on: false };
+async function maintenanceOn() {
+  if (Date.now() - maintenance.at > 15000)
+    maintenance = {
+      at: Date.now(),
+      on: (await records('settings', true))[0]?.maintenance_enabled === true,
+    };
+  return maintenance.on;
+}
+// What visitors may still reach: the store details for the maintenance page, images, the
+// administrator sign-in and signing out.
+const openDuringMaintenance = [
+  /^GET \/(health|site(\/head|\/sitemap)?|session|media\/[^/]+)$/,
+  /^POST \/auth\/(admin-login|logout)$/,
+];
+/** While maintenance mode is on, only administrators use the API. */
+export async function maintenanceGuard(req: AuthRequest, res: Response, next: NextFunction) {
+  if (req.method === 'OPTIONS' || req.user?.role === 'admin') return next();
+  const call = `${req.method === 'HEAD' ? 'GET' : req.method} ${req.path}`;
+  if (openDuringMaintenance.some((r) => r.test(call)) || !(await maintenanceOn())) return next();
+  res.status(503).setHeader('Retry-After', '600');
+  res.json({
+    error: 'Dellvit is down for maintenance. Please check back soon.',
+    code: 'maintenance',
+  });
+}
 export function installPlatform(app: Express) {
   app.use('/api', async (req: AuthRequest, res, next) => {
     if (req.user?.role !== 'admin') return next();
@@ -638,7 +686,62 @@ export function installPlatform(app: Express) {
   app.get('/api/site/head', async (_req, res) => {
     const s = (await records('settings', true))[0] || {};
     res.setHeader('Cache-Control', 'public, max-age=60');
-    res.json(Object.fromEntries(headFields.map((k) => [k, s[k] || ''])));
+    res.json({
+      ...Object.fromEntries(headFields.map((k) => [k, s[k] || ''])),
+      noindex: s.search_indexing === false,
+      maintenance: s.maintenance_enabled
+        ? {
+            name: s.name || 'Dellvit',
+            title: s.maintenance_title || '',
+            message: s.maintenance_message || '',
+            until: s.maintenance_until || '',
+            ...(s.maintenance_show_contact !== false
+              ? {
+                  email: s.support_email || '',
+                  phone: s.support_phone || '',
+                  whatsapp: s.whatsapp || '',
+                  facebook_url: s.facebook_url || '',
+                  instagram_url: s.instagram_url || '',
+                }
+              : {}),
+          }
+        : null,
+    });
+  });
+  /** What sitemap.xml and robots.txt list; the web server builds both files from this. */
+  app.get('/api/site/sitemap', async (_req, res) => {
+    const s = (await records('settings', true))[0] || {};
+    const on = (k: string) => s[k] !== false;
+    const enabled = on('search_indexing') && on('sitemap_enabled');
+    const [outlets, products, categories] = await Promise.all([
+      enabled && on('sitemap_outlets')
+        ? all('SELECT id,image FROM outlets WHERE active=1 AND deleted_at IS NULL ORDER BY name')
+        : [],
+      // A sitemap file holds at most 50,000 links.
+      enabled && on('sitemap_products')
+        ? all(
+            `SELECT p.id,p.images FROM products p JOIN outlets o ON o.id=p.outlet_id
+             WHERE p.active=1 AND o.active=1 AND p.deleted_at IS NULL AND o.deleted_at IS NULL
+             ORDER BY p.sort_order DESC LIMIT 45000`,
+          )
+        : [],
+      enabled && on('sitemap_categories') ? records('categories', true) : [],
+    ]);
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    res.json({
+      indexing: on('search_indexing'),
+      enabled,
+      site_url: s.site_url || '',
+      frequency: s.sitemap_frequency || 'daily',
+      pages: enabled && on('sitemap_pages'),
+      images: on('sitemap_images'),
+      outlets: outlets.map((o) => ({ id: o.id, image: o.image || '' })),
+      products: products.map((p) => ({
+        id: p.id,
+        images: (JSON.parse(p.images || '[]') as string[]).slice(0, 5),
+      })),
+      categories: categories.map((c) => c.name),
+    });
   });
   /** Every ad with its view and click counts, for the chosen period and overall. */
   app.get('/api/admin/ads', requireRole('admin'), async (req, res) => {
@@ -875,6 +978,7 @@ export function installPlatform(app: Express) {
           id,
           JSON.stringify(p),
         );
+      if (kind === 'settings') maintenance = { at: Date.now(), on: p.maintenance_enabled === true };
       res.json(
         kind === 'payments' ? (await adminPaymentMethods()).find((m) => m.id === id) : { ...p, id },
       );
