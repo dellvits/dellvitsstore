@@ -1165,7 +1165,7 @@ export function installPlatform(app: Express) {
     requireRole('admin'),
     atomicRoute(async (req: AuthRequest, res) => {
       const u = await staffMember(req, 'deleted');
-      for (const table of ['sessions', 'notifications', 'push_subscriptions', 'email_codes', 'admin_access'])
+      for (const table of ['sessions', 'notifications', 'push_subscriptions', 'email_codes', 'password_resets', 'admin_access'])
         await run(`DELETE FROM ${table} WHERE user_id=?`, u.id);
       await run('UPDATE support_threads SET assigned_to=NULL WHERE assigned_to=?', u.id);
       await run('DELETE FROM users WHERE id=?', u.id);

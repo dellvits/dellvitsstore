@@ -1,7 +1,7 @@
 import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
 import { Catalog, Outlets, ProductDetail } from '@/components/Catalog';
-import { Auth, VerifyEmail } from '@/components/Auth';
+import { Auth, ForgotPassword, VerifyEmail } from '@/components/Auth';
 
 import { Cart, Checkout } from '@/components/Checkout';
 import { Orders, OrderDetail } from '@/components/Orders';
@@ -19,6 +19,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
     login: 'Log in',
     signup: 'Create account',
     verify: 'Verify your email',
+    'forgot-password': 'Forgot password',
     account: 'Your account',
     cart: 'Your basket',
     checkout: 'Checkout',
@@ -32,7 +33,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   };
   return {
     title: titles[slug[0]] || 'Dellvit',
-    ...(['account', 'cart', 'checkout', 'orders', 'admin', 'portal', 'notifications', 'support'].includes(slug[0])
+    ...(['account', 'cart', 'checkout', 'orders', 'admin', 'portal', 'notifications', 'support', 'forgot-password'].includes(slug[0])
       ? { robots: { index: false, follow: false } }
       : {}),
   };
@@ -56,6 +57,9 @@ export default async function Page({ params }: { params: Promise<{ slug: string[
         break;
       case 'signup':
         content = <Auth signup />;
+        break;
+      case 'forgot-password':
+        content = <ForgotPassword />;
         break;
       case 'verify':
         content = <VerifyEmail />;

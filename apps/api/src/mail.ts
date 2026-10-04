@@ -160,6 +160,51 @@ export function verificationEmail(p: { to: string; name: string; code: string; m
     }),
   };
 }
+/** The 6-digit code that lets a customer who forgot their password choose a new one. */
+export function passwordResetEmail(p: { to: string; name: string; code: string; minutes: number }): Mail {
+  const name = escape(p.name.split(' ')[0] || 'there');
+  const digits = `<td style="padding:14px 22px;border:1px dashed #e3b9c5;border-radius:14px;background:#fdf6f8;text-align:center;font-size:32px;font-weight:800;letter-spacing:8px;color:${ink};font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;">${p.code}</td>`;
+  const link = `${site()}/forgot-password?email=${encodeURIComponent(p.to)}&code=${p.code}`;
+  return {
+    to: p.to,
+    // The code stays out of the subject and the preview line, where others could read it.
+    subject: 'Password Reset Code',
+    text: `Hi ${p.name.split(' ')[0] || 'there'},\n\nYour Dellvit password reset code is ${p.code}. It expires in ${p.minutes} minutes.\n\nEnter it at ${site()}/forgot-password, or open this link to fill it in for you: ${link}\n\nIf you did not ask to reset your password, you can ignore this email. Your password stays the same.`,
+    html: layout({
+      preheader: `Open this email for your Dellvit reset code. It expires in ${p.minutes} minutes.`,
+      heading: 'Reset your password',
+      body:
+        paragraph(`Hi ${name}, we received a request to reset the password for your Dellvit account. Enter this code to choose a new one:`) +
+        `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:20px 0;"><tr>${digits}</tr></table>` +
+        note('Tap and hold the code (or double-click it) to copy it.') +
+        paragraph(`<br>The code expires in <strong>${p.minutes} minutes</strong> and can be used once.`) +
+        button(link, 'Reset my password') +
+        note(
+          'Never share this code. Dellvit staff will not ask for it. If you did not ask for this, ignore this email: your password stays the same.',
+        ),
+    }),
+  };
+}
+/** Sent after the password changes through "Forgot password", so a stranger's reset does not go unseen. */
+export function passwordChangedEmail(p: { to: string; name: string }): Mail {
+  const name = escape(p.name.split(' ')[0] || 'there');
+  return {
+    to: p.to,
+    subject: 'Your Dellvit password was changed',
+    text: `Hi ${p.name.split(' ')[0] || 'there'},\n\nThe password for your Dellvit account was just changed, and every device was signed out.\n\nIf this was not you, reset your password now at ${site()}/forgot-password and contact us from ${site()}/contact.`,
+    html: layout({
+      preheader: 'The password for your Dellvit account was just changed.',
+      heading: 'Your password was changed',
+      body:
+        paragraph(
+          `Hi ${name}, the password for your Dellvit account was just changed. For your safety, every device that was signed in has been signed out.`,
+        ) +
+        paragraph('If you made this change, there is nothing else to do.') +
+        button(`${site()}/forgot-password`, 'This was not me') +
+        note('If you did not change your password, reset it again right away and contact us from the Contact page.'),
+    }),
+  };
+}
 /** What the administrator receives from the "Send test email" button. */
 export function testEmail(to: string): Mail {
   return {

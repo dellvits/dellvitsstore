@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent } from 'react';
 import {
+  ArrowLeft,
   ArrowRight,
   Bell,
   CircleCheck,
@@ -11,6 +12,7 @@ import {
   Eye,
   EyeOff,
   KeyRound,
+  LockKeyhole,
   LogOut,
   MailCheck,
   Package,
@@ -93,10 +95,18 @@ function AuthArt({ title }: { title: string }) {
   );
 }
 /** Creating an account takes two steps; this shows which one the visitor is on. */
-function SignupSteps({ step }: { step: 1 | 2 | 3 }) {
+function SignupSteps({
+  step,
+  titles = ['Your details', 'Verify email', 'Start ordering'],
+  label = 'Sign-up progress',
+}: {
+  step: 1 | 2 | 3 | 4;
+  titles?: string[];
+  label?: string;
+}) {
   return (
-    <ol className="auth-steps" aria-label="Sign-up progress">
-      {['Your details', 'Verify email', 'Start ordering'].map((title, i) => (
+    <ol className="auth-steps" aria-label={label}>
+      {titles.map((title, i) => (
         <li key={title} className={i + 1 < step ? 'done' : i + 1 === step ? 'current' : ''}>
           <span>{i + 1 < step ? <CircleCheck size={14} /> : i + 1}</span>
           {title}
@@ -353,6 +363,279 @@ export function VerifyEmail() {
   );
 }
 
+/**
+ * Forgot password, for customers: enter the email, then the 6-digit code that was emailed, then
+ * a new password. The server checks every step; this page only walks through them.
+ */
+export function ForgotPassword() {
+  const { setUser, notice } = useApp();
+  const router = useRouter();
+  const search = useSearchParams();
+  const [email, setEmail] = useState(() => (search.get('email') || '').trim().toLowerCase());
+  const [step, setStep] = useState<'email' | 'code' | 'password' | 'done'>(() => (email ? 'code' : 'email'));
+  const [code, setCode] = useState('');
+  // Proves the code was right; the server accepts it once, for 15 minutes.
+  const [token, setToken] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  // Seconds until another code may be requested. The server decides this and enforces it.
+  const [wait, setWait] = useState(0);
+  const [sending, setSending] = useState(false);
+  useEffect(() => {
+    if (wait <= 0) return;
+    const t = setTimeout(() => setWait((n) => n - 1), 1000);
+    return () => clearTimeout(t);
+  }, [wait]);
+  /** Asks for a code. Asking too soon still moves on, because the last code is still valid. */
+  async function sendCode(address: string) {
+    setError('');
+    try {
+      const r = await api<{ retry_in: number }>('/auth/forgot-password', {
+        method: 'POST',
+        body: JSON.stringify({ email: address }),
+      });
+      setWait(r.retry_in);
+      setCode('');
+      setStep('code');
+      return true;
+    } catch (e) {
+      const failure = e as ApiError;
+      if (failure.data?.retry_in) {
+        setWait(failure.data.retry_in);
+        setStep('code');
+      }
+      setError(failure.message);
+      return false;
+    }
+  }
+  async function request(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const address = String(new FormData(e.currentTarget).get('email') || '').trim().toLowerCase();
+    setBusy(true);
+    setEmail(address);
+    await sendCode(address);
+    setBusy(false);
+  }
+  async function resend() {
+    if (sending || wait > 0) return;
+    setSending(true);
+    if (await sendCode(email)) notice('If this email has a customer account, a new code is on its way.');
+    setSending(false);
+  }
+  async function verify(value: string) {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const r = await api<{ reset_token: string }>('/auth/forgot-password/verify', {
+        method: 'POST',
+        body: JSON.stringify({ email, code: value }),
+      });
+      setToken(r.reset_token);
+      setStep('password');
+    } catch (e) {
+      setError((e as Error).message);
+      setCode('');
+    } finally {
+      setBusy(false);
+    }
+  }
+  // The button in the email carries the code, so the page fills it in and checks it by itself.
+  const linked = useRef(false);
+  useEffect(() => {
+    const given = (search.get('code') || '').replace(/\D/g, '');
+    if (linked.current || !email || given.length !== CODE_LENGTH) return;
+    linked.current = true;
+    setCode(given);
+    verify(given);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  async function save(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    const password = String(form.get('password') || '');
+    if (password !== form.get('confirm')) return setError('The two passwords do not match.');
+    setBusy(true);
+    setError('');
+    try {
+      const { user } = await api<{ user: User }>('/auth/forgot-password/reset', {
+        method: 'POST',
+        body: JSON.stringify({ email, reset_token: token, password }),
+      });
+      setStep('done');
+      setUser(user);
+      setTimeout(() => router.push(portalPath(user.role)), 1600);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  function startAgain() {
+    setStep('email');
+    setCode('');
+    setToken('');
+    setError('');
+  }
+  const steps = { email: 1, code: 2, password: 3, done: 4 } as const;
+  return (
+    <div className="auth">
+      <div className="auth-panel">
+        <div className="auth-card">
+          <SignupSteps
+            step={steps[step]}
+            titles={['Your email', 'Enter code', 'New password']}
+            label="Password reset progress"
+          />
+          {step === 'email' ? (
+            <>
+              <span className="auth-badge">
+                <KeyRound size={26} />
+              </span>
+              <div>
+                <span className="eyebrow">Forgot password</span>
+                <h1>Reset your password</h1>
+                <p className="auth-lead">Enter the email you use on Dellvit. We will send you a 6-digit code.</p>
+              </div>
+              <form onSubmit={request} className="stack">
+                <label>
+                  Email
+                  <input
+                    name="email"
+                    type="email"
+                    required
+                    maxLength={200}
+                    autoComplete="email"
+                    defaultValue={email}
+                    placeholder="you@example.com"
+                  />
+                </label>
+                {error && <ErrorBox error={error} />}
+                <button className="button large full" disabled={busy}>
+                  {busy ? 'Sending…' : 'Send code'}
+                  <ArrowRight size={18} />
+                </button>
+              </form>
+              <div className="alert info">
+                <ShieldCheck size={16} /> Outlet and rider accounts cannot reset here. Please ask the Dellvit team.
+              </div>
+            </>
+          ) : step === 'code' ? (
+            <>
+              <span className="auth-badge">
+                <MailCheck size={26} />
+              </span>
+              <div>
+                <span className="eyebrow">Check your email</span>
+                <h1>Enter your code</h1>
+                <p className="auth-lead">
+                  If <strong>{maskEmail(email)}</strong> has a Dellvit account, we sent it a 6-digit code.
+                </p>
+              </div>
+              <form
+                className="stack"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (code.length === CODE_LENGTH) verify(code);
+                }}
+              >
+                <CodeInput
+                  value={code}
+                  onChange={(c) => {
+                    setCode(c);
+                    if (c) setError('');
+                  }}
+                  onComplete={verify}
+                  invalid={!!error}
+                  disabled={busy}
+                />
+                {error && <ErrorBox error={error} />}
+                <button className="button large full" disabled={busy || code.length < CODE_LENGTH}>
+                  {busy ? 'Checking…' : 'Continue'}
+                  <ArrowRight size={18} />
+                </button>
+              </form>
+              <div className="otp-meta">
+                <span>
+                  <Clock size={14} /> The code expires in 10 minutes
+                </span>
+                {wait > 0 ? (
+                  <span aria-live="polite">
+                    New code available in <strong className="otp-timer">{clock(wait)}</strong>
+                  </span>
+                ) : (
+                  <button type="button" className="link" disabled={sending} onClick={resend}>
+                    <RotateCw size={13} /> {sending ? 'Sending…' : 'Send a new code'}
+                  </button>
+                )}
+              </div>
+              <div className="alert info">
+                <ShieldCheck size={16} /> Can’t find it? Check your spam folder. Never share this code with anyone.
+              </div>
+              <p className="auth-switch">
+                Wrong email?{' '}
+                <button type="button" className="link" onClick={startAgain}>
+                  Use another email
+                </button>
+              </p>
+            </>
+          ) : step === 'password' ? (
+            <>
+              <span className="auth-badge">
+                <LockKeyhole size={26} />
+              </span>
+              <div>
+                <span className="eyebrow">Code accepted</span>
+                <h1>Choose a new password</h1>
+                <p className="auth-lead">You will be signed out on every other device.</p>
+              </div>
+              <form onSubmit={save} className="stack">
+                {/* Lets password managers save the new password under the right account. */}
+                <input type="email" name="username" value={email} autoComplete="username" readOnly hidden />
+                <label>
+                  New password
+                  <Password name="password" minLength={10} autoComplete="new-password" />
+                  <small>At least 10 characters.</small>
+                </label>
+                <label>
+                  Repeat the new password
+                  <Password name="confirm" minLength={10} autoComplete="new-password" />
+                </label>
+                {error && <ErrorBox error={error} />}
+                <button className="button large full" disabled={busy}>
+                  {busy ? 'Saving…' : 'Save new password'}
+                  <ArrowRight size={18} />
+                </button>
+              </form>
+              <p className="auth-switch">
+                <Clock size={13} /> Finish within 15 minutes, or{' '}
+                <button type="button" className="link" onClick={startAgain}>
+                  start again
+                </button>
+                .
+              </p>
+            </>
+          ) : (
+            <div className="auth-done">
+              <span className="auth-badge success">
+                <CircleCheck size={28} />
+              </span>
+              <h1>Password changed</h1>
+              <p className="auth-lead">You are signed in with your new password. Taking you in…</p>
+            </div>
+          )}
+          {step !== 'done' && (
+            <Link className="auth-admin" href="/login">
+              <ArrowLeft size={14} /> Back to log in
+            </Link>
+          )}
+        </div>
+      </div>
+      <AuthArt title="Back in a minute." />
+    </div>
+  );
+}
+
 export function Auth({ signup = false, admin = false }: { signup?: boolean; admin?: boolean }) {
   const { setUser, locations, area } = useApp();
   const router = useRouter();
@@ -449,6 +732,11 @@ export function Auth({ signup = false, admin = false }: { signup?: boolean; admi
               />
               {signup && <small>At least 10 characters.</small>}
             </label>
+            {!signup && !admin && (
+              <Link className="auth-forgot" href="/forgot-password">
+                Forgot password?
+              </Link>
+            )}
             {signup && (
               <>
                 <label>

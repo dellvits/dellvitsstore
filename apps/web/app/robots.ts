@@ -13,6 +13,7 @@ const privatePages = [
   '/notifications',
   '/support',
   '/verify',
+  '/forgot-password',
 ];
 
 /** robots.txt, following Store settings → Sitemap. */

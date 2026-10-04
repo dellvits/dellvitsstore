@@ -1579,6 +1579,91 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     assert.equal((await request('PATCH', '/profile', { name: 'No access' }, token)).status, 401);
     await run("DELETE FROM rate_limits WHERE key LIKE 'auth:%'");
   });
+  await t.test('forgotten passwords are reset with an emailed code, for customers only', async () => {
+    const email = 'fresh@example.com';
+    const oldPassword = 'Replacement@2026';
+    const ago = (seconds: number) => new Date(Date.now() - seconds * 1000).toISOString();
+    const resetCode = () =>
+      outbox
+        .filter((m) => m.to === email && m.subject === 'Password Reset Code')
+        .at(-1)!
+        .text.match(/code is (\d{6})/)![1];
+    const forgot = (address = email) => request('POST', '/auth/forgot-password', { email: address });
+    const verify = (code: string) => request('POST', '/auth/forgot-password/verify', { email, code });
+    const reset = (reset_token: string, password: string) =>
+      request('POST', '/auth/forgot-password/reset', { email, reset_token, password }, undefined, {
+        'x-client': 'mobile',
+      });
+    const signedIn = (await request('POST', '/auth/login', { login: email, password: oldPassword }, undefined, {
+      'x-client': 'mobile',
+    })).data.token;
+    // Unknown addresses and staff accounts get the same answer, and nothing is emailed.
+    let mails = outbox.length;
+    for (const address of ['nobody@example.com', 'admin@dellvit.local']) {
+      const r = await forgot(address);
+      assert.equal(r.status, 200);
+      assert.equal(r.data.retry_in, 60);
+    }
+    assert.equal(outbox.length, mails);
+    const first = await forgot();
+    assert.equal(first.status, 200, JSON.stringify(first.data));
+    assert.equal(outbox.length, mails + 1);
+    assert.doesNotMatch(outbox.at(-1)!.subject, /\d{6}/, 'the code stays out of the subject');
+    // The same wait and hourly cap as sign-up codes.
+    const tooSoon = await forgot();
+    assert.equal(tooSoon.status, 429);
+    assert.match(tooSoon.data.error, /Please wait/);
+    await run('UPDATE password_resets SET sent_at=?,sends=5', ago(61));
+    assert.match((await forgot()).data.error, /Too many codes requested/);
+    await run('UPDATE password_resets SET sent_at=?,window_at=?,sends=1', ago(61), ago(61));
+    // Wrong codes are counted, and five of them spend the code.
+    assert.equal((await forgot()).status, 200);
+    let code = resetCode();
+    const wrong = code === '000000' ? '000001' : '000000';
+    assert.match((await verify(wrong)).data.error, /4 attempts left/);
+    await run('UPDATE password_resets SET attempts=5');
+    assert.equal((await verify(code)).status, 429, 'a right code is refused after too many wrong ones');
+    // An expired code does not work.
+    await run('UPDATE password_resets SET sent_at=?', ago(61));
+    await forgot();
+    code = resetCode();
+    await run('UPDATE password_resets SET expires_at=?', ago(1));
+    assert.match((await verify(code)).data.error, /expired/);
+    await run("DELETE FROM rate_limits WHERE key LIKE 'auth:%'");
+    // A good code is swapped once for a reset token.
+    await run('UPDATE password_resets SET sent_at=?', ago(61));
+    await forgot();
+    code = resetCode();
+    const ok = await verify(code);
+    assert.equal(ok.status, 200, JSON.stringify(ok.data));
+    assert.match(ok.data.reset_token, /^[0-9a-f]{64}$/);
+    assert.equal((await verify(code)).status, 400, 'a code works once');
+    const row = (await one('SELECT * FROM password_resets'))!;
+    assert.equal(row.code_hash, null);
+    assert.notEqual(row.token_hash, ok.data.reset_token, 'only a hash of the token is stored');
+    assert.equal((await reset('0'.repeat(64), 'Another@2026pass')).status, 400);
+    assert.match((await reset(ok.data.reset_token, oldPassword)).data.error, /new password/);
+    assert.equal((await reset(ok.data.reset_token, 'short')).status, 400);
+    mails = outbox.length;
+    const done = await reset(ok.data.reset_token, 'Recovered@2026');
+    assert.equal(done.status, 200, JSON.stringify(done.data));
+    assert.equal(done.data.user.email, email);
+    assert.equal(done.data.user.password_hash, undefined);
+    assert.ok(done.data.token, 'the customer is signed in with the new password');
+    assert.equal(outbox.length, mails + 1);
+    assert.equal(outbox.at(-1)!.subject, 'Your Dellvit password was changed');
+    assert.equal((await reset(ok.data.reset_token, 'Recovered@2027')).status, 400, 'a token works once');
+    assert.equal((await request('GET', '/profile/sessions', undefined, signedIn)).status, 401, 'other devices are signed out');
+    assert.equal((await request('POST', '/auth/login', { login: email, password: oldPassword })).status, 401);
+    assert.equal((await request('POST', '/auth/login', { login: email, password: 'Recovered@2026' })).status, 200);
+    // An expired token does not work either.
+    await run('UPDATE password_resets SET sent_at=?', ago(61));
+    await forgot();
+    const late = await verify(resetCode());
+    await run('UPDATE password_resets SET token_expires_at=?', ago(1));
+    assert.match((await reset(late.data.reset_token, 'Recovered@2028')).data.error, /expired/);
+    await run("DELETE FROM rate_limits WHERE key LIKE 'auth:%'");
+  });
   await t.test('home page content: designs, schedules, areas and video links', async () => {
     const put = (id: string, body: object) =>
       request('PUT', '/admin/records/content/' + id, body, admin);

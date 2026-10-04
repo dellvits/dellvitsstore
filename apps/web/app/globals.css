@@ -3746,6 +3746,16 @@ fieldset {
 .auth-admin:hover {
   color: var(--ink);
 }
+.auth-forgot {
+  align-self: flex-end;
+  margin-top: -6px;
+  font-size: 0.85rem;
+  font-weight: 650;
+  color: var(--brand);
+}
+.auth-forgot:hover {
+  text-decoration: underline;
+}
 .auth-art {
   position: relative;
   margin: 16px;

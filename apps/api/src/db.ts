@@ -81,7 +81,7 @@ export function setTestDatabase(value: DatabaseAdapter) {
 }
 
 export const applicationTables =
-  'locations users sessions outlets products orders order_items order_events documents messages settings admin_access platform_records area_settings rider_state audit_log order_details coupon_uses notifications push_subscriptions rider_settings rider_earnings rider_payouts payout_requests order_flow payment_proofs outlet_settings order_settlements cod_deposits rate_limits email_codes ad_stats support_threads support_messages'.split(
+  'locations users sessions outlets products orders order_items order_events documents messages settings admin_access platform_records area_settings rider_state audit_log order_details coupon_uses notifications push_subscriptions rider_settings rider_earnings rider_payouts payout_requests order_flow payment_proofs outlet_settings order_settlements cod_deposits rate_limits email_codes password_resets ad_stats support_threads support_messages'.split(
     ' ',
   );
 const tables = new Set(applicationTables);

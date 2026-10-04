@@ -1468,7 +1468,7 @@ app.delete(
       );
     const documents = await all('SELECT filename FROM documents WHERE outlet_id=?', o.id);
     await run('DELETE FROM documents WHERE outlet_id=?', o.id);
-    for (const table of ['sessions', 'notifications', 'push_subscriptions', 'email_codes'])
+    for (const table of ['sessions', 'notifications', 'push_subscriptions', 'email_codes', 'password_resets'])
       await run(`DELETE FROM ${table} WHERE user_id=?`, o.user_id);
     await deleteSupport(o.user_id);
     await run(
@@ -1700,6 +1700,7 @@ app.delete(
       'notifications',
       'push_subscriptions',
       'email_codes',
+      'password_resets',
       'rider_state',
       'rider_settings',
     ])

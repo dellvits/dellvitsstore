@@ -1,11 +1,12 @@
 import type { Express, RequestHandler } from 'express';
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { atomicRoute } from './atomic-route.js';
 import { all, one, run, afterCommit, type Row } from './db.js';
 import {
   requireRole,
   hashPassword,
+  verifyPassword,
   publicUser,
   newSession,
   tokenHash,
@@ -19,6 +20,8 @@ import {
   smtpSettings,
   saveSmtpSettings,
   verificationEmail,
+  passwordResetEmail,
+  passwordChangedEmail,
   welcomeEmail,
   testEmail,
 } from './mail.js';
@@ -57,6 +60,30 @@ export const needsVerification = (u: Row) => u.role === 'customer' && !u.email_v
 export async function sendVerificationCode(u: Row, force = false) {
   const old = await one('SELECT sent_at,sends,window_at FROM email_codes WHERE user_id=?', u.id);
   const at = Date.now();
+  const w = codeWindow(old, at, force);
+  if (!w.allowed) return w.result;
+  const code = String(randomInt(0, 1000000)).padStart(6, '0');
+  await run(
+    'INSERT INTO email_codes(user_id,code_hash,expires_at,attempts,sent_at,sends,window_at) VALUES(?,?,?,0,?,?,?) ON CONFLICT(user_id) DO UPDATE SET code_hash=excluded.code_hash,expires_at=excluded.expires_at,attempts=0,sent_at=excluded.sent_at,sends=excluded.sends,window_at=excluded.window_at',
+    u.id,
+    codeHash(u.id, code),
+    new Date(at + CODE_MINUTES * 60000).toISOString(),
+    new Date(at).toISOString(),
+    w.sends,
+    w.window,
+  );
+  await afterCommit(async () => {
+    await sendMail(
+      verificationEmail({ to: u.email, name: u.name, code, minutes: CODE_MINUTES }),
+    );
+  });
+  return w.result;
+}
+/**
+ * The two per-account limits on emailed codes, worked out from the last code sent: a wait
+ * between codes and a number of codes per hour. `force` (an administrator) skips them.
+ */
+function codeWindow(old: Row | undefined, at: number, force: boolean) {
   // The hour being counted carries on from the previous code unless it has run out.
   const windowStart = old ? Date.parse(old.window_at || old.sent_at) : at;
   const inWindow = !!old && at - windowStart < HOUR;
@@ -65,33 +92,69 @@ export async function sendVerificationCode(u: Row, force = false) {
     const cooldown = RESEND_SECONDS - (at - Date.parse(old.sent_at)) / 1000;
     const hourly = sent >= SENDS_PER_HOUR ? (windowStart + HOUR - at) / 1000 : 0;
     if (cooldown > 0 || hourly > 0)
-      return { sent: false, limited: hourly > 0, retry_in: Math.ceil(Math.max(cooldown, hourly)) };
+      return {
+        allowed: false as const,
+        result: { sent: false, limited: hourly > 0, retry_in: Math.ceil(Math.max(cooldown, hourly)) },
+      };
   }
-  const code = String(randomInt(0, 1000000)).padStart(6, '0');
   const window = new Date(inWindow ? windowStart : at).toISOString();
+  return {
+    allowed: true as const,
+    sends: sent + 1,
+    window,
+    result: {
+      sent: true,
+      limited: false,
+      // After the last code of the hour, the next one waits for the hour to end.
+      retry_in:
+        sent + 1 >= SENDS_PER_HOUR
+          ? Math.ceil((Date.parse(window) + HOUR - at) / 1000)
+          : RESEND_SECONDS,
+    },
+  };
+}
+
+/**
+ * Forgot password (customers only)
+ *
+ * 1. The customer asks for a code; it is emailed under the same limits as sign-up codes.
+ * 2. A correct code is swapped for a random reset token that lasts RESET_MINUTES. The code is
+ *    then spent, so it cannot be tried again.
+ * 3. The token sets the new password once. Every device is signed out and the customer is told
+ *    by email. Only hashes of the code and the token are stored.
+ * Outlets, riders and administrators ask an administrator instead.
+ */
+const RESET_MINUTES = 15;
+const resetCodeHash = (userId: string, code: string) => tokenHash('reset:' + userId + ':' + code);
+/** Compares two hex hashes in constant time. */
+const sameHash = (a: string, b: string) =>
+  a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+/** The customer a reset is for: blocked and deleted accounts cannot reset. */
+const resetAccount = (email: string) =>
+  one(
+    "SELECT * FROM users WHERE email=? AND role='customer' AND active=1 AND deleted_at IS NULL",
+    email,
+  );
+async function sendResetCode(u: Row) {
+  const old = await one('SELECT sent_at,sends,window_at FROM password_resets WHERE user_id=?', u.id);
+  const at = Date.now();
+  const w = codeWindow(old, at, false);
+  if (!w.allowed) return w.result;
+  const code = String(randomInt(0, 1000000)).padStart(6, '0');
+  // A new code also cancels any reset token from an earlier code.
   await run(
-    'INSERT INTO email_codes(user_id,code_hash,expires_at,attempts,sent_at,sends,window_at) VALUES(?,?,?,0,?,?,?) ON CONFLICT(user_id) DO UPDATE SET code_hash=excluded.code_hash,expires_at=excluded.expires_at,attempts=0,sent_at=excluded.sent_at,sends=excluded.sends,window_at=excluded.window_at',
+    'INSERT INTO password_resets(user_id,code_hash,expires_at,attempts,sent_at,sends,window_at,token_hash,token_expires_at) VALUES(?,?,?,0,?,?,?,NULL,NULL) ON CONFLICT(user_id) DO UPDATE SET code_hash=excluded.code_hash,expires_at=excluded.expires_at,attempts=0,sent_at=excluded.sent_at,sends=excluded.sends,window_at=excluded.window_at,token_hash=NULL,token_expires_at=NULL',
     u.id,
-    codeHash(u.id, code),
+    resetCodeHash(u.id, code),
     new Date(at + CODE_MINUTES * 60000).toISOString(),
     new Date(at).toISOString(),
-    sent + 1,
-    window,
+    w.sends,
+    w.window,
   );
   await afterCommit(async () => {
-    await sendMail(
-      verificationEmail({ to: u.email, name: u.name, code, minutes: CODE_MINUTES }),
-    );
+    await sendMail(passwordResetEmail({ to: u.email, name: u.name, code, minutes: CODE_MINUTES }));
   });
-  return {
-    sent: true,
-    limited: false,
-    // After the last code of the hour, the next one waits for the hour to end.
-    retry_in:
-      sent + 1 >= SENDS_PER_HOUR
-        ? Math.ceil((Date.parse(window) + HOUR - at) / 1000)
-        : RESEND_SECONDS,
-  };
+  return w.result;
 }
 /** How long a wait is, for a message: "45 seconds", "12 minutes". */
 const waitText = (seconds: number) =>
@@ -237,6 +300,106 @@ export function installAccounts(app: Express, authLimit: RequestHandler) {
           retry_in: r.retry_in,
         });
       res.json({ ok: true, retry_in: r.retry_in });
+    }),
+  );
+
+  /* ---------- Forgot password ---------- */
+  const codeLimited = (r: { limited: boolean; retry_in: number }) => ({
+    error: r.limited
+      ? `Too many codes requested. You can ask for another in ${waitText(r.retry_in)}.`
+      : `Please wait ${waitText(r.retry_in)} before asking for another code.`,
+    retry_in: r.retry_in,
+  });
+  app.post(
+    '/api/auth/forgot-password',
+    authLimit,
+    atomicRoute(async (req, res) => {
+      const p = z.object({ email: emailField }).parse(req.body);
+      if (!(await mailReady()))
+        fail('Password reset is unavailable because email is not set up yet. Please contact support.', 503);
+      const u = await resetAccount(p.email);
+      // An address without a customer account gets the answer a real one would.
+      if (!u) return res.json({ ok: true, retry_in: RESEND_SECONDS });
+      const r = await sendResetCode(u);
+      if (!r.sent) return res.status(429).json(codeLimited(r));
+      res.json({ ok: true, retry_in: r.retry_in });
+    }),
+  );
+  app.post(
+    '/api/auth/forgot-password/verify',
+    authLimit,
+    atomicRoute(async (req, res) => {
+      const p = z
+        .object({ email: emailField, code: z.string().regex(/^\d{6}$/, 'Enter the 6-digit code.') })
+        .parse(req.body);
+      const u = await resetAccount(p.email);
+      const c = u && (await one('SELECT * FROM password_resets WHERE user_id=?', u.id));
+      if (!u || !c?.code_hash) fail('That code is not correct or has been used. Request a new code.');
+      if (c.attempts >= MAX_ATTEMPTS)
+        fail('Too many incorrect attempts. Request a new code.', 429);
+      if (c.expires_at < now()) fail('This code has expired. Request a new one.');
+      if (!sameHash(c.code_hash, resetCodeHash(u.id, p.code))) {
+        // Answered without throwing so the failed attempt is committed and counted.
+        await run('UPDATE password_resets SET attempts=attempts+1 WHERE user_id=?', u.id);
+        const left = MAX_ATTEMPTS - c.attempts - 1;
+        return res.status(400).json({
+          error: left
+            ? `That code is not correct. ${left} attempt${left === 1 ? '' : 's'} left.`
+            : 'Too many incorrect attempts. Request a new code.',
+        });
+      }
+      // The code is spent; only the token it was swapped for can set the password now.
+      const token = randomBytes(32).toString('hex');
+      await run(
+        'UPDATE password_resets SET code_hash=NULL,attempts=0,token_hash=?,token_expires_at=? WHERE user_id=?',
+        tokenHash(token),
+        new Date(Date.now() + RESET_MINUTES * 60000).toISOString(),
+        u.id,
+      );
+      res.json({ reset_token: token, minutes: RESET_MINUTES });
+    }),
+  );
+  app.post(
+    '/api/auth/forgot-password/reset',
+    authLimit,
+    atomicRoute(async (req: AuthRequest, res) => {
+      const p = z
+        .object({
+          email: emailField,
+          reset_token: z.string().regex(/^[0-9a-f]{64}$/, 'This reset has expired. Start again.'),
+          password: z.string().min(10, 'Use at least 10 characters.').max(100),
+        })
+        .parse(req.body);
+      const u = await resetAccount(p.email);
+      const c = u && (await one('SELECT * FROM password_resets WHERE user_id=?', u.id));
+      if (
+        !u ||
+        !c?.token_hash ||
+        !sameHash(c.token_hash, tokenHash(p.reset_token)) ||
+        c.token_expires_at < now()
+      )
+        fail('This reset has expired. Start again to get a new code.');
+      if (verifyPassword(p.password, u.password_hash))
+        fail('Choose a new password, not the one you used before.');
+      // The emailed code also proves the address belongs to them.
+      await run(
+        'UPDATE users SET password_hash=?,email_verified_at=COALESCE(email_verified_at,?) WHERE id=?',
+        hashPassword(p.password),
+        now(),
+        u.id,
+      );
+      // Keeps the row so the hourly code limit still counts, but nothing in it works any more.
+      await run(
+        'UPDATE password_resets SET code_hash=NULL,token_hash=NULL,token_expires_at=NULL WHERE user_id=?',
+        u.id,
+      );
+      await run('DELETE FROM email_codes WHERE user_id=?', u.id);
+      // Whoever knew the old password is signed out everywhere.
+      await run('DELETE FROM sessions WHERE user_id=?', u.id);
+      await afterCommit(async () => {
+        await sendMail(passwordChangedEmail({ to: u.email, name: u.name }));
+      });
+      res.json(await startSession(req, res, u));
     }),
   );
 
@@ -462,7 +625,7 @@ export function installAccounts(app: Express, authLimit: RequestHandler) {
           `This customer has ${orders.active} order${orders.active === 1 ? '' : 's'} in progress. Finish or cancel ${orders.active === 1 ? 'it' : 'them'} first.`,
           409,
         );
-      for (const table of ['sessions', 'notifications', 'push_subscriptions', 'email_codes'])
+      for (const table of ['sessions', 'notifications', 'push_subscriptions', 'email_codes', 'password_resets'])
         await run(`DELETE FROM ${table} WHERE user_id=?`, u.id);
       await deleteSupport(u.id);
       if (orders.total) {
