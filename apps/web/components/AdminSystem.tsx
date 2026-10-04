@@ -13,6 +13,7 @@ import {
   History,
   KeyRound,
   LayoutPanelTop,
+  ChartLine,
   Lock,
   LogOut,
   Megaphone,
@@ -722,6 +723,12 @@ const settingsDefaults: Settings = {
   show_how: true,
   show_why: true,
   show_ad: true,
+  google_site_verification: '',
+  bing_site_verification: '',
+  google_analytics_id: '',
+  google_tag_manager_id: '',
+  facebook_pixel_id: '',
+  custom_head_code: '',
 };
 function Section({ id, icon, title, hint, children }: { id: string; icon: ReactNode; title: string; hint: string; children: ReactNode }) {
   return (
@@ -745,6 +752,7 @@ const sections = [
   ['notice', 'Notice bar'],
   ['access', 'Customer access'],
   ['home', 'Home page'],
+  ['tracking', 'SEO and analytics'],
   ['email', 'Email'],
 ] as const;
 
@@ -969,6 +977,57 @@ export function SettingsManager() {
             <small className="muted">
               Your own sections, banners and videos are managed in <a href="/admin?tab=content">Homepage content</a>.
             </small>
+          </Section>
+          <Section
+            id="tracking"
+            icon={<ChartLine size={16} />}
+            title="SEO and analytics"
+            hint="Verification tags and tracking codes added to every page"
+          >
+            <div className="form-grid">
+              <label>
+                Google Search Console code <span className="muted">(optional)</span>
+                <input maxLength={300} {...text('google_site_verification')} placeholder='<meta name="google-site-verification" …>' />
+                <small>In Search Console choose “HTML tag”, then paste the whole tag or only its code.</small>
+              </label>
+              <label>
+                Bing Webmaster code <span className="muted">(optional)</span>
+                <input maxLength={300} {...text('bing_site_verification')} placeholder='<meta name="msvalidate.01" …>' />
+                <small>Paste the whole tag or only its code.</small>
+              </label>
+              <label>
+                Google Analytics ID <span className="muted">(optional)</span>
+                <input maxLength={2000} {...text('google_analytics_id')} placeholder="G-XXXXXXXXXX" />
+                <small>The Measurement ID from Analytics → Admin → Data streams.</small>
+              </label>
+              <label>
+                Google Tag Manager ID <span className="muted">(optional)</span>
+                <input maxLength={2000} {...text('google_tag_manager_id')} placeholder="GTM-XXXXXXX" />
+                <small>Leave Analytics empty if Tag Manager already loads it.</small>
+              </label>
+              <label>
+                Meta (Facebook) Pixel ID <span className="muted">(optional)</span>
+                <input maxLength={2000} {...text('facebook_pixel_id')} placeholder="123456789012345" />
+                <small>From Events Manager. Page views are counted automatically.</small>
+              </label>
+              <label className="span-2">
+                Custom head code <span className="muted">(optional)</span>
+                <textarea
+                  rows={6}
+                  maxLength={20000}
+                  className="mono"
+                  spellCheck={false}
+                  {...text('custom_head_code')}
+                  placeholder={'<meta name="facebook-domain-verification" content="…" />\n<script async src="https://…"></script>'}
+                />
+                <small>
+                  For any other service. Added to the &lt;head&gt; of every page; &lt;meta&gt;, &lt;link&gt;, &lt;script&gt;,
+                  &lt;style&gt; and &lt;noscript&gt; tags are used and anything else is skipped. Only paste code from
+                  services you trust: it runs on every page, including checkout and this admin panel.
+                </small>
+              </label>
+            </div>
+            <small className="muted">Saved changes reach the website within about a minute.</small>
           </Section>
         </div>
         {formError && <ErrorBox error={formError} />}

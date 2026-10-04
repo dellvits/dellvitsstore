@@ -302,6 +302,39 @@ const webLink = z
   .max(300)
   .refine((v) => !v || /^https:\/\/[^\s<>"']+$/.test(v), 'Use a full https:// address.')
   .default('');
+/** A verification code; when the whole <meta> tag is pasted, only its content is kept. */
+const verification = z
+  .preprocess(
+    (v) =>
+      typeof v === 'string'
+        ? (/content\s*=\s*["']([^"']*)["']/i.exec(v)?.[1] ?? v).trim()
+        : v,
+    z
+      .string()
+      .max(200)
+      .refine((v) => !v || /^[\w.+/=-]{4,200}$/.test(v), 'Paste the verification code or its <meta> tag.'),
+  )
+  .default('');
+/** A tracking ID; when a whole snippet is pasted, the ID is picked out of it. */
+const trackingId = (id: RegExp, message: string) =>
+  z
+    .preprocess(
+      (v) => (typeof v === 'string' ? (id.exec(v.toUpperCase())?.[0] ?? v.trim()) : v),
+      z
+        .string()
+        .max(40)
+        .refine((v) => !v || new RegExp(`^${id.source}$`).test(v), message),
+    )
+    .default('');
+/** The settings rendered into the <head> of every storefront page. */
+export const headFields = [
+  'google_site_verification',
+  'bing_site_verification',
+  'google_analytics_id',
+  'google_tag_manager_id',
+  'facebook_pixel_id',
+  'custom_head_code',
+] as const;
 const base = {
   active: z.boolean().default(true),
   position: z.number().int().min(0).max(999).default(0),
@@ -349,6 +382,13 @@ const schemas: Record<string, z.ZodType> = {
     contact_form_enabled: z.boolean().default(true),
     chat_enabled: z.boolean().default(true),
     chat_greeting: z.string().trim().max(300).default(''),
+    // Search engine verification and analytics, added to the <head> of every page.
+    google_site_verification: verification,
+    bing_site_verification: verification,
+    google_analytics_id: trackingId(/(?:G|AW|DC)-[A-Z0-9]{4,20}/, 'Use a Google ID such as G-ABC123XYZ.'),
+    google_tag_manager_id: trackingId(/GTM-[A-Z0-9]{4,12}/, 'Use a Tag Manager ID such as GTM-ABC1234.'),
+    facebook_pixel_id: trackingId(/\d{6,20}/, 'Use the Pixel ID, a long number such as 123456789012345.'),
+    custom_head_code: z.string().max(20000).default(''),
   }),
   categories: z.object({
     ...base,
@@ -593,6 +633,12 @@ export function installPlatform(app: Express) {
       // Advertising has one master switch in Store settings.
       ads: settings[0]?.show_ad === false ? [] : ads,
     });
+  });
+  /** Verification tags and analytics for the page <head>; the web server reads this while rendering. */
+  app.get('/api/site/head', async (_req, res) => {
+    const s = (await records('settings', true))[0] || {};
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    res.json(Object.fromEntries(headFields.map((k) => [k, s[k] || ''])));
   });
   /** Every ad with its view and click counts, for the chosen period and overall. */
   app.get('/api/admin/ads', requireRole('admin'), async (req, res) => {
