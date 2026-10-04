@@ -2,7 +2,7 @@
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Fragment, useState, type FormEvent, type ReactNode } from 'react';
+import { Fragment, useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import {
   ArchiveRestore,
   Archive,
@@ -90,7 +90,9 @@ import {
   commissionText,
 } from './Platform';
 import { AuditLog, SettingsManager, StaffManager } from './AdminSystem';
-import { Account } from './Account';
+import { Account, CustomerDashboard } from './Account';
+import { Orders } from './Orders';
+import { portalPath } from './Shell';
 import { NotificationsPage } from './Notifications';
 import { OrderDesk } from './OrderDesk';
 import { ContentManager } from './ContentManager';
@@ -131,6 +133,11 @@ const outletNav: Nav[] = [
   { key: 'products', title: 'Products', icon: ShoppingBag, group: 'Outlet' },
   { key: 'support', title: 'Support chat', icon: Headphones, group: 'Help' },
 ];
+const customerNav: Nav[] = [
+  { key: 'summary', title: 'Dashboard', icon: LayoutDashboard, group: 'My account' },
+  { key: 'orders', title: 'My orders', icon: ClipboardList, group: 'My account' },
+  { key: 'support', title: 'Support chat', icon: Headphones, group: 'Help' },
+];
 const riderNav: Nav[] = [
   { key: 'home', title: 'Dashboard', icon: LayoutDashboard, group: 'Rider' },
   { key: 'orders', title: 'Deliveries', icon: Truck, group: 'Rider' },
@@ -139,7 +146,25 @@ const riderNav: Nav[] = [
   { key: 'support', title: 'Support chat', icon: Headphones, group: 'Help' },
 ];
 
-export default function Portal({ role }: { role: 'admin' | 'outlet' | 'rider' }) {
+type PortalRole = 'admin' | 'outlet' | 'rider' | 'customer';
+const portalNames: Record<PortalRole, string> = {
+  admin: 'Admin portal',
+  outlet: 'Outlet portal',
+  rider: 'Rider portal',
+  customer: 'My account',
+};
+/** Sends a staff account that opened /account to the profile page of its own portal. */
+function ToOwnPortal({ role }: { role: string }) {
+  const router = useRouter();
+  useEffect(() => router.replace(portalPath(role) + '?tab=profile'), [role, router]);
+  return <PageLoading />;
+}
+
+/**
+ * The dashboard frame shared by administrators, outlets, riders and customers: a sidebar of
+ * sections, a top bar, and the chosen section. Customers reach theirs at /account.
+ */
+export default function Portal({ role }: { role: PortalRole }) {
   const { user, ready, logout } = useApp();
   const params = useSearchParams();
   const router = useRouter();
@@ -149,15 +174,24 @@ export default function Portal({ role }: { role: 'admin' | 'outlet' | 'rider' })
     return (
       <div className="container page">
         <Empty
-          title={role === 'admin' ? 'Administration' : role === 'outlet' ? 'Outlet portal' : 'Rider portal'}
-          href={role === 'admin' ? '/admin/login' : '/login?next=' + encodeURIComponent('/portal/' + role)}
+          title={role === 'admin' ? 'Administration' : portalNames[role]}
+          href={
+            role === 'admin'
+              ? '/admin/login'
+              : role === 'customer'
+                ? '/login?next=/account'
+                : '/login?next=' + encodeURIComponent('/portal/' + role)
+          }
           action="Log in"
           icon={<ShieldCheck size={26} />}
         >
-          Sign in with your {role === 'outlet' ? 'outlet ID' : role === 'rider' ? 'rider ID' : 'admin email'}.
+          {role === 'customer'
+            ? 'Sign in to track your orders, chat with support and manage your details.'
+            : `Sign in with your ${role === 'outlet' ? 'outlet ID' : role === 'rider' ? 'rider ID' : 'admin email'}.`}
         </Empty>
       </div>
     );
+  if (role === 'customer' && user.role !== 'customer') return <ToOwnPortal role={user.role} />;
   if (user.role !== role)
     return (
       <div className="container page narrow">
@@ -172,11 +206,14 @@ export default function Portal({ role }: { role: 'admin' | 'outlet' | 'rider' })
         )
       : role === 'outlet'
         ? outletNav
-        : riderNav),
+        : role === 'customer'
+          ? customerNav
+          : riderNav),
     { key: 'profile', title: 'Profile', icon: UserRound, group: 'Account' },
     { key: 'notifications', title: 'Notifications', icon: Bell, group: 'Account' },
   ];
-  const wanted = params.get('tab') || nav[0]?.key;
+  // Older links to /account?view=… open the profile section, which reads the same view.
+  const wanted = params.get('tab') || (params.get('view') ? 'profile' : nav[0]?.key);
   const tab = nav.some((x) => x.key === wanted) ? wanted : nav[0]?.key;
   const current = nav.find((x) => x.key === tab);
   const go = (key: string) => {
@@ -191,7 +228,7 @@ export default function Portal({ role }: { role: 'admin' | 'outlet' | 'rider' })
           <img src="/images/logo.webp" alt="Dellvit" width="92" height="52" />
         </Link>
         <span className="role-chip">
-          {role === 'admin' ? (user.is_super_admin ? 'Super admin' : 'Admin') : role === 'outlet' ? 'Outlet' : 'Rider'}
+          {role === 'admin' ? (user.is_super_admin ? 'Super admin' : 'Admin') : role === 'outlet' ? 'Outlet' : role === 'customer' ? 'Customer' : 'Rider'}
         </span>
       </div>
       <nav className="side-nav" aria-label="Portal navigation">
@@ -242,12 +279,12 @@ export default function Portal({ role }: { role: 'admin' | 'outlet' | 'rider' })
             <Menu size={20} />
           </button>
           <div className="topbar-title">
-            <small>{role === 'admin' ? 'Admin' : role === 'outlet' ? 'Outlet' : 'Rider'} portal</small>
+            <small>{portalNames[role]}</small>
             <h1>{current?.title || 'Workspace'}</h1>
           </div>
           <div className="topbar-actions">
-            <Link href="/" className="button ghost small hide-sm">
-              <Store size={15} /> View store
+            <Link href={role === 'customer' ? '/search' : '/'} className="button ghost small hide-sm">
+              {role === 'customer' ? <ShoppingBag size={15} /> : <Store size={15} />} {role === 'customer' ? 'Shop' : 'View store'}
             </Link>
             <ThemeSwitch />
             <MessageButton />
@@ -257,6 +294,10 @@ export default function Portal({ role }: { role: 'admin' | 'outlet' | 'rider' })
         <div className="portal-content">
           {!tab ? (
             <Empty title="No modules assigned">Ask your super administrator for access.</Empty>
+          ) : role === 'customer' && tab === 'summary' ? (
+            <CustomerDashboard go={go} />
+          ) : role === 'customer' && tab === 'orders' ? (
+            <Orders embedded />
           ) : tab === 'overview' ? (
             <AdminOverview go={go} />
           ) : tab === 'dashboard' ? (
@@ -267,7 +308,7 @@ export default function Portal({ role }: { role: 'admin' | 'outlet' | 'rider' })
             <Account embedded />
           ) : tab === 'notifications' ? (
             <NotificationsPage embedded />
-          ) : tab === 'orders' ? (
+          ) : tab === 'orders' && role !== 'customer' ? (
             <>
               {role === 'rider' && <RiderTools />}
               <OrderDesk key={role} role={role} />
@@ -293,7 +334,7 @@ export default function Portal({ role }: { role: 'admin' | 'outlet' | 'rider' })
           ) : tab === 'messages' ? (
             <SupportInbox />
           ) : tab === 'support' ? (
-            <SupportChat />
+            <SupportChat onBack={() => go(nav[0].key)} />
           ) : tab === 'coupons' ? (
             <CouponManager />
           ) : tab === 'staff' ? (

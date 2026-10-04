@@ -2,7 +2,7 @@ import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
 import { Catalog, Outlets, ProductDetail } from '@/components/Catalog';
 import { Auth, VerifyEmail } from '@/components/Auth';
-import { Account } from '@/components/Account';
+
 import { Cart, Checkout } from '@/components/Checkout';
 import { Orders, OrderDetail } from '@/components/Orders';
 import { About, Contact } from '@/components/Info';
@@ -61,7 +61,7 @@ export default async function Page({ params }: { params: Promise<{ slug: string[
         content = <VerifyEmail />;
         break;
       case 'account':
-        content = <Account />;
+        content = <Portal role="customer" />;
         break;
       case 'cart':
         content = <Cart />;

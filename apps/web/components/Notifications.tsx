@@ -37,7 +37,7 @@ import type { User } from '@/lib/types';
 
 /** Where an account reads its notifications: inside its portal, or on the store for customers. */
 export const inboxPath = (user: Pick<User, 'role'>) =>
-  user.role === 'admin' ? '/admin?tab=notifications' : user.role === 'customer' ? '/notifications' : `/portal/${user.role}?tab=notifications`;
+  user.role === 'admin' ? '/admin?tab=notifications' : user.role === 'customer' ? '/account?tab=notifications' : `/portal/${user.role}?tab=notifications`;
 /** The kinds of notification an account can silence, and who receives them. */
 const kinds: { type: string; title: string; hint: string; roles?: User['role'][] }[] = [
   { type: 'order', title: 'Orders', hint: 'New orders and every change of status' },

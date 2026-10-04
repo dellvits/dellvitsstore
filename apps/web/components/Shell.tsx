@@ -37,6 +37,8 @@ export const portalPath = (role?: string) =>
       : role === 'outlet'
         ? '/portal/outlet'
         : '/portal/rider';
+/** Pages drawn in the dashboard frame, without the store's header and footer. */
+export const inPortal = (path: string) => path.startsWith('/admin') || path.startsWith('/portal/') || path === '/account';
 
 function SearchBox({ onDone }: { onDone?: () => void }) {
   const router = useRouter();
@@ -141,14 +143,15 @@ function AccountMenu() {
   const items: [string, string, typeof UserRound][] =
     user.role === 'customer'
       ? [
-          ['/account', 'My account', UserRound],
-          ['/orders', 'My orders', Package],
-          ['/notifications', 'Notifications', Bell],
+          ['/account', 'My account', LayoutDashboard],
+          ['/account?tab=orders', 'My orders', Package],
+          ['/account?tab=notifications', 'Notifications', Bell],
+          ['/account?tab=profile', 'Profile', UserRound],
         ]
       : [
           [portalPath(user.role), 'Open portal', LayoutDashboard],
-          ['/notifications', 'Notifications', Bell],
-          ['/account', 'Account settings', UserRound],
+          [inboxPath(user), 'Notifications', Bell],
+          [portalPath(user.role) + '?tab=profile', 'Account settings', UserRound],
         ];
   return (
     <div className="account-menu" ref={ref}>
@@ -191,7 +194,7 @@ export function Header() {
   const count = cart.reduce((n, i) => n + i.quantity, 0);
   const { data: site } = useData<{ settings: Record<string, any> | null }>('/site');
   useEffect(() => setMenu(false), [path]);
-  if (path.startsWith('/admin') || path.startsWith('/portal/')) return <LocationPicker />;
+  if (inPortal(path)) return <LocationPicker />;
   const links: [string, string][] = [
     ['/search', 'Explore'],
     ['/outlets', 'Outlets'],
@@ -308,7 +311,7 @@ export function Header() {
                       user.role === 'admin'
                         ? '/admin?tab=messages'
                         : user.role === 'customer'
-                          ? '/support'
+                          ? '/account?tab=support'
                           : `/portal/${user.role}?tab=support`
                     }
                   >
@@ -362,7 +365,7 @@ export function Footer() {
   const { data } = useData<{ settings: Record<string, string> | null }>('/site');
   const settings = data?.settings;
   const path = usePathname();
-  if (path.startsWith('/admin') || path.startsWith('/portal/')) return null;
+  if (inPortal(path)) return null;
   const email = settings?.support_email || 'dellvitsupport@gmail.com';
   const phone = settings?.support_phone || '0316 9212708';
   const socials = (

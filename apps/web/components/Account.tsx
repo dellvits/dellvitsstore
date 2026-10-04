@@ -11,7 +11,6 @@ import {
   Headphones,
   KeyRound,
   Laptop,
-  LayoutDashboard,
   LogOut,
   MapPin,
   PackageCheck,
@@ -77,13 +76,14 @@ function passwordGaps(p: string) {
   ].filter(Boolean) as string[];
 }
 
-/** The customer's dashboard: what is on its way, what they spent, and where they order most. */
-function Overview({ user }: { user: User }) {
+/** The customer's dashboard in the account portal: what is on its way, what they spent, and where they order most. */
+export function CustomerDashboard({ go }: { go: (tab: string) => void }) {
   const router = useRouter();
+  const { user, locations, notice } = useApp();
   const { data: orders, loading, error, refresh } = useData<Order[]>('/orders', 20000);
   const { range, setRange, label: rangeText } = useRange('30d');
-  const { data: offers } = useData<Offer[]>(user.location_id ? '/coupons?location=' + encodeURIComponent(user.location_id) : null);
-  const { notice } = useApp();
+  const { data: offers } = useData<Offer[]>(user?.location_id ? '/coupons?location=' + encodeURIComponent(user.location_id) : null);
+  const area = locations.find((l) => l.id === user?.location_id);
   const all = orders || [];
   const rows = all.filter((o) => inRange(o.created_at, range));
   const delivered = rows.filter((o) => o.status === 'delivered');
@@ -93,9 +93,26 @@ function Overview({ user }: { user: User }) {
   const places = [...all.reduce((m, o) => m.set(o.outlet_id, { id: o.outlet_id, name: o.outlet.name, orders: (m.get(o.outlet_id)?.orders || 0) + 1 }), new Map<string, { id: string; name: string; orders: number }>()).values()]
     .sort((a, b) => b.orders - a.orders)
     .slice(0, 4);
+  if (!user) return null;
   if (error && !orders) return <ErrorBox error={error} retry={refresh} />;
   return (
     <div className="stack">
+      <section className="card dash-hero">
+        <div className="cell-main">
+          <span className="avatar xl">{user.name.slice(0, 1).toUpperCase()}</span>
+          <span className="cell-stack">
+            <strong>{user.name}</strong>
+            <small>
+              {[area?.name, user.address || 'Add your delivery address in Profile'].filter(Boolean).join(' · ')}
+            </small>
+          </span>
+        </div>
+        <div className="outlet-hero-tools">
+          <Link href="/search" className="button">
+            <ShoppingBag size={16} /> Order now
+          </Link>
+        </div>
+      </section>
       {!!active.length && (
         <section className="card attention-card">
           <div className="card-head">
@@ -130,8 +147,8 @@ function Overview({ user }: { user: User }) {
       )}
       <FilterBar title="Your orders" hint={`Placed ${rangeText.toLowerCase()}`} range={range} onRange={setRange} />
       <div className="stats">
-        <Stat icon={<ClipboardList size={20} />} label="Orders" value={rows.length} hint={`${all.length} in total`} tone="blue" loading={busy} onClick={() => router.push('/orders')} />
-        <Stat icon={<Clock size={20} />} label="In progress" value={active.length} hint="Being prepared or delivered" tone="orange" quiet={!active.length} loading={busy} onClick={() => router.push('/orders')} />
+        <Stat icon={<ClipboardList size={20} />} label="Orders" value={rows.length} hint={`${all.length} in total`} tone="blue" loading={busy} onClick={() => go('orders')} />
+        <Stat icon={<Clock size={20} />} label="In progress" value={active.length} hint="Being prepared or delivered" tone="orange" quiet={!active.length} loading={busy} onClick={() => go('orders')} />
         <Stat icon={<PackageCheck size={20} />} label="Delivered" value={delivered.length} hint={`${rows.filter((o) => o.status === 'cancelled').length} cancelled`} tone="green" loading={busy} />
         <Stat icon={<Wallet size={20} />} label="Spent" value={money(delivered.reduce((s, o) => s + o.total, 0))} hint="On delivered orders" tone="purple" loading={busy} />
         <Stat
@@ -205,9 +222,9 @@ function Overview({ user }: { user: User }) {
             <Link href="/search" className="button ghost small">
               <ShoppingBag size={15} /> Browse products
             </Link>
-            <Link href="/support" className="button ghost small">
+            <button type="button" className="button ghost small" onClick={() => go('support')}>
               <Headphones size={15} /> Support chat
-            </Link>
+            </button>
           </div>
         </section>
       </div>
@@ -222,9 +239,9 @@ function Overview({ user }: { user: User }) {
         searchPlaceholder="Search orders or items"
         empty="You haven’t placed any orders yet."
         toolbar={
-          <Link className="button ghost" href="/orders">
+          <button type="button" className="button ghost" onClick={() => go('orders')}>
             All orders
-          </Link>
+          </button>
         }
         filters={[
           {
@@ -534,7 +551,7 @@ function Security() {
   );
 }
 
-type Tab = 'overview' | 'profile' | 'security' | 'notifications';
+type Tab = 'profile' | 'security' | 'notifications';
 /**
  * The signed-in account: a dashboard for customers, then details, security and alerts. With
  * `embedded` it sits inside a portal, which has its own frame and its own notifications page.
@@ -545,7 +562,6 @@ export function Account({ embedded = false }: { embedded?: boolean }) {
   const params = useSearchParams();
   const customer = user?.role === 'customer';
   const tabs: [Tab, string, typeof Bell][] = [
-    ...(customer && !embedded ? ([['overview', 'Dashboard', LayoutDashboard]] as [Tab, string, typeof Bell][]) : []),
     ['profile', 'Profile', UserRound],
     ['security', 'Security', ShieldCheck],
     ['notifications', 'Notifications', Bell],
@@ -604,9 +620,7 @@ export function Account({ embedded = false }: { embedded?: boolean }) {
           </button>
         ))}
       </div>
-      {tab === 'overview' ? (
-        <Overview user={user} />
-      ) : tab === 'profile' ? (
+      {tab === 'profile' ? (
         <Profile user={user} />
       ) : tab === 'security' ? (
         <Security />

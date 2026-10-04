@@ -5381,7 +5381,7 @@ button.stat:focus-visible {
 .stepper.seven {
   grid-template-columns: repeat(7, 1fr);
 }
-.outlet-hero {
+.dash-hero {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -5394,7 +5394,7 @@ button.stat:focus-visible {
   border-radius: 14px;
   object-fit: cover;
 }
-.outlet-hero strong {
+.dash-hero strong {
   font-size: 1.05rem;
 }
 .outlet-hero-tools {
@@ -8359,4 +8359,68 @@ iframe {
   min-height: 0;
   padding: 28px 12px;
   border-radius: 18px;
+}
+
+/* ============ Chat: full height on larger screens, full screen on phones ============ */
+.chat-exit {
+  display: none;
+}
+.chat-full .chat-head {
+  background: var(--surface);
+}
+.chat-full .chat-compose {
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+/* In a dashboard the conversation fills the space under the top bar. */
+.portal-content > .chat-card {
+  height: calc(100dvh - 124px);
+  min-height: 460px;
+}
+.chat-inbox .chat-card,
+.chat-inbox .chat-threads {
+  height: calc(100dvh - 110px);
+  min-height: 460px;
+}
+.page.narrow > .chat-card {
+  height: calc(100dvh - var(--header-h) - 190px);
+  min-height: 460px;
+}
+@media (max-width: 760px) {
+  /* Like a messaging app: no site header, top bar or footer, only the conversation. */
+  .chat-full {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    height: 100dvh !important;
+    min-height: 0 !important;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .chat-full .chat-head {
+    padding-top: max(10px, env(safe-area-inset-top));
+    flex-wrap: nowrap;
+  }
+  .chat-full .chat-head:has(.chat-actions) {
+    flex-wrap: wrap;
+  }
+  .chat-full .chat-head small {
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .chat-full .chat-compose {
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+  .chat-exit,
+  .chat-full .chat-back {
+    display: grid;
+  }
+  html:has(.chat-full),
+  body:has(.chat-full) {
+    overflow: hidden;
+  }
 }

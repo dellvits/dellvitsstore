@@ -456,7 +456,7 @@ export function OutletDashboard({ go }: { go: (tab: string) => void }) {
   const busy = cardsLoading || !data;
   return (
     <div className="stack">
-      <section className="card outlet-hero">
+      <section className="card dash-hero">
         <div className="cell-main">
           {o?.image && <img className="outlet-hero-img" src={o.image} alt="" />}
           <span className="cell-stack">
@@ -678,7 +678,7 @@ export function RiderDashboard({ go }: { go: (tab: string) => void }) {
   const onDuty = state ? !!state.available : true;
   return (
     <div className="stack">
-      <section className="card outlet-hero">
+      <section className="card dash-hero">
         <div className="cell-main">
           <span className="avatar xl">{user?.name.slice(0, 1).toUpperCase()}</span>
           <span className="cell-stack">

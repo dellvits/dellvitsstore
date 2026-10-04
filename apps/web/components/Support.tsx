@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Fragment, useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   AlertCircle,
@@ -279,8 +279,11 @@ type MyChat = {
 };
 /** Adds a message the server has just saved, unless a refresh already brought it. */
 const withMessage = (list: ChatMessage[], m: ChatMessage) => (list.some((x) => x.id === m.id) ? list : [...list, m]);
-/** The signed-in customer's, outlet's or rider's conversation with the support team. */
-export function SupportChat() {
+/**
+ * The signed-in customer's, outlet's or rider's conversation with the support team. On a phone it
+ * takes the whole screen, and `onBack` leaves it.
+ */
+export function SupportChat({ onBack }: { onBack: () => void }) {
   const { refreshNotifications } = useApp();
   const { data, setData, error, loading, refresh } = useData<MyChat>('/support', 3000);
   const { data: site } = useData<{ settings: Record<string, any> | null }>('/site');
@@ -293,8 +296,11 @@ export function SupportChat() {
   if (loading && !data) return <Loading />;
   if (error && !data) return <ErrorBox error={error} retry={refresh} />;
   return (
-    <section className="card chat-card">
+    <section className="card chat-card chat-full">
       <div className="chat-head">
+        <button className="header-icon chat-exit" onClick={onBack} aria-label="Leave the chat">
+          <ArrowLeft size={18} />
+        </button>
         <span className="chat-avatar support">
           <Headphones size={18} />
         </span>
@@ -334,6 +340,7 @@ export function SupportChat() {
 /** The storefront's support page. */
 export function SupportPage() {
   const { user, ready } = useApp();
+  const router = useRouter();
   if (!ready) return <PageLoading />;
   return (
     <div className="container page narrow">
@@ -347,7 +354,7 @@ export function SupportPage() {
       ) : user.role === 'admin' ? (
         <Empty title="You are on the support team" href="/admin?tab=messages" action="Open the inbox" icon={<Inbox size={26} />} />
       ) : (
-        <SupportChat />
+        <SupportChat onBack={() => (window.history.length > 1 ? router.back() : router.push('/'))} />
       )}
     </div>
   );
@@ -358,7 +365,7 @@ export function MessageButton() {
   const { user, supportUnread } = useApp();
   if (!user) return null;
   const href =
-    user.role === 'admin' ? '/admin?tab=messages' : user.role === 'customer' ? '/support' : `/portal/${user.role}?tab=support`;
+    user.role === 'admin' ? '/admin?tab=messages' : user.role === 'customer' ? '/account?tab=support' : `/portal/${user.role}?tab=support`;
   return (
     <Link href={href} className="header-icon" aria-label={`Messages, ${supportUnread} unread`} title="Messages">
       <MessagesSquare size={19} />
@@ -627,7 +634,7 @@ function ChatPane({
   const u = data!.user;
   const closed = data!.thread?.status === 'closed';
   return (
-    <section className="card chat-card">
+    <section className="card chat-card chat-full">
       <div className="chat-head">
         <button className="header-icon chat-back" onClick={onBack} aria-label="Back to conversations">
           <ArrowLeft size={18} />

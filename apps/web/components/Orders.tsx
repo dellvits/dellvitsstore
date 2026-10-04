@@ -101,7 +101,8 @@ export function stageLabel(o: Order) {
   return label(o.status);
 }
 
-export function Orders() {
+/** The customer's order history; `embedded` drops the page frame inside the account portal. */
+export function Orders({ embedded = false }: { embedded?: boolean }) {
   const { ready, user, notice } = useApp();
   const router = useRouter();
   const { data, loading, error, refresh } = useData<Order[]>(ready && user ? '/orders' : null, 15000);
@@ -116,16 +117,18 @@ export function Orders() {
       </div>
     );
   return (
-    <div className="container page">
-      <PageTitle
-        eyebrow="Order history"
-        title="Your orders"
-        actions={
-          <button className="button ghost" onClick={refresh}>
-            <RefreshCw size={16} /> Refresh
-          </button>
-        }
-      />
+    <div className={embedded ? 'stack' : 'container page'}>
+      {!embedded && (
+        <PageTitle
+          eyebrow="Order history"
+          title="Your orders"
+          actions={
+            <button className="button ghost" onClick={refresh}>
+              <RefreshCw size={16} /> Refresh
+            </button>
+          }
+        />
+      )}
       {(() => {
         const rows = (data || []).filter((o) => inRange(o.created_at, range));
         const delivered = rows.filter((o) => o.status === 'delivered');
