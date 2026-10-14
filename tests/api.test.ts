@@ -1151,6 +1151,39 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     const home = (await request('GET', '/home?location=nationwide')).data;
     assert.ok(home.nearby.length > 0);
   });
+  await t.test('the app pop-up shows live products for the shopper and their area', async () => {
+    const first = async (area: string) => (await request('GET', '/products?location=' + area)).data[0].id;
+    const [pindi, isb] = [await first('rawalpindi'), await first('islamabad')];
+    const put = (body: object) =>
+      request(
+        'PUT',
+        '/admin/records/popups/popup-test',
+        { name: 'Weekend', title: 'Picked for you', product_ids: [isb, pindi], ...body },
+        admin,
+      );
+    const shown = async (query: string, token?: string) =>
+      (await request('GET', '/app/popup' + query, undefined, token)).data;
+    assert.equal((await put({ product_ids: [] })).status, 400);
+    assert.equal((await put({ title: '' })).status, 400, 'a headline or a picture is needed');
+    assert.equal((await put({})).status, 200);
+
+    const everywhere = await shown('?location=nationwide');
+    assert.deepEqual(everywhere.products.map((p: any) => p.id), [isb, pindi]);
+    assert.equal(everywhere.name, undefined, 'the campaign name stays private');
+    assert.deepEqual((await shown('?location=rawalpindi')).products.map((p: any) => p.id), [pindi]);
+
+    assert.equal((await put({ location_ids: ['islamabad'] })).status, 200);
+    assert.equal(await shown('?location=nationwide'), null);
+    assert.equal((await shown('?location=islamabad')).id, 'popup-test');
+
+    assert.equal((await put({ audience: 'customers' })).status, 200);
+    assert.equal(await shown(''), null);
+    assert.equal((await shown('', customer)).id, 'popup-test');
+
+    assert.equal((await request('PATCH', '/admin/records/popups/popup-test', { active: false }, admin)).status, 200);
+    assert.equal(await shown('', customer), null);
+    assert.equal((await request('DELETE', '/admin/records/popups/popup-test', undefined, admin)).status, 200);
+  });
   await t.test('category settings drive the home page, usage counts and new outlets', async () => {
     const categories = async () =>
       (await request('GET', '/admin/records/categories', undefined, admin)).data;

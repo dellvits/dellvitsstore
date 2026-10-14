@@ -481,6 +481,29 @@ const schemas: Record<string, z.ZodType> = {
     .refine((v) => (v.format === 'image' ? !!v.image : !!v.title), 'Add a headline, or a picture for a picture-only ad.')
     .refine((v) => v.format !== 'cover' || !!v.image, 'A cover ad needs a picture.')
     .transform((v) => ({ ...v, placements: [...new Set(v.placements)] })),
+  // The pop-up the mobile app shows when it opens, with a few products to tempt the shopper.
+  popups: z
+    .object({
+      ...base,
+      // The campaign name administrators see; shoppers see the headline.
+      name: text,
+      title: z.string().trim().max(80).default(''),
+      message: z.string().trim().max(200).default(''),
+      image: image.default(''),
+      product_ids: z.array(z.string().max(100)).min(1, 'Choose at least one product.').max(12),
+      // How often one phone sees it: every time the app opens, once a day, or only once.
+      frequency: z.enum(['every_open', 'daily', 'once']).default('daily'),
+      // Seconds after the home screen appears.
+      delay: z.number().int().min(0).max(30).default(2),
+      audience: z.enum(['all', 'guests', 'customers']).default('all'),
+      // Delivery areas the pop-up is shown in; empty means every area.
+      location_ids: z.array(z.string().max(100)).max(200).default([]),
+      starts_at: z.union([z.iso.datetime(), z.literal('')]).default(''),
+      ends_at: z.union([z.iso.datetime(), z.literal('')]).default(''),
+    })
+    .refine((v) => !v.starts_at || !v.ends_at || v.ends_at > v.starts_at, 'End must follow start.')
+    .refine((v) => !!v.title || !!v.image, 'Add a headline or a picture.')
+    .transform((v) => ({ ...v, product_ids: [...new Set(v.product_ids)] })),
   coupons: z
     .object({
       ...base,
@@ -629,7 +652,10 @@ export function installPlatform(app: Express) {
     if (parts[0] === 'admin')
       p =
         parts[1] === 'records'
-          ? parts[2]
+          ? // App pop-ups are advertising.
+            parts[2] === 'popups'
+            ? 'ads'
+            : parts[2]
           : (
               {
                 summary: 'overview',

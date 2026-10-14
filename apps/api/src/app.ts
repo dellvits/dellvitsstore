@@ -529,6 +529,47 @@ app.get('/api/outlets/:id', async (req, res) => {
   if (!o) fail('Outlet not found.', 404);
   res.json(withOpen(o));
 });
+/**
+ * The pop-up the mobile app shows when it opens: the first enabled one inside its schedule that is
+ * meant for this shopper and area, with those of its products that can be ordered there now.
+ * Nation Wide shoppers only see pop-ups meant for every area. Answers null when there is none.
+ */
+app.get('/api/app/popup', async (req: AuthRequest, res) => {
+  const loc = String(req.query.location || '');
+  const everywhere = !loc || loc === NATION_WIDE;
+  const at = new Date().toISOString();
+  const who = !req.user ? 'guests' : req.user.role === 'customer' ? 'customers' : 'staff';
+  const live = (await records('popups', true)).filter(
+    (p) =>
+      (!p.starts_at || p.starts_at <= at) &&
+      (!p.ends_at || p.ends_at > at) &&
+      (p.audience === 'all' || p.audience === who) &&
+      (!p.location_ids?.length || (!everywhere && p.location_ids.includes(loc))),
+  );
+  for (const p of live) {
+    const ids: string[] = p.product_ids || [];
+    if (!ids.length) continue;
+    const rows = await all(
+      `SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.active=1 AND o.active=1 AND p.stock>0 AND p.id IN (${ids.map(() => '?').join(',')})` +
+        (everywhere ? '' : ' AND p.location_id=?'),
+      ...ids,
+      ...(everywhere ? [] : [loc]),
+    );
+    if (!rows.length) continue;
+    // In the order the administrator chose.
+    rows.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+    return res.json({
+      id: p.id,
+      title: p.title,
+      message: p.message,
+      image: p.image,
+      frequency: p.frequency,
+      delay: p.delay,
+      products: await Promise.all(rows.map(product)),
+    });
+  }
+  res.json(null);
+});
 /** Counts ads a visitor has seen, and one they clicked. Unknown ads are ignored. */
 app.post('/api/ads/track', trackLimit, async (req, res) => {
   const p = z

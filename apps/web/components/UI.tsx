@@ -30,6 +30,7 @@ import { label as titleCase, money } from '@/lib/api';
 import { inRange, rangeOptions, type Range, type RangeKey } from '@/lib/range';
 import { useSettling } from '@/lib/useSettling';
 import { useApp, NATION_WIDE } from './Provider';
+import { AnimatedLogo, PoweredBy } from './BrandLogo';
 
 export function Modal({
   open,
@@ -260,17 +261,21 @@ export function Loading({ label = 'Loading…' }: { label?: string }) {
     </div>
   );
 }
-/** Full-screen splash while the app starts: the Dellvit logo centred, with a spinner and label. */
+/**
+ * Full-screen splash while the app starts: the Dellvit logo centred, drawing its arrow from left to
+ * right, then a spinner and label beneath it, and "Powered By Intelloplex" at the bottom.
+ */
 export function PageLoading({ label = 'Loading…' }: { label?: string }) {
   return (
     <div className="page-loading" role="status" aria-live="polite">
       <div className="page-loading-inner">
-        <img className="page-loading-logo" src="/images/logo.webp" alt="Dellvit" width="484" height="262" />
+        <AnimatedLogo className="page-loading-logo" />
         <span className="page-loading-label">
           <LoaderCircle className="spin" size={18} aria-hidden />
           {label}
         </span>
       </div>
+      <PoweredBy className="page-loading-powered" />
     </div>
   );
 }
