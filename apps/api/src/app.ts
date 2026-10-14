@@ -18,6 +18,7 @@ import {
 } from './platform.js';
 import { installSupport, deleteSupport } from './support.js';
 import { installNotifications, notify, adminsWith, outletUser } from './notifications.js';
+import { pushConfigured } from './fcm.js';
 import {
   installRiders,
   commissionSchema,
@@ -324,7 +325,8 @@ async function serializeOrders(orders: Row[], req: AuthRequest) {
 const serializeOrder = async (o: Row, req: AuthRequest) => (await serializeOrders([o], req))[0];
 app.get('/api/health', async (_req, res) => {
   await one('SELECT key FROM settings LIMIT 1');
-  res.json({ ok: true, service: 'dellvit-api' });
+  // `push` says whether the Firebase key for the app's notifications is set, never the key itself.
+  res.json({ ok: true, service: 'dellvit-api', push: pushConfigured() });
 });
 app.get('/api/locations', async (_req, res) =>
   res.json(
