@@ -61,6 +61,7 @@ Add these variables to the **Production** environment:
 | `NODE_ENV`             | `production`                                                                                   |
 | `TRUST_PROXY`          | `1` for Vercel's trusted proxy                                                                 |
 | `DATABASE_SSL_CA`      | Only if needed: the Supabase CA certificate PEM                                                |
+| `FIREBASE_SERVICE_ACCOUNT` | For the mobile app's push notifications: the Firebase service account key JSON (Project settings, Service accounts, Generate new private key), pasted as it is or as base64 |
 
 The site address is an example; use the actual domain assigned to your project. Update `WEB_ORIGIN` if you later switch to a custom domain, then redeploy. List the domain visitors actually land on after Vercel's redirects (for example `www.` when the bare domain redirects to `www`). An incorrect origin causes browser writes to return 403 "Request origin is not allowed".
 

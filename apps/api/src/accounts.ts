@@ -625,7 +625,7 @@ export function installAccounts(app: Express, authLimit: RequestHandler) {
           `This customer has ${orders.active} order${orders.active === 1 ? '' : 's'} in progress. Finish or cancel ${orders.active === 1 ? 'it' : 'them'} first.`,
           409,
         );
-      for (const table of ['sessions', 'notifications', 'push_subscriptions', 'email_codes', 'password_resets'])
+      for (const table of ['sessions', 'notifications', 'push_subscriptions', 'device_tokens', 'email_codes', 'password_resets'])
         await run(`DELETE FROM ${table} WHERE user_id=?`, u.id);
       await deleteSupport(u.id);
       if (orders.total) {

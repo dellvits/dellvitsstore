@@ -1151,6 +1151,23 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     const home = (await request('GET', '/home?location=nationwide')).data;
     assert.ok(home.nearby.length > 0);
   });
+  await t.test('phones register for push notifications and stop on sign-out', async () => {
+    const token = 'fcm-test-token-' + 'x'.repeat(40);
+    const owner = async () => (await one('SELECT user_id FROM device_tokens WHERE token=?', token))?.user_id;
+    assert.equal((await request('POST', '/push/device', { token })).status, 401);
+    assert.equal((await request('POST', '/push/device', { token: 'short' }, customer)).status, 400);
+    assert.equal((await request('POST', '/push/device', { token }, customer)).status, 200);
+    const customerId = (await request('GET', '/session', undefined, customer)).data.user.id;
+    assert.equal(await owner(), customerId);
+    // The same phone signing in as a rider now belongs to the rider.
+    assert.equal((await request('POST', '/push/device', { token }, rider)).status, 200);
+    assert.notEqual(await owner(), customerId);
+    // Only the account that holds the phone can remove it.
+    await request('DELETE', '/push/device?token=' + token, undefined, customer);
+    assert.ok(await owner());
+    assert.equal((await request('DELETE', '/push/device?token=' + token, undefined, rider)).status, 200);
+    assert.equal(await owner(), undefined);
+  });
   await t.test('the app pop-up shows live products for the shopper and their area', async () => {
     const first = async (area: string) => (await request('GET', '/products?location=' + area)).data[0].id;
     const [pindi, isb] = [await first('rawalpindi'), await first('islamabad')];

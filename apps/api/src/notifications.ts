@@ -5,6 +5,7 @@ import webpush from 'web-push';
 import { z } from 'zod';
 import { all, one, run, afterCommit } from './db.js';
 import { requireRole, accessRow, type AuthRequest } from './security.js';
+import { sendToDevices } from './fcm.js';
 
 /** VAPID keys come from the environment, or are generated once and kept in the database. */
 async function vapidKeys() {
@@ -65,6 +66,24 @@ export async function notify(userIds: (string | null | undefined)[], m: Message)
           if (error?.statusCode === 404 || error?.statusCode === 410)
             await run('DELETE FROM push_subscriptions WHERE endpoint=?', subscription.endpoint);
         }
+      }
+    });
+    // The mobile app: the same notification in each signed-in phone's notification centre.
+    await afterCommit(async () => {
+      const phones = await all(
+        'SELECT d.token FROM device_tokens d JOIN users u ON u.id=d.user_id WHERE d.user_id=? AND u.notify_muted NOT LIKE ?',
+        uid,
+        `%"${m.type}"%`,
+      );
+      if (!phones.length) return;
+      try {
+        const dead = await sendToDevices(
+          phones.map((p) => p.token),
+          { id, type: m.type, title: m.title, body: m.body || '', link: m.link || '' },
+        );
+        for (const token of dead) await run('DELETE FROM device_tokens WHERE token=?', token);
+      } catch (error) {
+        console.error('Phone notifications failed:', error);
       }
     });
   }
@@ -239,6 +258,37 @@ export function installNotifications(app: Express) {
         p.keys.auth,
         new Date().toISOString(),
       );
+      res.json({ ok: true });
+    }),
+  );
+  /** The mobile app registers the phone's Firebase token after signing in, and again when it changes. */
+  app.post(
+    '/api/push/device',
+    signedIn,
+    atomicRoute(async (req: AuthRequest, res) => {
+      const p = z
+        .object({ token: z.string().trim().min(20).max(4096), platform: z.enum(['android']).default('android') })
+        .parse(req.body);
+      const at = new Date().toISOString();
+      // One phone, one account: signing in as someone else moves the phone to them.
+      await run(
+        'INSERT INTO device_tokens(token,user_id,platform,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(token) DO UPDATE SET user_id=excluded.user_id,platform=excluded.platform,updated_at=excluded.updated_at',
+        p.token,
+        req.user!.id,
+        p.platform,
+        at,
+        at,
+      );
+      res.json({ ok: true });
+    }),
+  );
+  /** Signing out of the app stops that phone getting the account's notifications. */
+  app.delete(
+    '/api/push/device',
+    signedIn,
+    atomicRoute(async (req: AuthRequest, res) => {
+      const token = z.string().max(4096).parse(req.query.token ?? '');
+      await run('DELETE FROM device_tokens WHERE token=? AND user_id=?', token, req.user!.id);
       res.json({ ok: true });
     }),
   );
