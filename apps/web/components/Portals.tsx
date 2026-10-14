@@ -945,6 +945,9 @@ function OutletManager() {
             phone: '',
             email: '',
             location_id: locations[0]?.id,
+            // New outlets show in every delivery area until areas are chosen.
+            nationwide: 1,
+            location_ids: [],
             address: '',
             lat: locations[0]?.lat || 33.6442,
             lng: locations[0]?.lng || 73.0713,
@@ -1013,6 +1016,10 @@ function OutletManager() {
     }
   }
   const set = (k: string, v: unknown) => setEdit((e) => (e ? { ...e, [k]: v } : e));
+  const areaNames = (o: AdminOutlet) =>
+    o.nationwide
+      ? 'Nation Wide'
+      : (o.location_ids || []).map((id) => locations.find((l) => l.id === id)?.name).filter(Boolean).join(', ') || '—';
   const list = data || [];
   const live = list.filter((o) => o.active);
   const statsBusy = loading && !data;
@@ -1071,8 +1078,9 @@ function OutletManager() {
           {
             key: 'area',
             label: 'Areas',
-            options: locations.map((l) => ({ value: l.id, label: l.name })),
-            test: (o, v) => o.location_id === v,
+            options: [{ value: 'nationwide', label: 'Nation Wide' }, ...locations.map((l) => ({ value: l.id, label: l.name }))],
+            // Nation wide outlets show in every area, so they match every area.
+            test: (o, v) => !!o.nationwide || (v !== 'nationwide' && (o.location_ids || []).includes(v)),
           },
           {
             key: 'category',
@@ -1126,7 +1134,7 @@ function OutletManager() {
             render: (o) => (
               <span className="cell-stack">
                 <span>{o.category}</span>
-                <small>{locations.find((l) => l.id === o.location_id)?.name || '—'}</small>
+                <small>{areaNames(o)}</small>
               </span>
             ),
           },
@@ -1263,9 +1271,46 @@ function OutletManager() {
                 />
               </label>
 
+              <h4 className="span-2 form-section">Delivery areas</h4>
+              <div className="field span-2">
+                <span className="field-label">Areas this outlet delivers to</span>
+                <div className="choice-row">
+                  {locations.map((l) => {
+                    const on = !edit.nationwide && (edit.location_ids || []).includes(l.id);
+                    return (
+                      <label key={l.id} className={'choice' + (on ? ' selected' : '')}>
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          disabled={!!edit.nationwide}
+                          onChange={(e) =>
+                            set(
+                              'location_ids',
+                              e.target.checked
+                                ? [...(edit.location_ids || []), l.id]
+                                : (edit.location_ids || []).filter((x: string) => x !== l.id),
+                            )
+                          }
+                        />
+                        {l.name}
+                      </label>
+                    );
+                  })}
+                </div>
+                <label className="check-line">
+                  <input type="checkbox" checked={!!edit.nationwide} onChange={(e) => set('nationwide', e.target.checked ? 1 : 0)} />
+                  Nation Wide
+                </label>
+                <small className="muted">
+                  {edit.nationwide
+                    ? 'This outlet shows in every delivery area in Pakistan. Untick Nation Wide to choose areas.'
+                    : 'This outlet shows only in the areas ticked above.'}
+                </small>
+              </div>
+
               <h4 className="span-2 form-section">Pickup location</h4>
               <label className="span-2">
-                Delivery area
+                Pickup area
                 <select
                   value={edit.location_id}
                   onChange={(e) => {

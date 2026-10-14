@@ -102,6 +102,9 @@ export type Outlet = {
 };
 /** An outlet as the admin panel lists it, with its private settings and totals. */
 export type AdminOutlet = Outlet & {
+  /** 1 when the outlet shows in every delivery area; otherwise only in location_ids. */
+  nationwide: number;
+  location_ids: string[];
   commission_rate: number;
   owner_name: string;
   payout_bank: string;

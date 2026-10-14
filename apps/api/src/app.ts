@@ -508,11 +508,14 @@ app.get('/api/products/:id', async (req, res) => {
 /** Active outlets as the storefront shows them; `open` says whether they take orders right now. */
 const publicOutlets = `SELECT o.id,o.name,o.location_id,o.address,o.phone,o.image,o.category,o.active,${outletPublicColumns} FROM outlets o LEFT JOIN outlet_settings s ON s.outlet_id=o.id WHERE o.active=1`;
 const withOpen = (o: Row) => ({ ...o, open: outletOpen(o) });
+/** Matches outlets that deliver to the area given as the next parameter: nation wide ones, or ones serving it. */
+const servesArea =
+  '(o.nationwide=1 OR EXISTS (SELECT 1 FROM outlet_areas a WHERE a.outlet_id=o.id AND a.location_id=?))';
 app.get('/api/outlets', async (req, res) =>
   res.json(
     (req.query.location
       ? await all(
-          publicOutlets + ' AND o.location_id=? ORDER BY featured DESC,o.name',
+          publicOutlets + ` AND ${servesArea} ORDER BY featured DESC,o.name`,
           String(req.query.location),
         )
       : await all(publicOutlets + ' ORDER BY featured DESC,o.name')
@@ -603,7 +606,7 @@ app.get('/api/home', async (req, res) => {
     ).filter((c) => c.products.length),
     outlets: (
       await all(
-        `SELECT o.id,o.name,o.location_id,o.address,o.phone,o.image,o.category,${outletPublicColumns},(SELECT COUNT(*) FROM products p WHERE p.outlet_id=o.id AND p.active=1) products,(SELECT MIN(delivery_minutes) FROM products p WHERE p.outlet_id=o.id AND p.active=1) delivery_minutes FROM outlets o LEFT JOIN outlet_settings s ON s.outlet_id=o.id WHERE o.active=1 AND o.location_id=? ORDER BY featured DESC,products DESC`,
+        `SELECT o.id,o.name,o.location_id,o.address,o.phone,o.image,o.category,${outletPublicColumns},(SELECT COUNT(*) FROM products p WHERE p.outlet_id=o.id AND p.active=1) products,(SELECT MIN(delivery_minutes) FROM products p WHERE p.outlet_id=o.id AND p.active=1) delivery_minutes FROM outlets o LEFT JOIN outlet_settings s ON s.outlet_id=o.id WHERE o.active=1 AND ${servesArea} ORDER BY featured DESC,products DESC`,
         loc,
       )
     ).map(withOpen),
@@ -1214,8 +1217,8 @@ app.delete(
     const lid = String(req.params.id);
     if (!(await one('SELECT id FROM locations WHERE id=? AND deleted_at IS NULL', lid))) fail('Delivery area not found.', 404);
     const used = (await one(
-      "SELECT (SELECT COUNT(*) FROM orders WHERE location_id=? AND status NOT IN ('delivered','cancelled')) active,(SELECT COUNT(*) FROM outlets WHERE location_id=? AND deleted_at IS NULL) outlets,(SELECT COUNT(*) FROM products WHERE location_id=? AND deleted_at IS NULL) products,(SELECT COUNT(*) FROM orders WHERE location_id=?)+(SELECT COUNT(*) FROM outlets WHERE location_id=?)+(SELECT COUNT(*) FROM products WHERE location_id=?) history",
-      ...Array.from({ length: 6 }, () => lid),
+      "SELECT (SELECT COUNT(*) FROM orders WHERE location_id=? AND status NOT IN ('delivered','cancelled')) active,(SELECT COUNT(*) FROM outlets o WHERE o.deleted_at IS NULL AND (o.location_id=? OR EXISTS (SELECT 1 FROM outlet_areas a WHERE a.outlet_id=o.id AND a.location_id=?))) outlets,(SELECT COUNT(*) FROM products WHERE location_id=? AND deleted_at IS NULL) products,(SELECT COUNT(*) FROM orders WHERE location_id=?)+(SELECT COUNT(*) FROM outlets WHERE location_id=?)+(SELECT COUNT(*) FROM products WHERE location_id=?) history",
+      ...Array.from({ length: 7 }, () => lid),
     ))!;
     const count = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
     const active = Number(used.active);
@@ -1245,11 +1248,21 @@ app.delete(
     res.json({ ok: true, kept });
   }),
 );
+/** The delivery areas every outlet serves, by outlet ID. */
+async function outletAreas() {
+  const areas = new Map<string, string[]>();
+  for (const r of await all('SELECT outlet_id,location_id FROM outlet_areas'))
+    areas.set(r.outlet_id, [...(areas.get(r.outlet_id) || []), r.location_id]);
+  return areas;
+}
 app.get('/api/admin/outlets', async (_req, res) => {
-  // Two queries however many outlets there are.
-  const settings = new Map(
-    (await all('SELECT * FROM outlet_settings')).map((s) => [s.outlet_id, s]),
-  );
+  // Three queries however many outlets there are.
+  const [settings, areas] = await Promise.all([
+    all('SELECT * FROM outlet_settings').then(
+      (rows) => new Map(rows.map((s) => [s.outlet_id, s])),
+    ),
+    outletAreas(),
+  ]);
   res.json(
     (
       await all(
@@ -1257,7 +1270,7 @@ app.get('/api/admin/outlets', async (_req, res) => {
       )
     ).map((o) => {
       const s = { ...outletDefaults, ...settings.get(o.id) };
-      return { ...o, ...s, open: outletOpen(s) };
+      return { ...o, ...s, location_ids: areas.get(o.id) || [], open: outletOpen(s) };
     }),
   );
 });
@@ -1268,7 +1281,11 @@ const outletSchema = z.object({
   name: str(150),
   phone,
   email,
+  // The pickup area; the areas the outlet delivers to are nationwide or location_ids.
   location_id: location,
+  // Left out on an edit, the outlet keeps the areas it has; a new outlet is nation wide.
+  nationwide: flag.optional(),
+  location_ids: z.array(z.string().max(100)).max(500).optional(),
   address: str(500),
   lat: z.number().min(-90).max(90),
   lng: z.number().min(-180).max(180),
@@ -1310,6 +1327,18 @@ async function saveOutlet(req: AuthRequest, res: Response, edit: boolean) {
   const categoryRate = edit
     ? undefined
     : (await records('categories')).find((c) => c.name === p.category)?.commission_rate;
+  // Nation wide outlets show in every delivery area; the others only in the areas chosen.
+  const keepAreas = edit && p.nationwide === undefined && p.location_ids === undefined;
+  const nationwide = p.nationwide ?? (p.location_ids?.length ? 0 : 1);
+  const areas = nationwide ? [] : [...new Set(p.location_ids)];
+  if (!keepAreas && !nationwide) {
+    if (!areas.length) fail('Tick Nation Wide or choose at least one delivery area.');
+    const found = await all(
+      `SELECT id FROM locations WHERE deleted_at IS NULL AND id IN (${areas.map(() => '?').join(',')})`,
+      ...areas,
+    );
+    if (found.length !== areas.length) fail('Choose supported delivery areas.');
+  }
   const uid = old?.user_id || id();
   await transaction(async () => {
     if (edit) {
@@ -1387,10 +1416,22 @@ async function saveOutlet(req: AuthRequest, res: Response, edit: boolean) {
       payout_account: p.payout_account,
       notes: p.notes,
     });
+    if (!keepAreas) {
+      await run('UPDATE outlets SET nationwide=? WHERE id=?', nationwide, oid);
+      await run('DELETE FROM outlet_areas WHERE outlet_id=?', oid);
+      if (areas.length)
+        await run(
+          `INSERT INTO outlet_areas(outlet_id,location_id) VALUES ${areas.map(() => '(?,?)').join(',')}`,
+          ...areas.flatMap((a) => [oid, a]),
+        );
+    }
   });
   res.json({
     ...(await one('SELECT * FROM outlets WHERE id=?', oid)),
     ...(await outletSettings(oid)),
+    location_ids: (await all('SELECT location_id FROM outlet_areas WHERE outlet_id=?', oid)).map(
+      (r) => r.location_id,
+    ),
   });
 }
 app.post(

@@ -169,6 +169,7 @@ export async function seed() {
         '/images/' + image,
         category,
       );
+      await run('INSERT INTO outlet_areas(outlet_id,location_id) VALUES(?,?)', id, loc);
     }
     const products = [
       [

@@ -6399,6 +6399,23 @@ img.cb-media {
   background: var(--tint);
   color: var(--ink);
 }
+label.choice > input {
+  margin: 0;
+}
+label.choice:has(input:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.check-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  cursor: pointer;
+}
+.check-line > input {
+  margin: 0;
+}
 .choice.swatch i {
   width: 20px;
   height: 20px;

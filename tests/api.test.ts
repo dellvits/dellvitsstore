@@ -1102,6 +1102,47 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     assert.equal((await request('PATCH', '/admin/outlets/nope', { active: 0 }, admin)).status, 404);
     assert.equal((await request('GET', '/manage/outlet', undefined, outlet)).data.description, 'Burgers since 1998');
   });
+  await t.test('outlets show nation wide or only in the delivery areas chosen', async () => {
+    const o = (await request('GET', '/admin/outlets', undefined, admin)).data.find(
+      (x: any) => x.id === 'outlet-1',
+    );
+    assert.equal(o.nationwide, 0);
+    assert.deepEqual(o.location_ids, ['rawalpindi']);
+    const save = (extra: object) =>
+      request('PUT', '/admin/outlets/outlet-1', { ...o, ...extra }, admin);
+    const listed = async (area: string) =>
+      (await request('GET', '/outlets?location=' + area)).data.some((x: any) => x.id === 'outlet-1');
+    const onHome = async (area: string) =>
+      (await request('GET', '/home?location=' + area)).data.outlets.some((x: any) => x.id === 'outlet-1');
+    assert.equal(await listed('islamabad'), false);
+
+    assert.equal((await save({ location_ids: ['rawalpindi', 'islamabad'] })).status, 200);
+    assert.equal(await listed('islamabad'), true);
+    assert.equal(await onHome('islamabad'), true);
+    assert.equal(await listed('satellite-town'), false);
+
+    assert.equal((await save({ nationwide: 1 })).status, 200);
+    for (const area of ['rawalpindi', 'satellite-town', 'islamabad'])
+      assert.equal(await listed(area), true, area);
+    // Leaving the area fields out keeps what the outlet has.
+    const { nationwide, location_ids, ...rest } = o;
+    assert.equal((await request('PUT', '/admin/outlets/outlet-1', rest, admin)).status, 200);
+    assert.equal(await listed('satellite-town'), true);
+
+    assert.equal((await save({ nationwide: 0, location_ids: [] })).status, 400);
+    assert.equal((await save({ nationwide: 0, location_ids: ['nowhere'] })).status, 400);
+    // An area an outlet still delivers to cannot be deleted.
+    await run("INSERT INTO locations VALUES('outlet-area-test','Test area',33.7,73.1)");
+    assert.equal((await save({ nationwide: 0, location_ids: ['outlet-area-test', 'rawalpindi'] })).status, 200);
+    const blocked = await request('DELETE', '/admin/locations/outlet-area-test', undefined, admin);
+    assert.equal(blocked.status, 409);
+    assert.match(blocked.data.error, /1 outlet/);
+
+    assert.equal((await save({ nationwide: 0, location_ids: ['rawalpindi'] })).status, 200);
+    assert.equal(await listed('satellite-town'), false);
+    assert.equal(await listed('rawalpindi'), true);
+    assert.equal((await request('DELETE', '/admin/locations/outlet-area-test', undefined, admin)).status, 200);
+  });
   await t.test('category settings drive the home page, usage counts and new outlets', async () => {
     const categories = async () =>
       (await request('GET', '/admin/records/categories', undefined, admin)).data;
@@ -1149,6 +1190,7 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     const created = await request('POST', '/admin/outlets', outletData, admin);
     assert.equal(created.status, 200, JSON.stringify(created.data));
     assert.equal(created.data.commission_rate, 17.5);
+    assert.equal(created.data.nationwide, 1, 'new outlets are nation wide');
     const counted = (await categories()).find((c: any) => c.name === 'Bakery');
     assert.equal(counted.outlets, 1);
     assert.equal(counted.products, 0);
