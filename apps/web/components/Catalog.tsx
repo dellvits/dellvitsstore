@@ -21,7 +21,7 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { useApp, maxQuantity, orderLimit } from './Provider';
+import { useApp, maxQuantity, orderLimit, oneArea } from './Provider';
 import { ProductCard, OutletCard, Empty, ErrorBox, Quantity, Skeleton } from './UI';
 import { PaymentLogo } from './Checkout';
 import { useData } from '@/lib/useData';
@@ -290,7 +290,7 @@ export function ProductDetail({ id }: { id: string }) {
       </div>
     );
   const line = cart.find((i) => i.product.id === p.id);
-  const wrongArea = !!area && area.id !== p.location_id;
+  const wrongArea = oneArea(area) && area.id !== p.location_id;
   const more = (related || []).filter((r) => r.id !== p.id).slice(0, 4);
   const included = listItems(p.includes);
   const excluded = listItems(p.excludes);

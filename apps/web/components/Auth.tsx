@@ -23,7 +23,7 @@ import {
   UserRound,
   Wallet,
 } from 'lucide-react';
-import { useApp } from './Provider';
+import { useApp, oneArea } from './Provider';
 import { api, money, type ApiError } from '@/lib/api';
 import { useData } from '@/lib/useData';
 import type { Order, User } from '@/lib/types';
@@ -741,7 +741,7 @@ export function Auth({ signup = false, admin = false }: { signup?: boolean; admi
               <>
                 <label>
                   Delivery area
-                  <select name="location_id" required defaultValue={area?.id || ''}>
+                  <select name="location_id" required defaultValue={oneArea(area) ? area.id : ''}>
                     <option value="" disabled>
                       Choose your area
                     </option>

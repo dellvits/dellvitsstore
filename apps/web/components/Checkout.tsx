@@ -399,7 +399,8 @@ export function Checkout() {
     if (!ready || !user) return;
     const init = user.id + ':' + (cart[0]?.product.location_id || '');
     if (initialized.current === init) return;
-    const l = locations.find((l) => l.id === cart[0]?.product.location_id) || area;
+    const l =
+      locations.find((l) => l.id === cart[0]?.product.location_id) || locations.find((l) => l.id === area?.id);
     if (l) {
       initialized.current = init;
       setLoc(l.id);

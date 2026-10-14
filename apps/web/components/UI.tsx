@@ -14,6 +14,7 @@ import {
   Clock,
   Copy,
   Crosshair,
+  Globe,
   Inbox,
   LoaderCircle,
   MapPin,
@@ -28,7 +29,7 @@ import type { Outlet, Product } from '@/lib/types';
 import { label as titleCase, money } from '@/lib/api';
 import { inRange, rangeOptions, type Range, type RangeKey } from '@/lib/range';
 import { useSettling } from '@/lib/useSettling';
-import { useApp } from './Provider';
+import { useApp, NATION_WIDE } from './Provider';
 
 export function Modal({
   open,
@@ -995,6 +996,15 @@ export function LocationPicker() {
         <input placeholder="Search areas" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
       <div className="location-list">
+        {NATION_WIDE.name.toLowerCase().includes(q.toLowerCase()) && (
+          <button onClick={() => setArea(NATION_WIDE)} className={area?.id === NATION_WIDE.id ? 'selected' : ''}>
+            <Globe size={18} />
+            <span>
+              {NATION_WIDE.name}
+              <small>Products and outlets from every area in Pakistan</small>
+            </span>
+          </button>
+        )}
         {locations
           .filter((l) => l.name.toLowerCase().includes(q.toLowerCase()))
           .map((l) => (

@@ -1142,6 +1142,14 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     assert.equal(await listed('satellite-town'), false);
     assert.equal(await listed('rawalpindi'), true);
     assert.equal((await request('DELETE', '/admin/locations/outlet-area-test', undefined, admin)).status, 200);
+
+    // The storefront's Nation Wide choice shows every area's outlets and products.
+    assert.equal(await listed('nationwide'), true);
+    assert.equal(await onHome('nationwide'), true);
+    const everywhere = (await request('GET', '/products?location=nationwide')).data;
+    assert.ok(new Set(everywhere.map((p: any) => p.location_id)).size > 1);
+    const home = (await request('GET', '/home?location=nationwide')).data;
+    assert.ok(home.nearby.length > 0);
   });
   await t.test('category settings drive the home page, usage counts and new outlets', async () => {
     const categories = async () =>

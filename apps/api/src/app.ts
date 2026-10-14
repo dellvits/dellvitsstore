@@ -473,12 +473,14 @@ app.post(
     res.json({ ok: true });
   }),
 );
+/** The storefront's "Nation Wide" choice: browse every delivery area at once. */
+const NATION_WIDE = 'nationwide';
 app.get('/api/products', async (req, res) => {
   const { location: loc, q, category, outlet } = req.query;
   let sql =
     'SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.active=1 AND o.active=1';
   const args: any[] = [];
-  if (loc) {
+  if (loc && loc !== NATION_WIDE) {
     sql += ' AND p.location_id=?';
     args.push(String(loc));
   }
@@ -513,7 +515,7 @@ const servesArea =
   '(o.nationwide=1 OR EXISTS (SELECT 1 FROM outlet_areas a WHERE a.outlet_id=o.id AND a.location_id=?))';
 app.get('/api/outlets', async (req, res) =>
   res.json(
-    (req.query.location
+    (req.query.location && req.query.location !== NATION_WIDE
       ? await all(
           publicOutlets + ` AND ${servesArea} ORDER BY featured DESC,o.name`,
           String(req.query.location),
@@ -568,17 +570,23 @@ app.post(
     res.status(201).json({ ok: true });
   }),
 );
-/** Homepage feed for one delivery area: nearby picks, home categories and outlets. */
+/** Homepage feed for one delivery area, or every area when Nation Wide: nearby picks, home categories and outlets. */
 app.get('/api/home', async (req, res) => {
   const loc = String(req.query.location || '');
-  if (!loc || !(await one('SELECT id FROM locations WHERE id=? AND deleted_at IS NULL', loc)))
+  const everywhere = loc === NATION_WIDE;
+  if (
+    !everywhere &&
+    (!loc || !(await one('SELECT id FROM locations WHERE id=? AND deleted_at IS NULL', loc)))
+  )
     return res.json({ nearby: [], categories: [], outlets: [] });
+  const area = everywhere ? [] : [loc];
   const base =
-    'SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.active=1 AND o.active=1 AND p.location_id=?';
+    'SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.active=1 AND o.active=1' +
+    (everywhere ? '' : ' AND p.location_id=?');
   res.json({
     nearby: await Promise.all(
       (
-        await all(base + ' ORDER BY p.stock>0 DESC,p.discount DESC,p.sort_order DESC LIMIT 8', loc)
+        await all(base + ' ORDER BY p.stock>0 DESC,p.discount DESC,p.sort_order DESC LIMIT 8', ...area)
       ).map(product),
     ),
     categories: (
@@ -596,7 +604,7 @@ app.get('/api/home', async (req, res) => {
                   base +
                     ' AND p.category=? ORDER BY p.stock>0 DESC,p.sort_order DESC LIMIT ' +
                     Math.min(24, Math.max(1, Math.round(Number(c.home_limit)) || 8)),
-                  loc,
+                  ...area,
                   c.name,
                 )
               ).map(product),
@@ -606,8 +614,8 @@ app.get('/api/home', async (req, res) => {
     ).filter((c) => c.products.length),
     outlets: (
       await all(
-        `SELECT o.id,o.name,o.location_id,o.address,o.phone,o.image,o.category,${outletPublicColumns},(SELECT COUNT(*) FROM products p WHERE p.outlet_id=o.id AND p.active=1) products,(SELECT MIN(delivery_minutes) FROM products p WHERE p.outlet_id=o.id AND p.active=1) delivery_minutes FROM outlets o LEFT JOIN outlet_settings s ON s.outlet_id=o.id WHERE o.active=1 AND ${servesArea} ORDER BY featured DESC,products DESC`,
-        loc,
+        `SELECT o.id,o.name,o.location_id,o.address,o.phone,o.image,o.category,${outletPublicColumns},(SELECT COUNT(*) FROM products p WHERE p.outlet_id=o.id AND p.active=1) products,(SELECT MIN(delivery_minutes) FROM products p WHERE p.outlet_id=o.id AND p.active=1) delivery_minutes FROM outlets o LEFT JOIN outlet_settings s ON s.outlet_id=o.id WHERE o.active=1${everywhere ? '' : ' AND ' + servesArea} ORDER BY featured DESC,products DESC`,
+        ...area,
       )
     ).map(withOpen),
   });

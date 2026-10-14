@@ -58,6 +58,10 @@ type Context = {
 export type Theme = 'system' | 'light' | 'dark';
 const State = createContext<Context | null>(null);
 export const useApp = () => useContext(State)!;
+/** The default storefront choice: products and outlets from every delivery area in Pakistan. */
+export const NATION_WIDE: Location = { id: 'nationwide', name: 'Nation Wide', lat: 30.3753, lng: 69.3451 };
+/** Whether the visitor browses one delivery area rather than the whole country. */
+export const oneArea = (a: Location | null): a is Location => !!a && a.id !== NATION_WIDE.id;
 /** Most of one product a single order may hold; carts saved before the limit existed use 99. */
 export const orderLimit = (p: Product) => Math.min(p.max_per_order ?? 99, 99);
 /** The highest quantity the cart allows right now: the order limit or the stock, whichever is lower. */
@@ -160,12 +164,10 @@ export default function Provider({ children }: { children: ReactNode }) {
       .then(([s, l]) => {
         setUser(s.user);
         setLocations(l);
-        const saved = l.find((a) => a.id === read('dellvit-area'));
-        const account = l.find((a) => a.id === s.user?.location_id) || null;
-        if (saved) {
-          setAreaState(saved);
-          setAreaStatus('ready');
-        } else detectWith(l, account);
+        // Visitors start on Nation Wide until they choose an area themselves.
+        const id = read('dellvit-area');
+        setAreaState(l.find((a) => a.id === id) || NATION_WIDE);
+        setAreaStatus('ready');
       })
       .catch((e) => {
         // The maintenance page explains itself; no message on top of it.
@@ -174,7 +176,7 @@ export default function Provider({ children }: { children: ReactNode }) {
       })
       .finally(() => setReady(true));
     return () => window.removeEventListener('pointerdown', unlock);
-  }, [detectWith, notice]);
+  }, [notice]);
 
   useEffect(() => {
     // Unchanged answers keep the objects already in state, so these checks do not re-render the app.
@@ -185,7 +187,7 @@ export default function Provider({ children }: { children: ReactNode }) {
         .then((l) => {
           setLocations((old) => keep(old, l));
           setLocationsFailed(false);
-          setAreaState((a) => (a ? keep(a, l.find((x) => x.id === a.id) || null) : a));
+          setAreaState((a) => (oneArea(a) ? keep(a, l.find((x) => x.id === a.id) || NATION_WIDE) : a));
         })
         .catch(() => {});
       api<{ user: User | null }>('/session')
@@ -261,7 +263,7 @@ export default function Provider({ children }: { children: ReactNode }) {
       notice('Your cart has items from another outlet. Clear it to order from here.');
       return false;
     }
-    if (area && p.location_id !== area.id) {
+    if (oneArea(area) && p.location_id !== area.id) {
       notice('This item is not available in your selected area.');
       openLocation(true);
       return false;
