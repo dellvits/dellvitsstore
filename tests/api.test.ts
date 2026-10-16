@@ -1154,10 +1154,15 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
   await t.test('phones register for push notifications and stop on sign-out', async () => {
     const token = 'fcm-test-token-' + 'x'.repeat(40);
     const owner = async () => (await one('SELECT user_id FROM device_tokens WHERE token=?', token))?.user_id;
-    assert.equal((await request('POST', '/push/device', { token })).status, 401);
+    // A phone used without signing in is kept with no account.
+    assert.equal((await request('POST', '/push/device', { token })).status, 200);
+    assert.equal(await owner(), null);
     assert.equal((await request('POST', '/push/device', { token: 'short' }, customer)).status, 400);
     assert.equal((await request('POST', '/push/device', { token }, customer)).status, 200);
     const customerId = (await request('GET', '/session', undefined, customer)).data.user.id;
+    assert.equal(await owner(), customerId);
+    // Without a sign-in nobody can take a phone away from its account.
+    assert.equal((await request('POST', '/push/device', { token })).status, 200);
     assert.equal(await owner(), customerId);
     // The same phone signing in as a rider now belongs to the rider.
     assert.equal((await request('POST', '/push/device', { token }, rider)).status, 200);
@@ -1262,10 +1267,20 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     assert.equal(sent.recipients, riders.data.recipients);
     assert.ok(list.audience.customer.people > 0 && list.audience.rider.people > 0 && list.audience.outlet.people > 0);
 
-    // Withdrawing takes it out of every inbox, once.
-    assert.equal((await request('DELETE', '/admin/broadcasts/' + id, undefined, admin)).status, 200);
-    assert.equal((await inbox(rider)).some((n) => n.title === 'New areas'), false);
-    assert.equal((await request('DELETE', '/admin/broadcasts/' + id, undefined, admin)).status, 404);
+    // People who are not signed in see announcements for customers and everyone, not riders'.
+    const open = (await request('GET', '/announcements')).data as any[];
+    assert.ok(open.some((b) => b.title === 'Eid timings' && b.type === 'update'));
+    assert.equal(open.some((b) => b.id === id), false);
+
+    // Deleting takes them out of the list, every inbox and the public list.
+    const eid = list.items.find((b: any) => b.title === 'Eid timings').id;
+    const del = await request('POST', '/admin/broadcasts/delete', { ids: [id, eid] }, admin);
+    assert.equal(del.status, 200, JSON.stringify(del.data));
+    assert.equal(del.data.deleted, 2);
+    assert.equal((await inbox(rider)).some((n) => n.title === 'New areas' || n.title === 'Eid timings'), false);
+    assert.equal((await request('GET', '/announcements')).data.some((b: any) => b.id === eid), false);
+    assert.equal((await request('GET', '/admin/broadcasts', undefined, admin)).data.items.some((b: any) => b.id === id), false);
+    assert.equal((await request('POST', '/admin/broadcasts/delete', { ids: [id] }, admin)).status, 404);
     // Announcements can be silenced like any other kind.
     assert.equal((await request('PUT', '/notifications/preferences', { muted: ['update'] }, rider)).status, 200);
     assert.equal((await request('PUT', '/notifications/preferences', { muted: [] }, rider)).status, 200);

@@ -158,7 +158,7 @@ const upload = multer({
   // Leave room for multipart framing under Vercel Functions' request body limit.
   limits: { fileSize: 4 * 1024 * 1024, files: 1 },
 });
-installNotifications(app);
+installNotifications(app, { writeLimit });
 installBroadcasts(app);
 installAccounts(app, authLimit);
 installRiders(app);

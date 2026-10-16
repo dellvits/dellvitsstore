@@ -174,7 +174,7 @@ export function NotificationSettings({ full = false }: { full?: boolean }) {
 }
 
 export function NotificationBell() {
-  const { notifications, unread, refreshNotifications, user } = useApp();
+  const { notifications, unread, refreshNotifications, readAnnouncements, user } = useApp();
   const [open, setOpen] = useState(false);
   const [settings, setSettings] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -192,7 +192,7 @@ export function NotificationBell() {
       document.removeEventListener('keydown', esc);
     };
   }, [open]);
-  if (!user) return null;
+  // Visitors who are not signed in see Dellvit's announcements; read ones are kept in this browser.
   return (
     <div className="bell" ref={ref}>
       <button
@@ -217,20 +217,23 @@ export function NotificationBell() {
                 aria-label="Mark all as read"
                 disabled={!unread}
                 onClick={async () => {
+                  if (!user) return readAnnouncements('all');
                   await api('/notifications/read-all', { method: 'POST' });
                   refreshNotifications();
                 }}
               >
                 <CheckCheck size={16} />
               </button>
-              <button
-                className={'icon-action' + (settings ? ' on' : '')}
-                title="Notification settings"
-                aria-label="Notification settings"
-                onClick={() => setSettings(!settings)}
-              >
-                <Settings2 size={16} />
-              </button>
+              {user && (
+                <button
+                  className={'icon-action' + (settings ? ' on' : '')}
+                  title="Notification settings"
+                  aria-label="Notification settings"
+                  onClick={() => setSettings(!settings)}
+                >
+                  <Settings2 size={16} />
+                </button>
+              )}
             </div>
           </div>
           {settings && <NotificationSettings />}
@@ -247,8 +250,11 @@ export function NotificationBell() {
                   className={'n-item' + (n.read ? '' : ' unread')}
                   onClick={async () => {
                     setOpen(false);
-                    if (!n.read) await mark(n.id, true).catch(() => {});
-                    refreshNotifications();
+                    if (!user) readAnnouncements([n.id]);
+                    else {
+                      if (!n.read) await mark(n.id, true).catch(() => {});
+                      refreshNotifications();
+                    }
                     if (n.link) router.push(n.link);
                   }}
                 >
@@ -262,8 +268,8 @@ export function NotificationBell() {
               ))
             )}
           </div>
-          <Link href={inboxPath(user)} className="n-foot" onClick={() => setOpen(false)}>
-            View all notifications
+          <Link href={user ? inboxPath(user) : '/login'} className="n-foot" onClick={() => setOpen(false)}>
+            {user ? 'View all notifications' : 'Log in for your order updates'}
           </Link>
         </div>
       )}

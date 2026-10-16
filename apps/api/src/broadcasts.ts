@@ -21,13 +21,26 @@ const reachable = 'u.active=1 AND u.deleted_at IS NULL';
  * of them. Each one reaches every inbox at once with a single insert, then goes out as browser
  * pop-ups and to the app's notification centre on each phone. People who switched off "Dellvit
  * updates" still find it in their inbox, without the pop-up.
+ * Those meant for customers (and so for everyone) also reach people who are not signed in: the
+ * website and app read them from /api/announcements, and phones without an account get the push.
+ * Riders' and outlets' announcements need their sign-in.
  * The routes sit under /api/admin/broadcasts, which the Messages permission opens (platform.ts).
  */
 export function installBroadcasts(app: Express) {
   const admin = requireRole('admin');
 
+  /** Announcements for people who are not signed in: the ones meant for customers. */
+  app.get('/api/announcements', async (_req, res) => {
+    const rows = await all(
+      `SELECT id,title,body,link,created_at FROM broadcasts
+       WHERE withdrawn_at IS NULL AND audience LIKE '%"customer"%' ORDER BY created_at DESC LIMIT 30`,
+    );
+    res.setHeader('Cache-Control', 'public, max-age=30');
+    res.json(rows.map((b) => ({ ...b, type: 'update' })));
+  });
+
   app.get('/api/admin/broadcasts', admin, async (_req, res) => {
-    const [items, audience] = await Promise.all([
+    const [items, audience, guests] = await Promise.all([
       all(
         `SELECT b.*,u.name sent_by_name,
           (SELECT COUNT(*) FROM notifications n WHERE n.broadcast_id=b.id AND n.read=1) opened
@@ -39,6 +52,7 @@ export function installBroadcasts(app: Express) {
          FROM users u WHERE ${reachable} AND u.role IN (${roleList(broadcastRoles)}) GROUP BY u.role`,
         ...broadcastRoles,
       ),
+      one('SELECT COUNT(*) phones FROM device_tokens WHERE user_id IS NULL'),
     ]);
     res.json({
       items: items.map((b) => ({ ...b, audience: JSON.parse(b.audience) })),
@@ -48,6 +62,8 @@ export function installBroadcasts(app: Express) {
           return [r, { people: Number(row?.people || 0), phones: Number(row?.phones || 0) }];
         }),
       ),
+      // Phones using the app without signing in; they get announcements for customers.
+      guest_phones: Number(guests?.phones || 0),
       phone_push: pushConfigured(),
     });
   });
@@ -112,7 +128,8 @@ export function installBroadcasts(app: Express) {
           const [phones, browsers] = await Promise.all([
             all(
               `SELECT d.token,d.user_id FROM device_tokens d JOIN users u ON u.id=d.user_id
-               WHERE ${reachable} AND u.role IN (${roleList(roles)}) AND u.notify_muted NOT LIKE ?`,
+               WHERE ${reachable} AND u.role IN (${roleList(roles)}) AND u.notify_muted NOT LIKE ?
+               ${roles.includes('customer') ? 'UNION ALL SELECT token,NULL FROM device_tokens WHERE user_id IS NULL' : ''}`,
               ...roles,
               muted,
             ),
@@ -127,7 +144,14 @@ export function installBroadcasts(app: Express) {
             sendEach(
               phones.map((d) => ({
                 token: d.token,
-                message: { id: `${p.id}:${d.user_id}`, type: 'update', title: p.title, body: p.body, link: p.link },
+                // A phone without an account opens the announcement itself, by its own id.
+                message: {
+                  id: d.user_id ? `${p.id}:${d.user_id}` : p.id,
+                  type: 'update',
+                  title: p.title,
+                  body: p.body,
+                  link: p.link,
+                },
               })),
             ).catch((error) => {
               console.error('Phone notifications failed:', error);
@@ -154,20 +178,20 @@ export function installBroadcasts(app: Express) {
     }),
   );
 
-  /** Takes an announcement back out of every inbox. Pop-ups already shown cannot be recalled. */
-  app.delete(
-    '/api/admin/broadcasts/:id',
+  /**
+   * Deletes announcements: from this list, from every inbox and from what people who are not
+   * signed in see. Notifications already shown on phones cannot be recalled.
+   */
+  app.post(
+    '/api/admin/broadcasts/delete',
     admin,
     atomicRoute(async (req: AuthRequest, res) => {
-      const id = String(req.params.id);
-      const { changes } = await run(
-        'UPDATE broadcasts SET withdrawn_at=? WHERE id=? AND withdrawn_at IS NULL',
-        new Date().toISOString(),
-        id,
-      );
-      if (!changes) return res.status(404).json({ error: 'This announcement was not found or is already withdrawn.' });
-      const { changes: removed } = await run('DELETE FROM notifications WHERE broadcast_id=?', id);
-      res.json({ ok: true, removed });
+      const ids = [...new Set(z.object({ ids: z.array(z.string().min(1).max(100)).min(1).max(500) }).parse(req.body).ids)];
+      const marks = roleList(ids);
+      const { changes: removed } = await run(`DELETE FROM notifications WHERE broadcast_id IN (${marks})`, ...ids);
+      const { changes: deleted } = await run(`DELETE FROM broadcasts WHERE id IN (${marks})`, ...ids);
+      if (!deleted) return res.status(404).json({ error: 'These announcements were already deleted.' });
+      res.json({ ok: true, deleted, removed });
     }),
   );
 }

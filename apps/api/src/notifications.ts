@@ -1,5 +1,5 @@
 import { atomicRoute } from './atomic-route.js';
-import type { Express } from 'express';
+import type { Express, RequestHandler } from 'express';
 import { randomUUID } from 'node:crypto';
 import webpush from 'web-push';
 import { z } from 'zod';
@@ -126,7 +126,7 @@ export async function outletUser(outletId: string) {
     string | undefined;
 }
 
-export function installNotifications(app: Express) {
+export function installNotifications(app: Express, options: { writeLimit: RequestHandler }) {
   const signedIn = requireRole('customer', 'admin', 'outlet', 'rider');
   app.get('/api/notifications', signedIn, async (req: AuthRequest, res) => {
     const q = z
@@ -282,24 +282,39 @@ export function installNotifications(app: Express) {
       res.json({ ok: true });
     }),
   );
-  /** The mobile app registers the phone's Firebase token after signing in, and again when it changes. */
+  /**
+   * The mobile app registers the phone's Firebase token when it starts, and again when it changes.
+   * Signed in, the phone gets the account's notifications; signed out, it is kept with no
+   * account and gets announcements meant for everyone and for customers.
+   */
   app.post(
     '/api/push/device',
-    signedIn,
+    options.writeLimit,
     atomicRoute(async (req: AuthRequest, res) => {
       const p = z
         .object({ token: z.string().trim().min(20).max(4096), platform: z.enum(['android']).default('android') })
         .parse(req.body);
       const at = new Date().toISOString();
-      // One phone, one account: signing in as someone else moves the phone to them.
-      await run(
-        'INSERT INTO device_tokens(token,user_id,platform,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(token) DO UPDATE SET user_id=excluded.user_id,platform=excluded.platform,updated_at=excluded.updated_at',
-        p.token,
-        req.user!.id,
-        p.platform,
-        at,
-        at,
-      );
+      if (req.user)
+        // One phone, one account: signing in as someone else moves the phone to them.
+        await run(
+          'INSERT INTO device_tokens(token,user_id,platform,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(token) DO UPDATE SET user_id=excluded.user_id,platform=excluded.platform,updated_at=excluded.updated_at',
+          p.token,
+          req.user.id,
+          p.platform,
+          at,
+          at,
+        );
+      else
+        // Without a sign-in a phone is never taken from the account that holds it; signing out
+        // removes it from the account first (DELETE below).
+        await run(
+          'INSERT INTO device_tokens(token,user_id,platform,created_at,updated_at) VALUES(?,NULL,?,?,?) ON CONFLICT(token) DO UPDATE SET updated_at=excluded.updated_at WHERE device_tokens.user_id IS NULL',
+          p.token,
+          p.platform,
+          at,
+          at,
+        );
       res.json({ ok: true });
     }),
   );

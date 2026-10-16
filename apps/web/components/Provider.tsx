@@ -49,6 +49,8 @@ type Context = {
   /** Support messages waiting to be read, for the header's message icon. */
   supportUnread: number;
   refreshNotifications: () => void;
+  /** Marks announcements as read for a visitor who is not signed in; kept in this browser. */
+  readAnnouncements: (ids: string[] | 'all') => void;
   sound: boolean;
   setSound: (v: boolean) => void;
   /** The colour theme: the device's own setting, or light or dark chosen here. */
@@ -86,6 +88,16 @@ const write = (k: string, v: string) => {
   try {
     localStorage.setItem(k, v);
   } catch {}
+};
+/** Announcements a visitor who is not signed in has already read, in this browser. */
+const readKey = 'dellvit-read-announcements';
+const readIds = (): string[] => {
+  try {
+    const v = JSON.parse(read(readKey) || '[]');
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
 };
 
 export default function Provider({ children }: { children: ReactNode }) {
@@ -208,7 +220,22 @@ export default function Provider({ children }: { children: ReactNode }) {
   }, []);
 
   const refreshNotifications = useCallback(() => {
-    if (!user) return;
+    if (!user) {
+      // Visitors who are not signed in get the announcements meant for customers and everyone.
+      api<AppNotification[]>('/announcements')
+        .then((list) => {
+          const done = new Set(readIds());
+          const items = list.map((n) => ({ ...n, read: done.has(n.id) ? 1 : 0 }));
+          setNotifications(items.slice(0, 8));
+          setUnread(items.filter((n) => !n.read).length);
+          const known = seen.current;
+          const fresh = known ? items.filter((n) => !n.read && !known.has(n.id)) : [];
+          seen.current = new Set([...(known || []), ...items.map((n) => n.id)]);
+          for (const n of fresh.slice(0, 3).reverse()) push({ title: n.title, body: n.body, link: n.link, kind: 'alert' });
+        })
+        .catch(() => {});
+      return;
+    }
     api<{ items: AppNotification[]; unread: number; support_unread?: number }>('/notifications?limit=8')
       .then((d) => {
         setNotifications(d.items);
@@ -234,9 +261,9 @@ export default function Provider({ children }: { children: ReactNode }) {
     setNotifications([]);
     setUnread(0);
     setSupportUnread(0);
-    if (!user) return;
     refreshNotifications();
-    const timer = setInterval(refreshNotifications, 12000);
+    // Announcements change rarely; an account's own notifications are checked more often.
+    const timer = setInterval(refreshNotifications, user ? 12000 : 60000);
     window.addEventListener('focus', refreshNotifications);
     return () => {
       clearInterval(timer);
@@ -340,6 +367,12 @@ export default function Provider({ children }: { children: ReactNode }) {
         unread,
         supportUnread,
         refreshNotifications,
+        readAnnouncements: (ids) => {
+          const all = ids === 'all' ? notifications.map((n) => n.id) : ids;
+          // The newest few hundred are enough to remember.
+          write(readKey, JSON.stringify([...new Set([...all, ...readIds()])].slice(0, 300)));
+          refreshNotifications();
+        },
         theme,
         setTheme: (t) => {
           setThemeState(t);

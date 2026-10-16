@@ -1,6 +1,6 @@
 'use client';
 import { useState, type FormEvent } from 'react';
-import { Bike, Copy, Eye, Megaphone, Plus, Send, Smartphone, Store, Undo2, UserRound, Users } from 'lucide-react';
+import { Bike, Copy, Eye, Megaphone, Plus, Send, Smartphone, Store, Trash2, UserRound, Users } from 'lucide-react';
 import { ago, api, date } from '@/lib/api';
 import { useData } from '@/lib/useData';
 import { inRange, useRange } from '@/lib/range';
@@ -26,6 +26,7 @@ type Broadcast = {
 type Data = {
   items: Broadcast[];
   audience: Record<Role, { people: number; phones: number }>;
+  guest_phones: number;
   phone_push: boolean;
 };
 type Draft = { id: string; title: string; body: string; link: string; audience: Role[] };
@@ -51,7 +52,8 @@ export function BroadcastManager() {
   const { range, setRange, label: rangeText } = useRange('30d');
   const [draft, setDraft] = useState<Draft | null>(null);
   const [confirm, setConfirm] = useState(false);
-  const [withdraw, setWithdraw] = useState<Broadcast | null>(null);
+  // The announcements about to be deleted: one row, or every one in the list.
+  const [remove, setRemove] = useState<Broadcast[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState('');
   const list = data?.items || [];
@@ -62,6 +64,7 @@ export function BroadcastManager() {
   const audience = data?.audience;
   const everyone = audience ? roles.reduce((s, r) => s + audience[r.key].people, 0) : 0;
   const withApp = audience ? roles.reduce((s, r) => s + audience[r.key].phones, 0) : 0;
+  const guestPhones = data?.guest_phones || 0;
   const people = (d: Draft) => (audience ? d.audience.reduce((s, r) => s + audience[r].people, 0) : 0);
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setDraft((d) => (d ? { ...d, [k]: v } : d));
   const statsBusy = loading && !data;
@@ -129,7 +132,7 @@ export function BroadcastManager() {
           icon={<Smartphone size={20} />}
           label="Using the app"
           value={count(withApp)}
-          hint={`of ${count(everyone)} customers, riders and outlets`}
+          hint={`of ${count(everyone)} accounts${guestPhones ? ` · ${count(guestPhones)} more phones not signed in` : ''}`}
           tone="purple"
           loading={statsBusy}
         />
@@ -150,9 +153,16 @@ export function BroadcastManager() {
         searchPlaceholder="Search announcements"
         empty="No announcements yet. Send one to tell people about something new."
         toolbar={
-          <button className="button" onClick={() => start(blank())}>
-            <Plus size={16} /> New announcement
-          </button>
+          <>
+            {list.length > 1 && (
+              <button className="button ghost" onClick={() => setRemove(list)}>
+                <Trash2 size={16} /> Delete all
+              </button>
+            )}
+            <button className="button" onClick={() => start(blank())}>
+              <Plus size={16} /> New announcement
+            </button>
+          </>
         }
         filters={[
           {
@@ -160,15 +170,6 @@ export function BroadcastManager() {
             label: 'Audiences',
             options: roles.map((r) => ({ value: r.key, label: r.title })),
             test: (b, v) => b.audience.includes(v as Role),
-          },
-          {
-            key: 'state',
-            label: 'States',
-            options: [
-              { value: 'sent', label: 'Sent' },
-              { value: 'withdrawn', label: 'Withdrawn' },
-            ],
-            test: (b, v) => (v === 'withdrawn') === !!b.withdrawn_at,
           },
         ]}
         columns={[
@@ -242,11 +243,9 @@ export function BroadcastManager() {
             >
               <Copy size={16} />
             </IconAction>
-            {!b.withdrawn_at && (
-              <IconAction label="Withdraw from inboxes" tone="danger" onClick={() => setWithdraw(b)}>
-                <Undo2 size={16} />
-              </IconAction>
-            )}
+            <IconAction label="Delete" tone="danger" onClick={() => setRemove([b])}>
+              <Trash2 size={16} />
+            </IconAction>
           </>
         )}
       />
@@ -283,6 +282,7 @@ export function BroadcastManager() {
                           <small>
                             {audience ? `${count(audience[r.key].people)} · ${count(audience[r.key].phones)} with the app` : '…'}
                           </small>
+                          {r.key === 'customer' && <small>Also people not signed in</small>}
                         </button>
                       );
                     })}
@@ -348,24 +348,25 @@ export function BroadcastManager() {
         {draft && (
           <>
             “{draft.title}” goes to {count(people(draft))} {audienceText(draft.audience).toLowerCase()} at once. You can take it
-            out of their inboxes later, but pop-ups already shown on phones stay.
+            out of their inboxes later by deleting it, but pop-ups already shown on phones stay.
+            {draft.audience.includes('customer') && ' People using the website or app without signing in see it too.'}
           </>
         )}
       </Confirm>
       <Confirm
-        open={!!withdraw}
-        title="Withdraw announcement?"
-        confirm="Withdraw"
+        open={!!remove}
+        title={remove?.length === 1 ? 'Delete announcement?' : `Delete all ${remove?.length} announcements?`}
+        confirm="Delete"
         danger
         busy={busy}
-        onClose={() => setWithdraw(null)}
+        onClose={() => !busy && setRemove(null)}
         onConfirm={async () => {
           setBusy(true);
           try {
-            await api('/admin/broadcasts/' + withdraw!.id, { method: 'DELETE' });
-            setWithdraw(null);
+            await api('/admin/broadcasts/delete', { method: 'POST', body: JSON.stringify({ ids: remove!.map((b) => b.id) }) });
+            setRemove(null);
             refresh();
-            notice('Announcement withdrawn from every inbox.');
+            notice(remove!.length === 1 ? 'Announcement deleted.' : 'Announcements deleted.');
           } catch (e) {
             notice((e as Error).message);
           } finally {
@@ -373,8 +374,9 @@ export function BroadcastManager() {
           }
         }}
       >
-        “{withdraw?.title}” will be removed from {count(withdraw?.recipients || 0)} inboxes on the website and in the app.
-        Notifications already shown on phones cannot be taken back.
+        {remove?.length === 1 ? `“${remove[0].title}”` : 'They'} will be removed from this list and from{' '}
+        {count((remove || []).reduce((s, b) => s + b.recipients, 0))} inboxes on the website and in the app. Notifications already
+        shown on phones cannot be taken back.
       </Confirm>
     </div>
   );
