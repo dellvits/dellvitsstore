@@ -663,6 +663,7 @@ export function installPlatform(app: Express) {
                 staff: 'staff',
                 'area-settings': 'locations',
                 support: 'messages',
+                broadcasts: 'messages',
                 'email-settings': 'settings',
                 'rider-controls': 'riders',
                 tracking: 'riders',

@@ -1201,6 +1201,75 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     assert.equal(await shown('', customer), null);
     assert.equal((await request('DELETE', '/admin/records/popups/popup-test', undefined, admin)).status, 200);
   });
+  await t.test('the home page mixes products at random, the same way for one visit', async () => {
+    const home = async (seed: string) => (await request('GET', '/home?location=nationwide&seed=' + seed)).data;
+    const ids = (list: any[]) => list.map((p) => p.id).join();
+    const first = await home('visit1');
+    assert.equal(ids(first.nearby), ids((await home('visit1')).nearby), 'one visit keeps its order');
+    const orders = new Set<string>();
+    for (const seed of ['a1', 'b2', 'c3', 'd4', 'e5', 'f6']) orders.add(ids((await home(seed)).nearby));
+    assert.ok(orders.size > 1, 'other visits get another mix');
+    // Neighbours come from different outlets while there are several to choose from.
+    const outlets = new Set(first.nearby.map((p: any) => p.outlet_id));
+    if (outlets.size > 1) assert.notEqual(first.nearby[0].outlet_id, first.nearby[1].outlet_id);
+    assert.ok(first.deals.every((p: any) => p.discount > 0 && p.stock > 0));
+    assert.equal((await request('GET', '/home?location=nationwide')).headers['cache-control'], 'no-store');
+    assert.equal((await request('GET', '/home?location=nationwide&seed=bad;seed')).status, 200);
+
+    const { spreadByOutlet } = await import('../apps/api/src/app.js');
+    const p = (id: string, outlet_id: string, stock = 5) => ({ id, outlet_id, stock });
+    assert.deepEqual(
+      spreadByOutlet([p('a1', 'A'), p('a2', 'A'), p('a3', 'A', 0), p('b1', 'B'), p('c1', 'C')], 10).map((x) => x.id),
+      ['a1', 'b1', 'c1', 'a2', 'a3'],
+      'one outlet at a time, sold out last',
+    );
+  });
+  await t.test('administrators send announcements to customers, riders and outlets', async () => {
+    const send = (body: object) =>
+      request('POST', '/admin/broadcasts', { id: randomUUID(), title: 'New areas', body: 'We now deliver to Bahria Town.', ...body }, admin);
+    const inbox = async (token: string) =>
+      (await request('GET', '/notifications?type=update', undefined, token)).data.items as any[];
+    assert.equal((await send({ audience: [] })).status, 400);
+    assert.equal((await send({ audience: ['admin'] })).status, 400);
+    assert.equal((await send({ audience: ['rider'], link: 'javascript:alert(1)' })).status, 400);
+    assert.equal((await send({ audience: ['rider'], title: ' ' })).status, 400);
+    assert.equal((await request('POST', '/admin/broadcasts', { id: randomUUID(), title: 'x', audience: ['rider'] }, customer)).status, 403);
+
+    const id = randomUUID();
+    const riders = await send({ id, audience: ['rider'], link: '/support' });
+    assert.equal(riders.status, 201, JSON.stringify(riders.data));
+    assert.ok(riders.data.recipients > 0);
+    const [riderCopy] = await inbox(rider);
+    assert.equal(riderCopy.title, 'New areas');
+    assert.equal(riderCopy.link, '/support');
+    assert.equal((await inbox(customer)).length, 0, 'customers were not chosen');
+    assert.equal((await inbox(outlet)).length, 0, 'outlets were not chosen');
+    // Pressing Send again does not send it twice.
+    assert.equal((await send({ id, audience: ['rider'] })).data.repeated, true);
+    assert.equal((await inbox(rider)).length, 1);
+
+    const everyone = await send({ title: 'Eid timings', audience: ['customer', 'rider', 'outlet'] });
+    assert.equal(everyone.status, 201);
+    for (const token of [customer, rider, outlet]) assert.ok((await inbox(token)).some((n) => n.title === 'Eid timings'));
+    assert.equal((await inbox(admin)).length, 0, 'administrators are not sent announcements');
+
+    // Read counts follow the copies people open.
+    assert.equal((await request('PATCH', '/notifications/' + riderCopy.id, { read: true }, rider)).status, 200);
+    const list = (await request('GET', '/admin/broadcasts', undefined, admin)).data;
+    const sent = list.items.find((b: any) => b.id === id);
+    assert.deepEqual(sent.audience, ['rider']);
+    assert.equal(sent.opened, 1);
+    assert.equal(sent.recipients, riders.data.recipients);
+    assert.ok(list.audience.customer.people > 0 && list.audience.rider.people > 0 && list.audience.outlet.people > 0);
+
+    // Withdrawing takes it out of every inbox, once.
+    assert.equal((await request('DELETE', '/admin/broadcasts/' + id, undefined, admin)).status, 200);
+    assert.equal((await inbox(rider)).some((n) => n.title === 'New areas'), false);
+    assert.equal((await request('DELETE', '/admin/broadcasts/' + id, undefined, admin)).status, 404);
+    // Announcements can be silenced like any other kind.
+    assert.equal((await request('PUT', '/notifications/preferences', { muted: ['update'] }, rider)).status, 200);
+    assert.equal((await request('PUT', '/notifications/preferences', { muted: [] }, rider)).status, 200);
+  });
   await t.test('category settings drive the home page, usage counts and new outlets', async () => {
     const categories = async () =>
       (await request('GET', '/admin/records/categories', undefined, admin)).data;

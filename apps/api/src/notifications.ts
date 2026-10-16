@@ -21,8 +21,41 @@ async function vapidKeys() {
   };
 }
 export type Message = { type: string; title: string; body?: string; link?: string };
-/** The kinds of notification an account can silence. */
-export const notificationTypes = ['order', 'delivery', 'payment', 'earning', 'payout', 'message'] as const;
+/** The kinds of notification an account can silence. "update" is an administrator's announcement. */
+export const notificationTypes = ['order', 'delivery', 'payment', 'earning', 'payout', 'message', 'update'] as const;
+
+type BrowserPush = { endpoint: string; p256dh: string; auth: string; payload: object };
+/**
+ * Browser pop-ups, 50 at a time. Subscriptions the browser has dropped are forgotten.
+ * Returns how many browsers took the pop-up.
+ */
+export async function sendBrowserPushes(pushes: BrowserPush[]) {
+  if (!pushes.length) return 0;
+  const keys = await vapidKeys();
+  webpush.setVapidDetails(
+    process.env.VAPID_SUBJECT || 'mailto:dellvitsupport@gmail.com',
+    keys.publicKey,
+    keys.privateKey,
+  );
+  let sent = 0;
+  for (let i = 0; i < pushes.length; i += 50)
+    await Promise.all(
+      pushes.slice(i, i + 50).map(async (p) => {
+        try {
+          await webpush.sendNotification(
+            { endpoint: p.endpoint, keys: { p256dh: p.p256dh, auth: p.auth } },
+            JSON.stringify(p.payload),
+            { TTL: 3600, timeout: 5000 },
+          );
+          sent++;
+        } catch (error: any) {
+          if (error?.statusCode === 404 || error?.statusCode === 410)
+            await run('DELETE FROM push_subscriptions WHERE endpoint=?', p.endpoint);
+        }
+      }),
+    );
+  return sent;
+}
 
 export async function notify(userIds: (string | null | undefined)[], m: Message) {
   const ids = [...new Set(userIds.filter(Boolean) as string[])];
@@ -41,32 +74,20 @@ export async function notify(userIds: (string | null | undefined)[], m: Message)
     );
     if (process.env.NODE_ENV === 'test') continue;
     await afterCommit(async () => {
-      const keys = await vapidKeys();
-      webpush.setVapidDetails(
-        process.env.VAPID_SUBJECT || 'mailto:dellvitsupport@gmail.com',
-        keys.publicKey,
-        keys.privateKey,
-      );
       // Types the account has silenced stay in its inbox but send no pop-up.
-      for (const subscription of await all(
+      const subscriptions = await all(
         'SELECT s.* FROM push_subscriptions s JOIN users u ON u.id=s.user_id WHERE s.user_id=? AND u.notify_muted NOT LIKE ?',
         uid,
         `%"${m.type}"%`,
-      )) {
-        try {
-          await webpush.sendNotification(
-            {
-              endpoint: subscription.endpoint,
-              keys: { p256dh: subscription.p256dh, auth: subscription.auth },
-            },
-            JSON.stringify({ id, title: m.title, body: m.body || '', link: m.link || '/' }),
-            { TTL: 3600, timeout: 5000 },
-          );
-        } catch (error: any) {
-          if (error?.statusCode === 404 || error?.statusCode === 410)
-            await run('DELETE FROM push_subscriptions WHERE endpoint=?', subscription.endpoint);
-        }
-      }
+      );
+      await sendBrowserPushes(
+        subscriptions.map((s) => ({
+          endpoint: s.endpoint,
+          p256dh: s.p256dh,
+          auth: s.auth,
+          payload: { id, title: m.title, body: m.body || '', link: m.link || '/' },
+        })),
+      );
     });
     // The mobile app: the same notification in each signed-in phone's notification centre.
     await afterCommit(async () => {

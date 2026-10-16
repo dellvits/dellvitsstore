@@ -37,6 +37,7 @@ import {
   MessageSquareShare,
   Headphones,
   Bell,
+  BellRing,
   Package,
   PackageX,
   Plus,
@@ -100,6 +101,7 @@ import { ContentManager } from './ContentManager';
 import { AdManager } from './AdManager';
 import { CouponManager } from './CouponManager';
 import { PopupManager } from './PopupManager';
+import { BroadcastManager } from './BroadcastManager';
 import { MessageButton, SupportChat, SupportInbox } from './Support';
 import { AdminOverview, OutletDashboard, RiderDashboard } from './Dashboards';
 import { AdminCash, AdminPayouts, RiderCash, RiderEarnings, RiderStatementModal } from './Finance';
@@ -125,6 +127,7 @@ const adminNav: Nav[] = [
   { key: 'ads', title: 'Advertising', icon: Megaphone, group: 'Marketing' },
   { key: 'popups', title: 'App pop-ups', icon: MessageSquareShare, group: 'Marketing', permission: 'ads' },
   { key: 'coupons', title: 'Coupons', icon: Ticket, group: 'Marketing' },
+  { key: 'broadcasts', title: 'Announcements', icon: BellRing, group: 'Marketing', permission: 'messages' },
   { key: 'messages', title: 'Messages', icon: Mail, group: 'Marketing' },
   { key: 'staff', title: 'Admin access', icon: ShieldCheck, group: 'System' },
   { key: 'audit', title: 'Activity log', icon: History, group: 'System' },
@@ -336,6 +339,8 @@ export default function Portal({ role }: { role: PortalRole }) {
             <AdManager />
           ) : tab === 'popups' ? (
             <PopupManager />
+          ) : tab === 'broadcasts' ? (
+            <BroadcastManager />
           ) : tab === 'messages' ? (
             <SupportInbox />
           ) : tab === 'support' ? (

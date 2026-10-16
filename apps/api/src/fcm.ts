@@ -62,14 +62,31 @@ export type DevicePush = { id: string; type: string; title: string; body: string
  * Returns the tokens Firebase no longer accepts, for the caller to forget.
  */
 export async function sendToDevices(tokens: string[], m: DevicePush): Promise<string[]> {
+  return sendEach(tokens.map((token) => ({ token, message: m })));
+}
+
+/**
+ * Like sendToDevices, with its own message for each phone. Firebase takes one phone per request,
+ * so they go 100 at a time: an announcement to thousands of phones does not open thousands of
+ * connections at once.
+ */
+export async function sendEach(
+  pushes: { token: string; message: DevicePush }[],
+): Promise<string[]> {
   const a = account();
-  if (!a || !tokens.length) return [];
+  if (!a || !pushes.length) return [];
   const access = await accessToken(a);
+  const project = a.project_id;
   const dead: string[] = [];
-  await Promise.all(
-    tokens.map(async (token) => {
-      try {
-        const res = await fetch(`https://fcm.googleapis.com/v1/projects/${a.project_id}/messages:send`, {
+  for (let i = 0; i < pushes.length; i += 100)
+    await Promise.all(pushes.slice(i, i + 100).map(({ token, message: m }) => send(token, m)));
+  return dead;
+
+  async function send(token: string, m: DevicePush) {
+    try {
+      const res = await fetch(
+        `https://fcm.googleapis.com/v1/projects/${project}/messages:send`,
+        {
           method: 'POST',
           headers: { authorization: `Bearer ${access}`, 'content-type': 'application/json' },
           body: JSON.stringify({
@@ -86,16 +103,15 @@ export async function sendToDevices(tokens: string[], m: DevicePush): Promise<st
             },
           }),
           signal: AbortSignal.timeout(8000),
-        });
-        if (res.ok) return;
-        const text = await res.text();
-        // The app was removed, or the token is no longer valid.
-        if (res.status === 404 || /UNREGISTERED|registration token/i.test(text)) dead.push(token);
-        else console.error(`Push to a phone failed (${res.status}): ${text.slice(0, 300)}`);
-      } catch (error) {
-        console.error('Push to a phone failed:', error);
-      }
-    }),
-  );
-  return dead;
+        },
+      );
+      if (res.ok) return;
+      const text = await res.text();
+      // The app was removed, or the token is no longer valid.
+      if (res.status === 404 || /UNREGISTERED|registration token/i.test(text)) dead.push(token);
+      else console.error(`Push to a phone failed (${res.status}): ${text.slice(0, 300)}`);
+    } catch (error) {
+      console.error('Push to a phone failed:', error);
+    }
+  }
 }

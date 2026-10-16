@@ -31,9 +31,16 @@ type Site = {
 };
 type Feed = {
   nearby: Product[];
+  deals?: Product[];
   categories: { id: string; name: string; description: string; products: Product[] }[];
   outlets: Outlet[];
 };
+
+/**
+ * Picks this visit's random mix of products. It stays the same while the visitor moves around the
+ * site, so going back to the home page does not reshuffle it; reloading the page brings a new mix.
+ */
+const visit = Math.random().toString(36).slice(2, 10);
 
 function SectionHead({
   eyebrow,
@@ -124,7 +131,9 @@ function OutletRail({ outlets }: { outlets: Outlet[] }) {
 export default function Home() {
   const { data: site, error: siteError } = useData<Site>('/site');
   const { area, areaStatus, openLocation } = useApp();
-  const { data: feed, loading, error, refresh } = useData<Feed>(area ? '/home?location=' + area.id : null);
+  const { data: feed, loading, error, refresh } = useData<Feed>(
+    area ? '/home?location=' + area.id + '&seed=' + visit : null,
+  );
   const show = (k: string) => site?.settings?.['show_' + k] !== false;
   // Content can be limited to delivery areas; the first hero that applies here is the headline.
   const content = (site?.content || []).filter((c) => forArea(c, area?.id));
@@ -142,8 +151,8 @@ export default function Home() {
   );
   const waiting = areaStatus === 'loading' || areaStatus === 'detecting' || (area && loading && !feed);
   const shortcuts = (site?.categories || []).filter((c) => c.show_in_filters !== false);
-  // Discounted picks among what is nearby, biggest saving first.
-  const deals = (feed?.nearby || []).filter((p) => p.discount > 0 && p.stock > 0).sort((a, b) => b.discount - a.discount);
+  // Discounted picks in this area, biggest saving first.
+  const deals = (feed?.deals || feed?.nearby || []).filter((p) => p.discount > 0 && p.stock > 0).sort((a, b) => b.discount - a.discount);
   return (
     <div className="home">
       {content

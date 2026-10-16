@@ -19,6 +19,7 @@ import {
 import { installSupport, deleteSupport } from './support.js';
 import { installNotifications, notify, adminsWith, outletUser } from './notifications.js';
 import { pushConfigured } from './fcm.js';
+import { installBroadcasts } from './broadcasts.js';
 import {
   installRiders,
   commissionSchema,
@@ -102,7 +103,7 @@ app.use(cookieParser());
 app.use(session);
 app.use('/api', (req, res, next) => {
   if (
-    /^\/(session|auth|profile|orders|manage|admin|rider|notifications|payment-proofs)(\/|$)/.test(
+    /^\/(session|auth|profile|orders|manage|admin|rider|notifications|payment-proofs|push|home)(\/|$)/.test(
       req.path,
     )
   )
@@ -158,6 +159,7 @@ const upload = multer({
   limits: { fileSize: 4 * 1024 * 1024, files: 1 },
 });
 installNotifications(app);
+installBroadcasts(app);
 installAccounts(app, authLimit);
 installRiders(app);
 installPayments(app, { upload: upload.single('file') });
@@ -613,7 +615,22 @@ app.post(
     res.status(201).json({ ok: true });
   }),
 );
-/** Homepage feed for one delivery area, or every area when Nation Wide: nearby picks, home categories and outlets. */
+/**
+ * Deals products out one outlet at a time, keeping the shuffled order within each outlet, so
+ * neighbouring cards come from different outlets and no single shop fills a row. Products that
+ * are sold out go after everything that can be bought.
+ */
+export function spreadByOutlet<T extends Row>(rows: T[], limit: number): T[] {
+  const spread = (list: T[]) => {
+    const queues = new Map<string, T[]>();
+    for (const p of list) queues.set(p.outlet_id, [...(queues.get(p.outlet_id) || []), p]);
+    const out: T[] = [];
+    while (out.length < list.length) for (const q of queues.values()) if (q.length) out.push(q.shift()!);
+    return out;
+  };
+  return [...spread(rows.filter((p) => p.stock > 0)), ...spread(rows.filter((p) => p.stock <= 0))].slice(0, limit);
+}
+/** Homepage feed for one delivery area, or every area when Nation Wide: nearby picks, deals, home categories and outlets. */
 app.get('/api/home', async (req, res) => {
   const loc = String(req.query.location || '');
   const everywhere = loc === NATION_WIDE;
@@ -621,46 +638,58 @@ app.get('/api/home', async (req, res) => {
     !everywhere &&
     (!loc || !(await one('SELECT id FROM locations WHERE id=? AND deleted_at IS NULL', loc)))
   )
-    return res.json({ nearby: [], categories: [], outlets: [] });
+    return res.json({ nearby: [], deals: [], categories: [], outlets: [] });
   const area = everywhere ? [] : [loc];
+  // Products come in a random mix rather than newest or oldest first. The seed picks the mix:
+  // the website and app send one per visit, so the order holds while someone browses and
+  // changes when they come back or pull to refresh.
+  const seed = /^[a-z0-9]{1,32}$/i.test(String(req.query.seed || ''))
+    ? String(req.query.seed)
+    : randomUUID().slice(0, 8);
   const base =
     'SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.active=1 AND o.active=1' +
     (everywhere ? '' : ' AND p.location_id=?');
-  res.json({
-    nearby: await Promise.all(
-      (
-        await all(base + ' ORDER BY p.stock>0 DESC,p.discount DESC,p.sort_order DESC LIMIT 8', ...area)
+  // A few times more than are shown, so the spread across outlets has products to choose from.
+  const mixed = async (filter: string, args: unknown[], limit: number) =>
+    Promise.all(
+      spreadByOutlet(
+        await all(
+          `${base}${filter} ORDER BY p.stock>0 DESC,md5(p.id||?) LIMIT ${Math.min(96, limit * 4)}`,
+          ...area,
+          ...args,
+          seed,
+        ),
+        limit,
       ).map(product),
+    );
+  const [nearby, deals, categories, outlets] = await Promise.all([
+    mixed('', [], 8),
+    mixed(' AND p.discount>0 AND p.stock>0', [], 8),
+    Promise.all(
+      (await records('categories', true))
+        .filter((c) => c.show_on_home !== false)
+        .map(async (c) => ({
+          id: c.id,
+          name: c.name,
+          description: c.description,
+          image: c.image,
+          products: await mixed(
+            ' AND p.category=?',
+            [c.name],
+            Math.min(24, Math.max(1, Math.round(Number(c.home_limit)) || 8)),
+          ),
+        })),
     ),
-    categories: (
-      await Promise.all(
-        (await records('categories', true))
-          .filter((c) => c.show_on_home !== false)
-          .map(async (c) => ({
-            id: c.id,
-            name: c.name,
-            description: c.description,
-            image: c.image,
-            products: await Promise.all(
-              (
-                await all(
-                  base +
-                    ' AND p.category=? ORDER BY p.stock>0 DESC,p.sort_order DESC LIMIT ' +
-                    Math.min(24, Math.max(1, Math.round(Number(c.home_limit)) || 8)),
-                  ...area,
-                  c.name,
-                )
-              ).map(product),
-            ),
-          })),
-      )
-    ).filter((c) => c.products.length),
-    outlets: (
-      await all(
-        `SELECT o.id,o.name,o.location_id,o.address,o.phone,o.image,o.category,${outletPublicColumns},(SELECT COUNT(*) FROM products p WHERE p.outlet_id=o.id AND p.active=1) products,(SELECT MIN(delivery_minutes) FROM products p WHERE p.outlet_id=o.id AND p.active=1) delivery_minutes FROM outlets o LEFT JOIN outlet_settings s ON s.outlet_id=o.id WHERE o.active=1${everywhere ? '' : ' AND ' + servesArea} ORDER BY featured DESC,products DESC`,
-        ...area,
-      )
-    ).map(withOpen),
+    all(
+      `SELECT o.id,o.name,o.location_id,o.address,o.phone,o.image,o.category,${outletPublicColumns},(SELECT COUNT(*) FROM products p WHERE p.outlet_id=o.id AND p.active=1) products,(SELECT MIN(delivery_minutes) FROM products p WHERE p.outlet_id=o.id AND p.active=1) delivery_minutes FROM outlets o LEFT JOIN outlet_settings s ON s.outlet_id=o.id WHERE o.active=1${everywhere ? '' : ' AND ' + servesArea} ORDER BY featured DESC,products DESC`,
+      ...area,
+    ),
+  ]);
+  res.json({
+    nearby,
+    deals,
+    categories: categories.filter((c) => c.products.length),
+    outlets: outlets.map(withOpen),
   });
 });
 const delivery = z.object({
