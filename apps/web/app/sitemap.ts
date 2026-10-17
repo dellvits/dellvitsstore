@@ -24,7 +24,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   return [
     entry('/', 1),
     ...(d.pages
-      ? [entry('/search', 0.8), entry('/outlets', 0.8), entry('/about', 0.4), entry('/contact', 0.4)]
+      ? [entry('/search', 0.8), entry('/outlets', 0.8), entry('/about', 0.4), entry('/contact', 0.4), entry('/privacy', 0.3)]
       : []),
     ...d.categories.map((c) => entry('/search?category=' + encodeURIComponent(c), 0.6)),
     ...d.outlets.map((o) => entry('/outlets/' + o.id, 0.7, [o.image])),

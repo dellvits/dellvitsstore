@@ -20,6 +20,8 @@ export type MaintenanceInfo = {
 } | null;
 
 const adminPath = (path: string) => path === '/admin' || path.startsWith('/admin/');
+/** Pages that stay open during maintenance: Google Play and visitors must always reach the privacy policy. */
+const alwaysOpen = (path: string) => path === '/privacy';
 
 /**
  * Swaps every storefront and portal page for the maintenance page while maintenance mode is on.
@@ -47,7 +49,7 @@ export default function MaintenanceGate({ initial, children }: { initial: Mainte
       window.removeEventListener(MAINTENANCE_EVENT, check);
     };
   }, [on]);
-  if (!info) return children;
+  if (!info || alwaysOpen(path)) return children;
   if (adminPath(path))
     return (
       <>

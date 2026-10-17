@@ -426,6 +426,7 @@ export function Footer() {
         <div>
           <Link href="/about">About</Link>
           <Link href="/contact">Contact</Link>
+          <Link href="/privacy">Privacy</Link>
           <Link href="/admin">Admin</Link>
         </div>
       </div>
