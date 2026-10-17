@@ -9060,3 +9060,47 @@ iframe {
     grid-template-columns: 1fr;
   }
 }
+
+/* Rider and outlet sign-ups not approved yet, on the Riders and Outlets pages. */
+.applicants-panel {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-color: var(--amber-100);
+  background: linear-gradient(180deg, var(--amber-50), var(--surface) 70%);
+}
+.applicants-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.applicants-head > div {
+  display: grid;
+  gap: 2px;
+}
+.applicants-list {
+  display: grid;
+  gap: 6px;
+}
+.applicant-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  cursor: pointer;
+}
+.applicant-row:hover {
+  border-color: var(--line-strong);
+}
+@media (max-width: 640px) {
+  .applicant-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}

@@ -36,9 +36,9 @@ import { portalPath } from './Shell';
 
 type AccountKind = 'customer' | 'rider' | 'outlet';
 const accountKinds: { key: AccountKind; title: string; hint: string; icon: typeof Store }[] = [
-  { key: 'customer', title: 'Order', hint: 'Shop from outlets near me', icon: ShoppingBag },
-  { key: 'rider', title: 'Deliver', hint: 'Become a Dellvit rider', icon: Bike },
-  { key: 'outlet', title: 'Sell', hint: 'List my shop or kitchen', icon: Store },
+  { key: 'customer', title: 'User', hint: 'Order from outlets near me', icon: ShoppingBag },
+  { key: 'rider', title: 'Rider', hint: 'Deliver orders and earn', icon: Bike },
+  { key: 'outlet', title: 'Outlet', hint: 'Sell my shop’s products', icon: Store },
 ];
 
 export function Password({
@@ -717,7 +717,7 @@ export function Auth({ signup = false, admin = false }: { signup?: boolean; admi
             {signup ? (
               <>
                 <div className="field">
-                  <span className="field-label">I want to</span>
+                  <span className="field-label">Sign up as</span>
                   <div className="account-kinds" role="radiogroup" aria-label="Account type">
                     {accountKinds.map((k) => (
                       <button

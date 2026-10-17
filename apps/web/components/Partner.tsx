@@ -19,6 +19,7 @@ export type Application = {
   reviewed_at: string | null;
 };
 export const vehicleTypes = { motorbike: 'Motorbike', bicycle: 'Bicycle', car: 'Car', rickshaw: 'Rickshaw', on_foot: 'On foot' } as const;
+export const commissionTypes = { fixed: 'A fixed amount per delivery', percent: 'A percentage of the delivery fee' } as const;
 export const payoutMethods = { cash: 'Cash (collect from the office)', bank: 'Bank account', wallet: 'Mobile wallet', raast: 'Raast ID' } as const;
 
 /**
@@ -138,7 +139,10 @@ function PartnerForm({ app, onSent }: { app: Application; onSent: (a: Applicatio
     setError('');
     try {
       const body: Record<string, unknown> = { ...values };
-      if (rider) body.payout_method = method;
+      if (rider) {
+        body.payout_method = method;
+        body.commission_type = values.commission_type || 'fixed';
+      }
       else {
         body.lat = values.lat ? Number(values.lat) : null;
         body.lng = values.lng ? Number(values.lng) : null;
@@ -272,6 +276,19 @@ function PartnerForm({ app, onSent }: { app: Application; onSent: (a: Applicatio
       )}
       <h3 className="form-section">How you are paid</h3>
       <div className="form-grid">
+        {rider && (
+          <label className="span-2">
+            How you would like to earn
+            <select value={v('commission_type', 'fixed')} onChange={set('commission_type')}>
+              {Object.entries(commissionTypes).map(([k, t]) => (
+                <option key={k} value={k}>
+                  {t}
+                </option>
+              ))}
+            </select>
+            <small className="muted">Our team confirms the exact amount when your account is approved.</small>
+          </label>
+        )}
         {rider && (
           <label>
             Payment method

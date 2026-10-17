@@ -1312,7 +1312,7 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     const mine = async (token: string) => (await request('GET', '/partner/application', undefined, token)).data;
     assert.equal((await mine(rider)).status, 'draft');
     assert.equal((await mine(rider)).kind, 'rider');
-    const riderForm = { cnic: '3520212345671', vehicle_type: 'motorbike', vehicle_number: 'RIM-1234', license_number: 'LIC-998', emergency_name: 'Sara', emergency_phone: '03009998887', payout_method: 'wallet', payout_account: '03001112233' };
+    const riderForm = { cnic: '3520212345671', vehicle_type: 'motorbike', vehicle_number: 'RIM-1234', license_number: 'LIC-998', emergency_name: 'Sara', emergency_phone: '03009998887', payout_method: 'wallet', payout_account: '03001112233', commission_type: 'percent' };
     assert.equal((await request('PUT', '/partner/application', { ...riderForm, cnic: '123' }, rider)).status, 400);
     assert.equal((await request('PUT', '/partner/application', { ...riderForm, license_number: '' }, rider)).status, 400, 'a motorbike needs a licence');
     const sent = await request('PUT', '/partner/application', riderForm, rider);
@@ -1335,7 +1335,10 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     assert.equal((await mine(rider)).note, 'The CNIC photo is unclear.');
     assert.equal((await request('POST', `/admin/applications/${app.user_id}/approve`, {}, admin)).status, 409, 'it must be sent again first');
     assert.equal((await request('PUT', '/partner/application', riderForm, rider)).data.status, 'pending');
-    const ok = await request('POST', `/admin/applications/${app.user_id}/approve`, {}, admin);
+    assert.equal((await mine(rider)).details.commission_type, 'percent', 'the rider asked for a percentage');
+    const approve = (body: object) => request('POST', `/admin/applications/${app.user_id}/approve`, body, admin);
+    assert.equal((await approve({ commission_type: 'percent', commission_value: 150 })).status, 400);
+    const ok = await approve({ commission_type: 'percent', commission_value: 12, commission_base: 'subtotal' });
     assert.equal(ok.status, 200, JSON.stringify(ok.data));
     assert.match(ok.data.login_id, /^DRV-\d{3}$/);
     assert.match(outbox.at(-1)!.subject, /approved/);
@@ -1344,7 +1347,9 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     assert.equal((await request('GET', '/rider/state', undefined, rider)).status, 200);
     const byId = await request('POST', '/auth/login', { login: ok.data.login_id, password: 'Partner@2026x' }, undefined, mobile);
     assert.equal(byId.status, 200, JSON.stringify(byId.data));
-    assert.equal((await one('SELECT cnic FROM rider_settings WHERE user_id=?', app.user_id))!.cnic, '35202-1234567-1');
+    const settings = (await one('SELECT * FROM rider_settings WHERE user_id=?', app.user_id))!;
+    assert.equal(settings.cnic, '35202-1234567-1');
+    assert.deepEqual([settings.commission_type, Number(settings.commission_value), settings.commission_base], ['percent', 12, 'subtotal']);
     assert.equal((await request('POST', `/admin/applications/${app.user_id}/approve`, {}, admin)).status, 404, 'decided once');
 
     // An outlet becomes a real outlet in its area.
@@ -1359,6 +1364,27 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     assert.equal((await request('GET', '/session', undefined, shop)).data.user.role, 'outlet');
     const outlets = (await request('GET', '/outlets?location=rawalpindi')).data;
     assert.ok(outlets.some((o: any) => o.name === 'Fresh Corner'));
+
+    // Someone who signed up but never entered the email code is listed too, and the team can
+    // change where they stand.
+    const waiting = { name: 'Slow Rider', email: 'slow.rider@example.com', phone: '03004445566', password: 'Partner@2026x', address: 'Street 9', location_id: 'rawalpindi', account_type: 'rider' };
+    assert.equal((await request('POST', '/auth/register', waiting)).status, 201);
+    const pendingList = async () => (await request('GET', '/admin/applications', undefined, admin)).data as any[];
+    const slow = (await pendingList()).find((a) => a.email === waiting.email);
+    assert.equal(slow.email_verified, false);
+    assert.equal(slow.status, 'draft');
+    assert.equal(slow.active, true);
+    const patch = (body: object) => request('PATCH', `/admin/applications/${slow.user_id}`, body, admin);
+    assert.equal((await patch({ status: 'pending' })).status, 400, 'no details to review yet');
+    assert.equal((await patch({ email_verified: true })).status, 200);
+    const signIn = () => request('POST', '/auth/login', { login: waiting.email, password: waiting.password }, undefined, mobile);
+    assert.equal((await signIn()).status, 200, 'the confirmed account signs in without a code');
+    assert.equal((await patch({ active: false })).status, 200);
+    assert.equal((await signIn()).status, 401, 'a blocked account cannot sign in');
+    assert.equal((await pendingList()).find((a) => a.email === waiting.email).active, false);
+    assert.equal((await patch({ active: true })).status, 200);
+    assert.equal((await signIn()).status, 200);
+    assert.equal((await request('PATCH', `/admin/applications/${slow.user_id}`, { active: false }, customer)).status, 403);
   });
   await t.test('category settings drive the home page, usage counts and new outlets', async () => {
     const categories = async () =>

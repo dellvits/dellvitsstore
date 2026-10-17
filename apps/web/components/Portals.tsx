@@ -103,7 +103,7 @@ import { AdManager } from './AdManager';
 import { CouponManager } from './CouponManager';
 import { PopupManager } from './PopupManager';
 import { BroadcastManager } from './BroadcastManager';
-import { ApplicationsManager } from './ApplicationsManager';
+import { ApplicationsManager, ApplicantsPanel } from './ApplicationsManager';
 import { MessageButton, SupportChat, SupportInbox } from './Support';
 import { AdminOverview, OutletDashboard, RiderDashboard } from './Dashboards';
 import { AdminCash, AdminPayouts, RiderCash, RiderEarnings, RiderStatementModal } from './Finance';
@@ -111,6 +111,12 @@ const DeliveryMap = dynamic(() => import('./DeliveryMap'), {
   ssr: false,
   loading: () => <div className="map-placeholder">Loading map…</div>,
 });
+
+/** Opens the Pending verification section of the admin portal. */
+function useOpenApplications() {
+  const router = useRouter();
+  return () => router.replace('?tab=applications', { scroll: false });
+}
 
 type Nav = { key: string; title: string; icon: typeof Package; group: string; permission?: string };
 const adminNav: Nav[] = [
@@ -947,6 +953,7 @@ function ProductManager({ admin }: { admin: boolean }) {
 }
 
 function OutletManager() {
+  const openApplications = useOpenApplications();
   const { data: categories } = useData<{ name: string }[]>('/categories');
   const { locations, notice } = useApp();
   const { data, setData, loading, error, refresh } = useData<AdminOutlet[]>('/admin/outlets');
@@ -1046,6 +1053,7 @@ function OutletManager() {
   const sum = (get: (o: AdminOutlet) => number) => list.reduce((n, o) => n + (get(o) || 0), 0);
   return (
     <div className="stack">
+      <ApplicantsPanel kind="outlet" onOpenAll={openApplications} />
       <div className="stats">
         <Stat
           icon={<Store size={20} />}
@@ -1697,6 +1705,7 @@ const emptyRider = {
   capacity: 5,
 };
 function RiderManager() {
+  const openApplications = useOpenApplications();
   const { locations, notice } = useApp();
   const { range, setRange, query, key, label: rangeText } = useRange('7d');
   const { data, setData, loading, error, refresh } = useData<AdminRider[]>('/admin/riders' + query, 30000, 'riders:' + key);
@@ -1779,6 +1788,7 @@ function RiderManager() {
             : '';
   return (
     <div className="stack">
+      <ApplicantsPanel kind="rider" onOpenAll={openApplications} />
       <FilterBar title="Riders" hint={`Showing ${rangeText.toLowerCase()}`} range={range} onRange={setRange} />
       <div className="stats">
         <Stat

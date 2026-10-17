@@ -6,7 +6,7 @@ import { all, one, run, afterCommit, type Row } from './db.js';
 import { requireRole, type AuthRequest } from './security.js';
 import { notify, adminsWith } from './notifications.js';
 import { can, records } from './platform.js';
-import { saveRiderSettings, vehicleTypes, payoutMethods } from './riders.js';
+import { saveRiderSettings, vehicleTypes, payoutMethods, riderDefaults } from './riders.js';
 import { saveOutletSettings } from './finance.js';
 import { sendMail, noticeEmail } from './mail.js';
 
@@ -54,6 +54,8 @@ const riderDetails = z
     vehicle_number: optional(30),
     emergency_name: str(100),
     emergency_phone: phone,
+    // How the rider would like to earn per delivery; the team sets the amount when approving.
+    commission_type: z.enum(['fixed', 'percent']).default('fixed'),
     payout_method: z.enum(payoutMethods).default('cash'),
     payout_bank: optional(100),
     payout_title: optional(100),
@@ -164,7 +166,7 @@ export function installPartners(app: Express) {
     for (const k of kinds) if (await can(req.user, permissionFor(k))) allowed.push(k);
     if (!allowed.length) return res.json([]);
     const rows = await all(
-      `SELECT a.*,u.name,u.email,u.phone,u.address,u.location_id,u.email_verified_at,u.role,u.login_id,u.created_at registered_at,r.name reviewed_by_name
+      `SELECT a.*,u.name,u.email,u.phone,u.address,u.location_id,u.email_verified_at,u.role,u.login_id,u.active,u.created_at registered_at,r.name reviewed_by_name
        FROM partner_applications a JOIN users u ON u.id=a.user_id LEFT JOIN users r ON r.id=a.reviewed_by
        WHERE a.kind IN (${allowed.map(() => '?').join(',')}) AND u.deleted_at IS NULL
        ORDER BY COALESCE(a.submitted_at,a.created_at) DESC LIMIT 1000`,
@@ -179,6 +181,8 @@ export function installPartners(app: Express) {
         address: r.address,
         location_id: r.location_id,
         email_verified: !!r.email_verified_at,
+        // Blocked by an administrator: the account cannot sign in.
+        active: !!r.active,
         login_id: r.login_id,
         registered_at: r.registered_at,
         reviewed_by_name: r.reviewed_by_name,
@@ -186,6 +190,49 @@ export function installPartners(app: Express) {
       })),
     );
   });
+
+  /**
+   * Changes where an application stands without approving or sending it back: confirm the email
+   * for someone whose code never arrived, return it to "waiting for details" or "waiting for
+   * review", or block and unblock the account. Approving and sending back have their own routes.
+   */
+  app.patch(
+    '/api/admin/applications/:id',
+    admin,
+    atomicRoute(async (req: AuthRequest, res) => {
+      const uid = String(req.params.id);
+      const p = z
+        .object({
+          email_verified: z.boolean().optional(),
+          status: z.enum(['draft', 'pending']).optional(),
+          active: z.boolean().optional(),
+        })
+        .parse(req.body);
+      const a = await one(
+        "SELECT a.*,u.email_verified_at FROM partner_applications a JOIN users u ON u.id=a.user_id WHERE a.user_id=? AND u.role='applicant' AND u.deleted_at IS NULL",
+        uid,
+      );
+      if (!a) fail('This application was not found or is already decided.', 404);
+      if (!(await can(req.user, permissionFor(a.kind)))) fail('Your administrator has not granted access to this module.', 403);
+      if (p.status === 'pending' && a.details === '{}')
+        fail('They have not sent their details yet, so it cannot wait for review.');
+      if (p.email_verified !== undefined) {
+        await run(
+          'UPDATE users SET email_verified_at=? WHERE id=?',
+          p.email_verified ? a.email_verified_at || now() : null,
+          uid,
+        );
+        if (p.email_verified) await run('DELETE FROM email_codes WHERE user_id=?', uid);
+      }
+      if (p.status) await run("UPDATE partner_applications SET status=?,note='' WHERE user_id=?", p.status, uid);
+      if (p.active !== undefined) {
+        await run('UPDATE users SET active=? WHERE id=?', Number(p.active), uid);
+        // A blocked account is signed out everywhere at once.
+        if (!p.active) await run('DELETE FROM sessions WHERE user_id=?', uid);
+      }
+      res.json({ ok: true });
+    }),
+  );
 
   /** Opens the account: the applicant becomes a rider or an outlet with its own sign-in ID. */
   app.post(
@@ -201,11 +248,26 @@ export function installPartners(app: Express) {
       if (!(await can(req.user, permissionFor(a.kind)))) fail('Your administrator has not granted access to this module.', 403);
       if (a.status !== 'pending') fail('Only an application with its details sent can be approved.', 409);
       const d = JSON.parse(a.details);
+      // A rider's commission: what the team sets here, else what the rider asked for with the usual
+      // amount (PKR 100 per delivery, or 80% of the delivery fee). Fixed amounts are in paisa.
+      const c = z
+        .object({
+          commission_type: z.enum(['fixed', 'percent']).optional(),
+          commission_value: z.number().min(0).max(100000000).optional(),
+          commission_base: z.enum(['delivery_fee', 'subtotal', 'total']).optional(),
+        })
+        .parse(req.body ?? {});
+      const commissionType = c.commission_type ?? d.commission_type ?? riderDefaults.commission_type;
+      const commissionValue = c.commission_value ?? (commissionType === 'percent' ? 80 : riderDefaults.commission_value);
+      if (commissionType === 'percent' && commissionValue > 100) fail('A percentage commission must be 100 or less.');
       let loginId: string;
       if (a.kind === 'rider') {
         loginId = await nextLoginId('DRV');
-        await run("UPDATE users SET role='rider',login_id=? WHERE id=?", loginId, uid);
+        await run("UPDATE users SET role='rider',login_id=?,active=1 WHERE id=?", loginId, uid);
         await saveRiderSettings(uid, {
+          commission_type: commissionType,
+          commission_value: commissionValue,
+          commission_base: c.commission_base ?? 'delivery_fee',
           cnic: d.cnic,
           license_number: d.license_number,
           vehicle_type: d.vehicle_type,
@@ -224,7 +286,7 @@ export function installPartners(app: Express) {
         const oid = id();
         // The outlet's sign-in carries the business name, like outlets the team creates.
         await run(
-          "UPDATE users SET role='outlet',login_id=?,name=?,phone=?,address=?,location_id=? WHERE id=?",
+          "UPDATE users SET role='outlet',login_id=?,name=?,phone=?,address=?,location_id=?,active=1 WHERE id=?",
           loginId,
           d.business_name,
           d.business_phone,
