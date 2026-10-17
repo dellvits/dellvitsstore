@@ -684,6 +684,9 @@ export function installPlatform(app: Express) {
           ).some(Boolean)
         : p === 'staff'
           ? (await access(req.user)).is_super_admin
+          : // Rider and outlet applications: each kind is checked again in partners.ts.
+            p === 'applications'
+            ? (await can(req.user, 'riders')) || (await can(req.user, 'outlets'))
           : !p || (await can(req.user, p));
     if (!allowed)
       return res

@@ -127,7 +127,8 @@ export async function outletUser(outletId: string) {
 }
 
 export function installNotifications(app: Express, options: { writeLimit: RequestHandler }) {
-  const signedIn = requireRole('customer', 'admin', 'outlet', 'rider');
+  // Applicants too: they hear here when their rider or outlet account is approved.
+  const signedIn = requireRole('customer', 'admin', 'outlet', 'rider', 'applicant');
   app.get('/api/notifications', signedIn, async (req: AuthRequest, res) => {
     const q = z
       .object({

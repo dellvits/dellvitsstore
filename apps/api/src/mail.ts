@@ -240,3 +240,26 @@ export function welcomeEmail(p: { to: string; name: string }): Mail {
     }),
   };
 }
+
+/**
+ * A plain message with a heading, a few paragraphs and an optional button, for news about an
+ * account, such as a rider or outlet application being approved. `button.path` is a page of the site.
+ */
+export function noticeEmail(p: {
+  to: string;
+  subject: string;
+  heading: string;
+  paragraphs: string[];
+  button?: { path: string; label: string };
+}): Mail {
+  return {
+    to: p.to,
+    subject: p.subject,
+    text: [...p.paragraphs, ...(p.button ? [site() + p.button.path] : [])].join('\n\n'),
+    html: layout({
+      preheader: p.paragraphs[0] || p.heading,
+      heading: escape(p.heading),
+      body: p.paragraphs.map((t) => paragraph(escape(t))).join('') + (p.button ? button(site() + p.button.path, p.button.label) : ''),
+    }),
+  };
+}

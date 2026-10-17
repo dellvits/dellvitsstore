@@ -30,7 +30,9 @@ import { NotificationBell, inboxPath } from './Notifications';
 import { MessageButton } from './Support';
 
 export const portalPath = (role?: string) =>
-  role === 'customer'
+  role === 'applicant'
+    ? '/partner'
+    : role === 'customer'
     ? '/account'
     : role === 'admin'
       ? '/admin'
@@ -141,7 +143,12 @@ function AccountMenu() {
   }, [open]);
   if (!user) return null;
   const items: [string, string, typeof UserRound][] =
-    user.role === 'customer'
+    user.role === 'applicant'
+      ? [
+          ['/partner', 'Your application', LayoutDashboard],
+          ['/notifications', 'Notifications', Bell],
+        ]
+      : user.role === 'customer'
       ? [
           ['/account', 'My account', LayoutDashboard],
           ['/account?tab=orders', 'My orders', Package],
@@ -301,11 +308,13 @@ export function Header() {
               {user ? (
                 <>
                   <Link href={portalPath(user.role)}>
-                    <LayoutDashboard size={17} /> {user.role === 'customer' ? 'My account' : 'Portal'}
+                    <LayoutDashboard size={17} />{' '}
+                    {user.role === 'customer' ? 'My account' : user.role === 'applicant' ? 'Your application' : 'Portal'}
                   </Link>
                   <Link href={inboxPath(user)}>
                     <Bell size={17} /> Notifications
                   </Link>
+                  {user.role !== 'applicant' && (
                   <Link
                     href={
                       user.role === 'admin'
@@ -317,6 +326,7 @@ export function Header() {
                   >
                     <MessagesSquare size={17} /> {user.role === 'admin' ? 'Messages' : 'Support chat'}
                   </Link>
+                  )}
                   <button
                     onClick={async () => {
                       await logout();
@@ -403,7 +413,8 @@ export function Footer() {
           <h4>Partners</h4>
           <Link href="/portal/outlet">Outlet portal</Link>
           <Link href="/portal/rider">Rider portal</Link>
-          <Link href="/contact">Become a partner</Link>
+          <Link href="/signup?as=outlet">Sell on Dellvit</Link>
+          <Link href="/signup?as=rider">Ride with Dellvit</Link>
         </div>
         <div>
           <h4>Support</h4>

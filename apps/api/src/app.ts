@@ -20,6 +20,7 @@ import { installSupport, deleteSupport } from './support.js';
 import { installNotifications, notify, adminsWith, outletUser } from './notifications.js';
 import { pushConfigured } from './fcm.js';
 import { installBroadcasts } from './broadcasts.js';
+import { installPartners } from './partners.js';
 import {
   installRiders,
   commissionSchema,
@@ -160,6 +161,7 @@ const upload = multer({
 });
 installNotifications(app, { writeLimit });
 installBroadcasts(app);
+installPartners(app);
 installAccounts(app, authLimit);
 installRiders(app);
 installPayments(app, { upload: upload.single('file') });
@@ -353,6 +355,9 @@ app.post(
         password: z.string().min(10).max(100),
         address: str(500),
         location_id: location,
+        // Riders and outlets sign up as applicants: they verify their email, send their details
+        // and wait for an administrator (partners.ts).
+        account_type: z.enum(['customer', 'rider', 'outlet']).default('customer'),
       })
       .parseAsync(req.body);
     const existing = await one('SELECT * FROM users WHERE email=?', p.email);
@@ -384,9 +389,16 @@ app.post(
       p.address,
       p.location_id,
       hashPassword(p.password),
-      'customer',
+      p.account_type === 'customer' ? 'customer' : 'applicant',
       now(),
     );
+    if (p.account_type !== 'customer')
+      await run(
+        'INSERT INTO partner_applications(user_id,kind,created_at) VALUES(?,?,?)',
+        uid,
+        p.account_type,
+        now(),
+      );
     // No session yet: the account opens once the emailed code is entered.
     const { retry_in } = await sendVerificationCode({ id: uid, name: p.name, email: p.email });
     res.status(201).json({ verify: true, email: p.email, retry_in });
@@ -456,7 +468,7 @@ app.patch(
 );
 app.post(
   '/api/auth/password',
-  requireRole('customer', 'admin', 'outlet', 'rider'),
+  requireRole('customer', 'admin', 'outlet', 'rider', 'applicant'),
   authLimit,
   atomicRoute(async (req: AuthRequest, res) => {
     const p = await z

@@ -52,6 +52,7 @@ import {
   Trash2,
   Truck,
   Upload,
+  UserCheck,
   UserRound,
   Users,
   Wallet,
@@ -102,6 +103,7 @@ import { AdManager } from './AdManager';
 import { CouponManager } from './CouponManager';
 import { PopupManager } from './PopupManager';
 import { BroadcastManager } from './BroadcastManager';
+import { ApplicationsManager } from './ApplicationsManager';
 import { MessageButton, SupportChat, SupportInbox } from './Support';
 import { AdminOverview, OutletDashboard, RiderDashboard } from './Dashboards';
 import { AdminCash, AdminPayouts, RiderCash, RiderEarnings, RiderStatementModal } from './Finance';
@@ -121,6 +123,8 @@ const adminNav: Nav[] = [
   { key: 'categories', title: 'Categories', icon: Tags, group: 'Catalog' },
   { key: 'outlets', title: 'Outlets', icon: Store, group: 'Catalog' },
   { key: 'riders', title: 'Riders', icon: Bike, group: 'Operations' },
+  // Riders and outlets who signed up themselves; open to either permission.
+  { key: 'applications', title: 'Pending verification', icon: UserCheck, group: 'Operations', permission: 'riders|outlets' },
   { key: 'locations', title: 'Delivery areas', icon: MapPin, group: 'Operations' },
   { key: 'customers', title: 'Customers', icon: Users, group: 'Operations' },
   { key: 'content', title: 'Homepage content', icon: Layers, group: 'Marketing' },
@@ -197,6 +201,8 @@ export default function Portal({ role }: { role: PortalRole }) {
         </Empty>
       </div>
     );
+  // Riders and outlets still waiting for approval see their application instead.
+  if (user.role === 'applicant') return <ToOwnPortal role="applicant" />;
   if (role === 'customer' && user.role !== 'customer') return <ToOwnPortal role={user.role} />;
   if (user.role !== role)
     return (
@@ -208,7 +214,9 @@ export default function Portal({ role }: { role: PortalRole }) {
   const nav = [
     ...(role === 'admin'
       ? adminNav.filter(
-          (x) => user.is_super_admin || (x.key !== 'staff' && user.permissions?.includes(x.permission || x.key)),
+          (x) =>
+            user.is_super_admin ||
+            (x.key !== 'staff' && (x.permission || x.key).split('|').some((p) => user.permissions?.includes(p))),
         )
       : role === 'outlet'
         ? outletNav
@@ -339,6 +347,8 @@ export default function Portal({ role }: { role: PortalRole }) {
             <AdManager />
           ) : tab === 'popups' ? (
             <PopupManager />
+          ) : tab === 'applications' ? (
+            <ApplicationsManager />
           ) : tab === 'broadcasts' ? (
             <BroadcastManager />
           ) : tab === 'messages' ? (

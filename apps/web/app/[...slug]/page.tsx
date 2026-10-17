@@ -10,6 +10,7 @@ import Portal from '@/components/Portals';
 import { PageLoading } from '@/components/UI';
 import { NotificationsPage } from '@/components/Notifications';
 import { SupportPage } from '@/components/Support';
+import { PartnerApplication } from '@/components/Partner';
 export async function generateMetadata({ params }: { params: Promise<{ slug: string[] }> }) {
   const { slug } = await params;
   const titles: Record<string, string> = {
@@ -30,10 +31,11 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
     support: 'Support chat',
     admin: 'Administration',
     portal: 'Your portal',
+    partner: 'Your application',
   };
   return {
     title: titles[slug[0]] || 'Dellvit',
-    ...(['account', 'cart', 'checkout', 'orders', 'admin', 'portal', 'notifications', 'support', 'forgot-password'].includes(slug[0])
+    ...(['account', 'cart', 'checkout', 'orders', 'admin', 'portal', 'notifications', 'support', 'forgot-password', 'partner'].includes(slug[0])
       ? { robots: { index: false, follow: false } }
       : {}),
   };
@@ -87,6 +89,9 @@ export default async function Page({ params }: { params: Promise<{ slug: string[
         break;
       case 'support':
         content = <SupportPage />;
+        break;
+      case 'partner':
+        content = <PartnerApplication />;
         break;
       case 'admin':
         content = <Portal role="admin" />;

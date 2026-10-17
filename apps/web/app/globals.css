@@ -8912,3 +8912,151 @@ iframe {
   font-size: 0.85rem;
   font-weight: 600;
 }
+
+/* Sign-up: order, deliver or sell. */
+.account-kinds {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.account-kind {
+  display: grid;
+  justify-items: start;
+  gap: 3px;
+  padding: 11px 12px;
+  border-radius: 14px;
+  border: 1.5px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--muted);
+  text-align: left;
+}
+.account-kind strong {
+  color: var(--ink);
+  font-size: 0.92rem;
+}
+.account-kind small {
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+.account-kind.selected {
+  border-color: var(--brand);
+  background: var(--tint);
+  color: var(--brand);
+}
+@media (max-width: 420px) {
+  .account-kinds {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* A rider's or outlet's application and where it stands. */
+.partner-page {
+  display: grid;
+  gap: 16px;
+}
+.partner-page h1 {
+  margin: 0;
+}
+.partner-status {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.partner-status svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.partner-status p {
+  margin: 4px 0 0;
+  color: var(--text);
+}
+.partner-status.pending {
+  background: var(--amber-50);
+  border-color: var(--amber-100);
+  color: var(--amber);
+}
+.partner-status.rejected {
+  background: var(--brand-50);
+  border-color: var(--brand-100);
+  color: var(--brand);
+}
+.partner-status.draft {
+  background: var(--blue-50);
+  color: var(--blue);
+}
+.partner-status.approved {
+  background: var(--green-50);
+  color: var(--green);
+  margin-bottom: 14px;
+}
+.partner-status strong {
+  color: var(--ink);
+}
+.partner-form {
+  padding: 20px;
+}
+.partner-form-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+/* Reviewing an application. */
+.application-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.application-head > div {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+}
+.application-contact {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--soft);
+  font-size: 0.9rem;
+}
+.application-contact span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+.application-contact .ok {
+  color: var(--green);
+}
+.application-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 18px;
+  margin: 0;
+}
+.application-details div {
+  display: grid;
+  gap: 2px;
+}
+.application-details dt {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.application-details dd {
+  margin: 0;
+  color: var(--ink);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 560px) {
+  .application-details {
+    grid-template-columns: 1fr;
+  }
+}

@@ -23,6 +23,7 @@ import {
   passwordResetEmail,
   passwordChangedEmail,
   welcomeEmail,
+  noticeEmail,
   testEmail,
 } from './mail.js';
 import { objects } from './storage.js';
@@ -49,7 +50,8 @@ function fail(message: string, status = 400): never {
   throw Object.assign(new Error(message), { status });
 }
 const codeHash = (userId: string, code: string) => tokenHash(userId + ':' + code);
-export const needsVerification = (u: Row) => u.role === 'customer' && !u.email_verified_at;
+// Riders and outlets who sign up themselves verify their email too, while they are applicants.
+export const needsVerification = (u: Row) => (u.role === 'customer' || u.role === 'applicant') && !u.email_verified_at;
 
 /**
  * Emails a fresh code, replacing any earlier one. The server enforces two limits per account: a
@@ -132,7 +134,7 @@ const sameHash = (a: string, b: string) =>
 /** The customer a reset is for: blocked and deleted accounts cannot reset. */
 const resetAccount = (email: string) =>
   one(
-    "SELECT * FROM users WHERE email=? AND role='customer' AND active=1 AND deleted_at IS NULL",
+    "SELECT * FROM users WHERE email=? AND role IN ('customer','applicant') AND active=1 AND deleted_at IS NULL",
     email,
   );
 async function sendResetCode(u: Row) {
@@ -256,7 +258,7 @@ export function installAccounts(app: Express, authLimit: RequestHandler) {
       const p = z
         .object({ email: emailField, code: z.string().regex(/^\d{6}$/, 'Enter the 6-digit code.') })
         .parse(req.body);
-      const u = await one("SELECT * FROM users WHERE email=? AND role='customer'", p.email);
+      const u = await one("SELECT * FROM users WHERE email=? AND role IN ('customer','applicant')", p.email);
       if (!u || !u.active) fail('That code is not correct. Check the email and try again.');
       if (u.email_verified_at) fail('This email is already verified. Log in to continue.', 409);
       const c = await one('SELECT * FROM email_codes WHERE user_id=?', u.id);
@@ -277,7 +279,20 @@ export function installAccounts(app: Express, authLimit: RequestHandler) {
       await run('UPDATE users SET email_verified_at=? WHERE id=?', now(), u.id);
       await run('DELETE FROM email_codes WHERE user_id=?', u.id);
       await afterCommit(async () => {
-        await sendMail(welcomeEmail({ to: u.email, name: u.name }));
+        await sendMail(
+          u.role === 'applicant'
+            ? noticeEmail({
+                to: u.email,
+                subject: 'Your email is verified',
+                heading: `Thanks, ${u.name.split(' ')[0] || 'there'}`,
+                paragraphs: [
+                  'Your email is verified. Next, sign in and send us the details we need to set up your Dellvit partner account.',
+                  'Our team reviews every application and emails you as soon as it is approved.',
+                ],
+                button: { path: '/partner', label: 'Send your details' },
+              })
+            : welcomeEmail({ to: u.email, name: u.name }),
+        );
       });
       res.json(await startSession(req, res, u));
     }),
@@ -287,7 +302,7 @@ export function installAccounts(app: Express, authLimit: RequestHandler) {
     authLimit,
     atomicRoute(async (req, res) => {
       const p = z.object({ email: emailField }).parse(req.body);
-      const u = await one("SELECT * FROM users WHERE email=? AND role='customer'", p.email);
+      const u = await one("SELECT * FROM users WHERE email=? AND role IN ('customer','applicant')", p.email);
       // An address without a pending account gets the answer a first request would.
       if (!u || !u.active || u.email_verified_at)
         return res.json({ ok: true, retry_in: RESEND_SECONDS });

@@ -363,7 +363,8 @@ export function SupportPage() {
 /** The header's message icon, with the number of messages waiting. */
 export function MessageButton() {
   const { user, supportUnread } = useApp();
-  if (!user) return null;
+  // Applicants have no support chat until their account is approved.
+  if (!user || user.role === 'applicant') return null;
   const href =
     user.role === 'admin' ? '/admin?tab=messages' : user.role === 'customer' ? '/account?tab=support' : `/portal/${user.role}?tab=support`;
   return (

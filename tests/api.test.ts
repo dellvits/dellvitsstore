@@ -1281,9 +1281,84 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     assert.equal((await request('GET', '/announcements')).data.some((b: any) => b.id === eid), false);
     assert.equal((await request('GET', '/admin/broadcasts', undefined, admin)).data.items.some((b: any) => b.id === id), false);
     assert.equal((await request('POST', '/admin/broadcasts/delete', { ids: [id] }, admin)).status, 404);
+    // (The partner sign-up checks follow in their own test.)
     // Announcements can be silenced like any other kind.
     assert.equal((await request('PUT', '/notifications/preferences', { muted: ['update'] }, rider)).status, 200);
     assert.equal((await request('PUT', '/notifications/preferences', { muted: [] }, rider)).status, 200);
+  });
+  await t.test('riders and outlets sign up, verify, apply and wait for approval', async () => {
+    await run("DELETE FROM rate_limits WHERE key LIKE 'auth:%' OR key LIKE 'write:%'");
+    const mobile = { 'x-client': 'mobile' };
+    /** Signs up, enters the emailed code and returns the signed-in token. */
+    async function join(account_type: string, email: string) {
+      const p = { name: 'Ali Partner', email, phone: '03001112233', password: 'Partner@2026x', address: 'Shop 4, Saddar', location_id: 'rawalpindi', account_type };
+      const r = await request('POST', '/auth/register', p, undefined, mobile);
+      assert.equal(r.status, 201, JSON.stringify(r.data));
+      // Like a customer, the email is verified first.
+      assert.equal((await request('POST', '/auth/login', { login: email, password: p.password }, undefined, mobile)).data.code, 'verify_email');
+      const v = await request('POST', '/auth/verify-email', { email, code: emailedCode(email) }, undefined, mobile);
+      assert.equal(v.status, 200, JSON.stringify(v.data));
+      assert.equal(v.data.user.role, 'applicant');
+      assert.match(outbox.at(-1)!.subject, /verified/);
+      return v.data.token as string;
+    }
+    assert.equal((await request('POST', '/auth/register', { account_type: 'admin' })).status, 400);
+
+    // A rider applicant can reach nothing a rider can until approved.
+    const rider = await join('rider', 'new.rider@example.com');
+    assert.equal((await request('GET', '/rider/state', undefined, rider)).status, 403);
+    assert.deepEqual((await request('GET', '/orders', undefined, rider)).data, [], 'no rider deliveries');
+    assert.equal((await request('GET', '/notifications', undefined, rider)).status, 200, 'it hears about the decision');
+    const mine = async (token: string) => (await request('GET', '/partner/application', undefined, token)).data;
+    assert.equal((await mine(rider)).status, 'draft');
+    assert.equal((await mine(rider)).kind, 'rider');
+    const riderForm = { cnic: '3520212345671', vehicle_type: 'motorbike', vehicle_number: 'RIM-1234', license_number: 'LIC-998', emergency_name: 'Sara', emergency_phone: '03009998887', payout_method: 'wallet', payout_account: '03001112233' };
+    assert.equal((await request('PUT', '/partner/application', { ...riderForm, cnic: '123' }, rider)).status, 400);
+    assert.equal((await request('PUT', '/partner/application', { ...riderForm, license_number: '' }, rider)).status, 400, 'a motorbike needs a licence');
+    const sent = await request('PUT', '/partner/application', riderForm, rider);
+    assert.equal(sent.status, 200, JSON.stringify(sent.data));
+    assert.equal(sent.data.status, 'pending');
+    assert.equal(sent.data.details.cnic, '35202-1234567-1');
+    assert.ok((await request('GET', '/notifications', undefined, admin)).data.items.some((n: any) => n.title === 'New rider application'));
+    // Customers and other applicants cannot review.
+    assert.equal((await request('GET', '/admin/applications', undefined, customer)).status, 403);
+    assert.equal((await request('GET', '/partner/application', undefined, customer)).status, 403);
+
+    // Sent back with a reason, corrected, then approved.
+    const listed = (await request('GET', '/admin/applications', undefined, admin)).data;
+    const app = listed.find((a: any) => a.email === 'new.rider@example.com');
+    assert.equal(app.status, 'pending');
+    assert.equal(app.details.vehicle_number, 'RIM-1234');
+    assert.equal((await request('POST', `/admin/applications/${app.user_id}/reject`, { note: '' }, admin)).status, 400);
+    assert.equal((await request('POST', `/admin/applications/${app.user_id}/reject`, { note: 'The CNIC photo is unclear.' }, admin)).status, 200);
+    assert.equal((await mine(rider)).status, 'rejected');
+    assert.equal((await mine(rider)).note, 'The CNIC photo is unclear.');
+    assert.equal((await request('POST', `/admin/applications/${app.user_id}/approve`, {}, admin)).status, 409, 'it must be sent again first');
+    assert.equal((await request('PUT', '/partner/application', riderForm, rider)).data.status, 'pending');
+    const ok = await request('POST', `/admin/applications/${app.user_id}/approve`, {}, admin);
+    assert.equal(ok.status, 200, JSON.stringify(ok.data));
+    assert.match(ok.data.login_id, /^DRV-\d{3}$/);
+    assert.match(outbox.at(-1)!.subject, /approved/);
+    // The same sign-in is now a rider, with the details from the application.
+    assert.equal((await request('GET', '/session', undefined, rider)).data.user.role, 'rider');
+    assert.equal((await request('GET', '/rider/state', undefined, rider)).status, 200);
+    const byId = await request('POST', '/auth/login', { login: ok.data.login_id, password: 'Partner@2026x' }, undefined, mobile);
+    assert.equal(byId.status, 200, JSON.stringify(byId.data));
+    assert.equal((await one('SELECT cnic FROM rider_settings WHERE user_id=?', app.user_id))!.cnic, '35202-1234567-1');
+    assert.equal((await request('POST', `/admin/applications/${app.user_id}/approve`, {}, admin)).status, 404, 'decided once');
+
+    // An outlet becomes a real outlet in its area.
+    const shop = await join('outlet', 'new.shop@example.com');
+    const shopForm = { business_name: 'Fresh Corner', category: 'Food', owner_name: 'Ali Partner', owner_cnic: '35202-7654321-3', business_phone: '0511234567', address: 'Shop 4, Saddar', location_id: 'rawalpindi' };
+    assert.equal((await request('PUT', '/partner/application', { ...shopForm, category: 'Nope' }, shop)).status, 400);
+    assert.equal((await request('PUT', '/partner/application', shopForm, shop)).status, 200);
+    const shopApp = (await request('GET', '/admin/applications', undefined, admin)).data.find((a: any) => a.email === 'new.shop@example.com');
+    const opened = await request('POST', `/admin/applications/${shopApp.user_id}/approve`, {}, admin);
+    assert.equal(opened.status, 200, JSON.stringify(opened.data));
+    assert.match(opened.data.login_id, /^DLV-\d{3}$/);
+    assert.equal((await request('GET', '/session', undefined, shop)).data.user.role, 'outlet');
+    const outlets = (await request('GET', '/outlets?location=rawalpindi')).data;
+    assert.ok(outlets.some((o: any) => o.name === 'Fresh Corner'));
   });
   await t.test('category settings drive the home page, usage counts and new outlets', async () => {
     const categories = async () =>

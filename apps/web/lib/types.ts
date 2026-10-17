@@ -34,7 +34,8 @@ export type User = {
   phone: string;
   address: string;
   location_id: string;
-  role: 'customer' | 'admin' | 'outlet' | 'rider';
+  /** 'applicant': a rider or outlet that signed up itself and waits for approval. */
+  role: 'customer' | 'admin' | 'outlet' | 'rider' | 'applicant';
   is_super_admin?: boolean;
   /** The store owner's administrator account, which nobody else can change. */
   is_owner?: boolean;

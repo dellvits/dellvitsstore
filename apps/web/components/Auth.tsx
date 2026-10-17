@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Bell,
+  Bike,
   CircleCheck,
   ClipboardPaste,
   Clock,
@@ -18,6 +19,8 @@ import {
   Package,
   RotateCw,
   ShieldCheck,
+  ShoppingBag,
+  Store,
   Truck,
   UserPlus,
   UserRound,
@@ -30,6 +33,13 @@ import type { Order, User } from '@/lib/types';
 import { ErrorBox, Stat, Empty, PageLoading } from './UI';
 import { NotificationSettings } from './Notifications';
 import { portalPath } from './Shell';
+
+type AccountKind = 'customer' | 'rider' | 'outlet';
+const accountKinds: { key: AccountKind; title: string; hint: string; icon: typeof Store }[] = [
+  { key: 'customer', title: 'Order', hint: 'Shop from outlets near me', icon: ShoppingBag },
+  { key: 'rider', title: 'Deliver', hint: 'Become a Dellvit rider', icon: Bike },
+  { key: 'outlet', title: 'Sell', hint: 'List my shop or kitchen', icon: Store },
+];
 
 export function Password({
   name,
@@ -646,6 +656,13 @@ export function Auth({ signup = false, admin = false }: { signup?: boolean; admi
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const safeNext = safePath(search.get('next'));
+  // Riders and outlets sign up here too (?as=rider or ?as=outlet chooses one); they verify their
+  // email, send their details and wait for approval on the /partner page.
+  const [kind, setKind] = useState<AccountKind>(() => {
+    const as = search.get('as');
+    return as === 'rider' || as === 'outlet' ? as : 'customer';
+  });
+  const partner = signup && kind !== 'customer';
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setBusy(true);
@@ -684,9 +701,11 @@ export function Auth({ signup = false, admin = false }: { signup?: boolean; admi
             <p className="auth-lead">
               {admin
                 ? 'Sign in with your administrator email.'
-                : signup
-                  ? 'It takes a minute. We will email you a 6-digit code to confirm your address.'
-                  : 'Order from outlets near you and track every delivery.'}
+                : partner
+                  ? 'Confirm your email with a 6-digit code, then send your details. Our team approves every partner account.'
+                  : signup
+                    ? 'It takes a minute. We will email you a 6-digit code to confirm your address.'
+                    : 'Order from outlets near you and track every delivery.'}
             </p>
           </div>
           {safeNext === '/checkout' && (
@@ -697,8 +716,28 @@ export function Auth({ signup = false, admin = false }: { signup?: boolean; admi
           <form onSubmit={submit} className="stack">
             {signup ? (
               <>
+                <div className="field">
+                  <span className="field-label">I want to</span>
+                  <div className="account-kinds" role="radiogroup" aria-label="Account type">
+                    {accountKinds.map((k) => (
+                      <button
+                        type="button"
+                        key={k.key}
+                        role="radio"
+                        aria-checked={kind === k.key}
+                        className={'account-kind' + (kind === k.key ? ' selected' : '')}
+                        onClick={() => setKind(k.key)}
+                      >
+                        <k.icon size={20} />
+                        <strong>{k.title}</strong>
+                        <small>{k.hint}</small>
+                      </button>
+                    ))}
+                  </div>
+                  <input type="hidden" name="account_type" value={kind} />
+                </div>
                 <label>
-                  Full name
+                  {kind === 'outlet' ? 'Your full name (owner)' : 'Full name'}
                   <input name="name" required autoComplete="name" maxLength={100} />
                 </label>
                 <div className="form-grid">
@@ -740,7 +779,7 @@ export function Auth({ signup = false, admin = false }: { signup?: boolean; admi
             {signup && (
               <>
                 <label>
-                  Delivery area
+                  {kind === 'rider' ? 'Area you will deliver in' : kind === 'outlet' ? 'Your outlet’s area' : 'Delivery area'}
                   <select name="location_id" required defaultValue={oneArea(area) ? area.id : ''}>
                     <option value="" disabled>
                       Choose your area
@@ -753,13 +792,13 @@ export function Auth({ signup = false, admin = false }: { signup?: boolean; admi
                   </select>
                 </label>
                 <label>
-                  Address
+                  {kind === 'rider' ? 'Home address' : kind === 'outlet' ? 'Outlet address' : 'Address'}
                   <textarea
                     name="address"
                     required
                     rows={2}
                     autoComplete="street-address"
-                    placeholder="House, street and landmark"
+                    placeholder={kind === 'outlet' ? 'Shop number, street and landmark' : 'House, street and landmark'}
                     maxLength={500}
                   />
                 </label>
