@@ -80,6 +80,7 @@ const modules: Record<string, { title: string; hint: string; group: string }> = 
   products: { title: 'Products', hint: 'Every outlet’s products and stock', group: 'Catalogue' },
   categories: { title: 'Categories', hint: 'Categories and their home page sections', group: 'Catalogue' },
   content: { title: 'Homepage content', hint: 'Heroes, sections, banners and videos', group: 'Marketing' },
+  blog: { title: 'Blog', hint: 'Articles, comments, blog SEO and social posting', group: 'Marketing' },
   ads: { title: 'Advertising', hint: 'Ads, where they appear and their figures', group: 'Marketing' },
   coupons: { title: 'Coupons', hint: 'Discount codes and their rules', group: 'Marketing' },
   audit: { title: 'Activity log', hint: 'What administrators changed', group: 'System' },
@@ -93,7 +94,7 @@ const presets: { title: string; permissions: string[] }[] = [
   { title: 'Support agent', permissions: ['overview', 'orders', 'customers', 'messages'] },
   { title: 'Finance', permissions: ['overview', 'orders', 'payments', 'riders'] },
   { title: 'Catalogue editor', permissions: ['products', 'categories', 'outlets'] },
-  { title: 'Marketing', permissions: ['content', 'ads', 'coupons'] },
+  { title: 'Marketing', permissions: ['content', 'blog', 'ads', 'coupons'] },
 ];
 /** A 16-character password with letters, digits and symbols, without look-alike characters. */
 const newPassword = () =>

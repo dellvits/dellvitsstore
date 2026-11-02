@@ -9,13 +9,14 @@
     "node": "24.x"
   },
   "scripts": {
-    "dev": "concurrently -k -n API,WEB -c yellow,magenta \"npm run dev -w @dellvit/api\" \"npm run dev -w @dellvit/web\"",
+    "dev": "concurrently -k -n DB,API,WEB -c cyan,yellow,magenta \"npm run db:tunnel\" \"npm run dev -w @dellvit/api\" \"npm run dev -w @dellvit/web\"",
     "build": "npm run build -w @dellvit/api && npm run build -w @dellvit/web",
     "start": "concurrently -k -n API,WEB \"npm run start -w @dellvit/api\" \"npm run start -w @dellvit/web\"",
     "seed": "npm run seed -w @dellvit/api",
     "typecheck": "npm run typecheck --workspaces",
     "test": "tsc -p tsconfig.test.json && node --test .test-build/tests/*.test.js",
     "db:migrate": "npm run db:migrate -w @dellvit/api",
+    "db:tunnel": "node scripts/db-tunnel.mjs",
     "format": "prettier --write \"apps/**/*.{ts,tsx,css,json,mjs}\" \"docs/**/*.md\" \"tests/**/*.ts\" README.md",
     "bootstrap": "npm run bootstrap -w @dellvit/api",
     "import:local": "npm run import:local -w @dellvit/api"

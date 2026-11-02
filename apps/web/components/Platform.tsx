@@ -32,6 +32,8 @@ import {
   Smartphone,
   ShoppingBag,
   Store,
+  ArrowUpDown,
+  QrCode,
   Tags,
   Trash2,
   StickyNote,
@@ -68,6 +70,9 @@ import { PaymentStatusBadge } from './Orders';
 import type { PaymentMethod, User } from '@/lib/types';
 import { autoLogo, banks, providerName, wallets, type PaymentProvider } from '@/lib/paymentProviders';
 import { PaymentLogo, PaymentName } from './Checkout';
+import { IMAGE_ACCEPT, prepareImage } from './ImageCropper';
+import { ArrangeList } from './Arrange';
+import { MerchantQrField } from './PaymentQr';
 type RecordData = Record<string, any>;
 
 async function uploadImage(file: File) {
@@ -95,14 +100,15 @@ export function ImageField({ value, onChange }: { value: string; onChange: (v: s
           <input
             type="file"
             hidden
-            accept="image/png,image/jpeg,image/webp"
+            accept={IMAGE_ACCEPT}
             onChange={async (e) => {
               const f = e.target.files?.[0];
               e.target.value = '';
               if (!f) return;
               setBusy(true);
               try {
-                onChange(await uploadImage(f));
+                const ready = await prepareImage(f);
+                if (ready) onChange(await uploadImage(ready));
               } catch (err) {
                 notice((err as Error).message);
               } finally {
@@ -145,7 +151,22 @@ export function RecordManager({ kind }: { kind: string }) {
   const [remove, setRemove] = useState<RecordData | null>(null);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState('');
+  // The order being arranged, as ids; null while the Arrange window is closed.
+  const [order, setOrder] = useState<string[] | null>(null);
   if (!config) return <ErrorBox error="Unknown module." />;
+  async function saveOrder() {
+    setBusy(true);
+    try {
+      await api('/admin/records/' + kind + '/order', { method: 'POST', body: JSON.stringify({ ids: order }) });
+      setOrder(null);
+      refresh();
+      notice('New order saved. The store and the app show it now.');
+    } catch (e) {
+      notice((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function put(r: RecordData) {
     const { id, ...body } = r;
     await api('/admin/records/' + kind + '/' + id, { method: 'PUT', body: JSON.stringify(body) });
@@ -179,7 +200,9 @@ export function RecordManager({ kind }: { kind: string }) {
   }
   const start = (r?: RecordData) => {
     setFormError('');
-    setEdit(r ? { ...r } : { ...config.defaults, id: crypto.randomUUID(), active: true, position: 0 });
+    // New ones go to the end of the list; Arrange order moves them.
+    const last = Math.max(0, ...(data || []).map((x) => x.position || 0));
+    setEdit(r ? { ...r } : { ...config.defaults, id: crypto.randomUUID(), active: true, position: last + 1 });
   };
   const set = (key: string, v: unknown) => setEdit((e) => (e ? { ...e, [key]: v } : e));
   const list = data || [];
@@ -294,9 +317,14 @@ export function RecordManager({ kind }: { kind: string }) {
         search={(r) => `${r.name} ${r.code || ''} ${r.description || ''}`}
         searchPlaceholder={'Search ' + kind}
         toolbar={
-          <button className="button" onClick={() => start()}>
-            <Plus size={16} /> Add {config.noun}
-          </button>
+          <>
+            <button className="button ghost" onClick={() => setOrder([...list].sort((a, b) => (a.position || 0) - (b.position || 0)).map((r) => r.id))} disabled={!list.length}>
+              <ArrowUpDown size={16} /> Arrange order
+            </button>
+            <button className="button" onClick={() => start()}>
+              <Plus size={16} /> Add {config.noun}
+            </button>
+          </>
         }
         filters={[
           {
@@ -333,7 +361,13 @@ export function RecordManager({ kind }: { kind: string }) {
         ]}
         columns={[
           ...columns,
-          { key: 'position', header: 'Order', sort: (r: RecordData) => r.position, render: (r: RecordData) => r.position },
+          {
+            key: 'position',
+            header: 'Order',
+            sort: (r: RecordData) => r.position,
+            render: (r: RecordData) =>
+              list.filter((x) => (x.position || 0) < (r.position || 0) || ((x.position || 0) === (r.position || 0) && x.name < r.name)).length + 1,
+          },
           {
             key: 'active',
             header: 'Enabled',
@@ -437,6 +471,37 @@ export function RecordManager({ kind }: { kind: string }) {
               </button>
             </div>
           </form>
+        )}
+      </Modal>
+      <Modal open={!!order} onClose={() => !busy && setOrder(null)} title="Arrange categories">
+        {order && (
+          <div className="stack">
+            <small className="muted">
+              Drag a category, or use the arrows. The first one shows first everywhere: the category shortcuts, the home page
+              sections, the search filters and the app.
+            </small>
+            <ArrangeList
+              items={order.map((id) => {
+                const r = list.find((x) => x.id === id)!;
+                return {
+                  id,
+                  title: r.name,
+                  image: r.image || '',
+                  hint: r.active ? `${r.products || 0} products` : 'Disabled',
+                  off: !r.active,
+                };
+              })}
+              onChange={setOrder}
+            />
+            <div className="form-foot">
+              <button type="button" className="button ghost" onClick={() => setOrder(null)} disabled={busy}>
+                Cancel
+              </button>
+              <button type="button" className="button" onClick={saveOrder} disabled={busy}>
+                {busy ? 'Saving…' : 'Save order'}
+              </button>
+            </div>
+          </div>
         )}
       </Modal>
       <Confirm
@@ -1244,6 +1309,7 @@ const emptyMethod: RecordData = {
   mobile_number: '',
   raast_id: '',
   require_proof: false,
+  qr_payload: '',
   active: true,
 };
 function PaymentMethods() {
@@ -1529,6 +1595,19 @@ function PaymentMethods() {
                     Wallet mobile number
                     <input required value={edit.mobile_number} onChange={(e) => set('mobile_number', e.target.value)} placeholder="03XXXXXXXXX" />
                   </label>
+                  <label className="span-2">
+                    Wallet IBAN <span className="muted">(for the payment QR)</span>
+                    <input
+                      value={edit.iban}
+                      maxLength={34}
+                      onChange={(e) => set('iban', e.target.value.toUpperCase())}
+                      placeholder="PK00XXXX0000000000000000"
+                    />
+                    <small>
+                      With the IBAN, checkout shows a Raast QR with the exact amount that any wallet or banking app can scan. Find it
+                      in the {edit.provider || 'wallet'} app under My account → IBAN.
+                    </small>
+                  </label>
                 </>
               )}
               {edit.type === 'raast' && (
@@ -1570,6 +1649,19 @@ function PaymentMethods() {
                     <ImageField value={edit.logo || ''} onChange={(v) => set('logo', v)} />
                   </div>
                 )
+              )}
+              {edit.type !== 'cod' && (
+                <div className="alert info span-2">
+                  <QrCode size={16} />
+                  <span>
+                    {/^PK\d{2}[A-Z]{4}[A-Z0-9]{16}$/.test((edit.iban || (/^PK/i.test(edit.raast_id || '') ? edit.raast_id : '') || '').replace(/\s/g, '').toUpperCase())
+                      ? 'Checkout makes a payment QR for this method automatically, with the account and the exact order amount.'
+                      : 'Add an IBAN and checkout makes a payment QR with the exact order amount automatically.'}
+                  </span>
+                </div>
+              )}
+              {edit.type !== 'cod' && !!edit.qr_payload && (
+                <MerchantQrField value={edit.qr_payload || ''} onChange={(v) => set('qr_payload', v)} />
               )}
               <label className="span-2">
                 Instructions for customers <span className="muted">(optional)</span>

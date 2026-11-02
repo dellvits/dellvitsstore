@@ -1,0 +1,83 @@
+name: dellvit
+description: "Dellvit - your everyday, delivered."
+publish_to: 'none'
+
+# build-name is the versionName shown in the store, build-number is the versionCode.
+version: 1.0.1+2
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  audioplayers: ^6.8.1
+  cached_network_image: ^3.4.1
+  firebase_core: ^4.15.0
+  firebase_messaging: ^16.7.0
+  flutter:
+    sdk: flutter
+  flutter_local_notifications: ^22.3.2
+  flutter_map: ^8.3.2
+  flutter_secure_storage: ^11.2.0
+  flutter_widget_from_html_core: ^0.17.4
+  geolocator: ^14.1.1
+  http: ^1.6.0
+  image_cropper: ^12.2.1
+  image_picker: ^1.2.3
+  intl: ^0.20.3
+  latlong2: ^0.10.1
+  provider: ^6.1.5+1
+  shared_preferences: ^2.5.5
+  url_launcher: ^6.3.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+  flutter_native_splash: ^2.4.8
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/brand/
+    - assets/images/
+    - assets/images/onboarding/
+    # The launch sound, made by tool/make_splash_sound.cjs.
+    - assets/sounds/
+    # google-services.json from the Firebase console goes here; without it push stays off.
+    - assets/firebase/
+
+  fonts:
+    - family: PlusJakartaSans
+      fonts:
+        - asset: assets/fonts/PlusJakartaSans-400.ttf
+          weight: 400
+        - asset: assets/fonts/PlusJakartaSans-500.ttf
+          weight: 500
+        - asset: assets/fonts/PlusJakartaSans-600.ttf
+          weight: 600
+        - asset: assets/fonts/PlusJakartaSans-700.ttf
+          weight: 700
+        - asset: assets/fonts/PlusJakartaSans-800.ttf
+          weight: 800
+
+# Launcher icon: dart run flutter_launcher_icons
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/brand/icon.png"
+  adaptive_icon_background: "#E8243C"
+  adaptive_icon_foreground: "assets/brand/icon_foreground.png"
+
+# Launch screen: dart run flutter_native_splash:create
+# Only the background colour shows, so the animated splash in the app takes over seamlessly.
+# Android 12+ always draws an icon there, so it gets a transparent one.
+flutter_native_splash:
+  color: "#FFFFFF"
+  android_12:
+    color: "#FFFFFF"
+    icon_background_color: "#FFFFFF"
+    image: assets/brand/splash_blank.png
+  ios: false
+  web: false

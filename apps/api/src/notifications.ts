@@ -22,7 +22,18 @@ async function vapidKeys() {
 }
 export type Message = { type: string; title: string; body?: string; link?: string };
 /** The kinds of notification an account can silence. "update" is an administrator's announcement. */
-export const notificationTypes = ['order', 'delivery', 'payment', 'earning', 'payout', 'message', 'update'] as const;
+export const notificationTypes = [
+  'order',
+  'delivery',
+  'payment',
+  'earning',
+  'payout',
+  'message',
+  'update',
+  // Find my product matches, and blog comments for administrators.
+  'wish',
+  'blog',
+] as const;
 
 type BrowserPush = { endpoint: string; p256dh: string; auth: string; payload: object };
 /**

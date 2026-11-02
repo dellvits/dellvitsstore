@@ -30,6 +30,8 @@ export type SitemapData = {
   outlets: { id: string; image: string }[];
   products: { id: string; images: string[] }[];
   categories: string[];
+  /** Published articles that belong in the sitemap (Blog settings and each article's SEO settings). */
+  blog?: { slug: string; image: string; updated_at: string }[];
 };
 
 export const sitemapData = () => serverApi<SitemapData>('/site/sitemap');

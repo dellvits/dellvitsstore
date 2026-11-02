@@ -15,7 +15,16 @@ import {
   isOnline,
   adDay,
   maintenanceGuard,
+  productInArea,
 } from './platform.js';
+import { installBlog } from './blog.js';
+import { installWishes, matchProduct } from './wishes.js';
+import { toWebp, videoType } from './images.js';
+import { describeQr } from './emvqr.js';
+import jsQRModule from 'jsqr';
+import sharp from 'sharp';
+// jsqr is CommonJS; its function is the module itself or its default export.
+const jsQR = ((jsQRModule as any).default || jsQRModule) as typeof import('jsqr').default;
 import { installSupport, deleteSupport } from './support.js';
 import { installNotifications, notify, adminsWith, outletUser } from './notifications.js';
 import { pushConfigured } from './fcm.js';
@@ -64,7 +73,6 @@ import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import multer from 'multer';
-import sharp from 'sharp';
 import { randomUUID, randomInt } from 'node:crypto';
 import { objects } from './storage.js';
 import { z } from 'zod';
@@ -97,14 +105,17 @@ if (process.env.TRUST_PROXY === '1') app.set('trust proxy', 1);
 app.disable('x-powered-by');
 app.use(helmet());
 app.use(cors({ origin: origins, credentials: true }));
-app.use(
-  express.json({ limit: '100kb' }),
+// Blog posts carry their whole article; every other request stays small.
+const largeJson = express.json({ limit: '2mb' });
+const smallJson = express.json({ limit: '100kb' });
+app.use((req, res, next) =>
+  (req.path.startsWith('/api/admin/blog/') ? largeJson : smallJson)(req, res, next),
 );
 app.use(cookieParser());
 app.use(session);
 app.use('/api', (req, res, next) => {
   if (
-    /^\/(session|auth|profile|orders|manage|admin|rider|notifications|payment-proofs|push|home)(\/|$)/.test(
+    /^\/(session|auth|profile|orders|manage|admin|rider|notifications|payment-proofs|push|home|wishes|uploads)(\/|$)/.test(
       req.path,
     )
   )
@@ -156,8 +167,13 @@ const trackLimit = rateLimit({
 });
 const upload = multer({
   storage: multer.memoryStorage(),
-  // Leave room for multipart framing under Vercel Functions' request body limit.
-  limits: { fileSize: 4 * 1024 * 1024, files: 1 },
+  // Room for full-size phone photos; every picture is converted to WebP before it is stored.
+  limits: { fileSize: 15 * 1024 * 1024, files: 1 },
+});
+/** Blog videos are larger; only administrators upload them. */
+const videoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 60 * 1024 * 1024, files: 1 },
 });
 installNotifications(app, { writeLimit });
 installBroadcasts(app);
@@ -168,6 +184,8 @@ installPayments(app, { upload: upload.single('file') });
 installSupport(app, { upload: upload.single('file'), writeLimit });
 installWorkflow(app);
 installFinance(app);
+installBlog(app, { writeLimit });
+installWishes(app, { writeLimit });
 const money = (paisa: number) => 'PKR ' + (paisa / 100).toLocaleString('en-PK');
 const id = () => randomUUID();
 const now = () => new Date().toISOString();
@@ -193,14 +211,32 @@ function fail(message: string, status = 400): never {
 function safeImage(v: string) {
   return /^\/(images|api\/media)\/[\w.-]+\.(webp|png|jpg|jpeg)$/.test(v);
 }
-async function product(p: Row): Promise<Row> {
-  return {
-    ...p,
-    images: await JSON.parse(p.images),
-    payment_methods: productPaymentIds(p),
-    effective_price: Math.round((p.price * (100 - p.discount)) / 100),
-  };
+/** Products for the API, each with the delivery areas it sells in, read in one extra query. */
+export async function products(rows: Row[]): Promise<Row[]> {
+  if (!rows.length) return [];
+  const ids = [...new Set(rows.map((p) => String(p.id)))];
+  const areas = new Map<string, string[]>();
+  for (const r of ids.length > 500
+    ? await all('SELECT product_id,location_id FROM product_areas')
+    : await all(
+        `SELECT product_id,location_id FROM product_areas WHERE product_id IN (${ids.map(() => '?').join(',')})`,
+        ...ids,
+      ))
+    areas.set(r.product_id, [...(areas.get(r.product_id) || []), r.location_id]);
+  return rows.map((p) => {
+    const list = areas.get(p.id) || [];
+    return {
+      ...p,
+      images: JSON.parse(p.images),
+      payment_methods: productPaymentIds(p),
+      effective_price: Math.round((p.price * (100 - p.discount)) / 100),
+      nationwide: Number(p.nationwide || 0),
+      // Nation Wide products sell everywhere; the others in their main area and the areas listed.
+      location_ids: p.nationwide ? [] : [...new Set([p.location_id, ...list])],
+    };
+  });
 }
+const product = async (p: Row) => (await products([p]))[0];
 async function myOutlet(req: AuthRequest) {
   return await one('SELECT * FROM outlets WHERE user_id=?', req.user!.id);
 }
@@ -409,10 +445,11 @@ app.post(
   authLimit,
   atomicRoute(async (req: AuthRequest, res) => {
     const p = await z.object({ login: str(), password: z.string().max(100) }).parseAsync(req.body);
+    // Rider and outlet IDs are kept in capitals, so "drv-001" signs in as DRV-001.
     const u = await one(
       'SELECT * FROM users WHERE email=? OR login_id=?',
       p.login.toLowerCase(),
-      p.login,
+      p.login.toUpperCase(),
     );
     if (!u || !verifyPassword(p.password, u.password_hash) || !u.active)
       fail('Email / ID or password is incorrect.', 401);
@@ -497,8 +534,8 @@ app.get('/api/products', async (req, res) => {
     'SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.active=1 AND o.active=1';
   const args: any[] = [];
   if (loc && loc !== NATION_WIDE) {
-    sql += ' AND p.location_id=?';
-    args.push(String(loc));
+    sql += ' AND ' + productInArea;
+    args.push(String(loc), String(loc));
   }
   if (category && category !== 'All') {
     sql += ' AND p.category=?';
@@ -513,7 +550,7 @@ app.get('/api/products', async (req, res) => {
     const s = '%' + String(q).slice(0, 100) + '%';
     args.push(s, s, s);
   }
-  res.json(await Promise.all((await all(sql, ...args)).map(product)));
+  res.json(await products(await all(sql, ...args)));
 });
 app.get('/api/products/:id', async (req, res) => {
   const p = await one(
@@ -567,9 +604,9 @@ app.get('/api/app/popup', async (req: AuthRequest, res) => {
     if (!ids.length) continue;
     const rows = await all(
       `SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.active=1 AND o.active=1 AND p.stock>0 AND p.id IN (${ids.map(() => '?').join(',')})` +
-        (everywhere ? '' : ' AND p.location_id=?'),
+        (everywhere ? '' : ' AND ' + productInArea),
       ...ids,
-      ...(everywhere ? [] : [loc]),
+      ...(everywhere ? [] : [loc, loc]),
     );
     if (!rows.length) continue;
     // In the order the administrator chose.
@@ -581,7 +618,7 @@ app.get('/api/app/popup', async (req: AuthRequest, res) => {
       image: p.image,
       frequency: p.frequency,
       delay: p.delay,
-      products: await Promise.all(rows.map(product)),
+      products: await products(rows),
     });
   }
   res.json(null);
@@ -660,47 +697,63 @@ app.get('/api/home', async (req, res) => {
     : randomUUID().slice(0, 8);
   const base =
     'SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.active=1 AND o.active=1' +
-    (everywhere ? '' : ' AND p.location_id=?');
+    (everywhere ? '' : ' AND ' + productInArea);
   // A few times more than are shown, so the spread across outlets has products to choose from.
-  const mixed = async (filter: string, args: unknown[], limit: number) =>
-    Promise.all(
-      spreadByOutlet(
-        await all(
-          `${base}${filter} ORDER BY p.stock>0 DESC,md5(p.id||?) LIMIT ${Math.min(96, limit * 4)}`,
-          ...area,
-          ...args,
-          seed,
-        ),
-        limit,
-      ).map(product),
+  const mixed = async (filter: string, limit: number) =>
+    spreadByOutlet(
+      await all(
+        `${base}${filter} ORDER BY p.stock>0 DESC,md5(p.id||?) LIMIT ${Math.min(96, limit * 4)}`,
+        ...area,
+        ...area,
+        seed,
+      ),
+      limit,
     );
-  const [nearby, deals, categories, outlets] = await Promise.all([
-    mixed('', [], 8),
-    mixed(' AND p.discount>0 AND p.stock>0', [], 8),
-    Promise.all(
-      (await records('categories', true))
-        .filter((c) => c.show_on_home !== false)
-        .map(async (c) => ({
-          id: c.id,
-          name: c.name,
-          description: c.description,
-          image: c.image,
-          products: await mixed(
-            ' AND p.category=?',
-            [c.name],
-            Math.min(24, Math.max(1, Math.round(Number(c.home_limit)) || 8)),
-          ),
-        })),
-    ),
+  const homeCategories = (await records('categories', true)).filter((c) => c.show_on_home !== false);
+  const limitOf = (c: Row) => Math.min(24, Math.max(1, Math.round(Number(c.home_limit)) || 8));
+  // Every category section in one query: each category's products numbered in the same mix.
+  const sectionRows = async () => {
+    if (!homeCategories.length) return [];
+    return await all(
+      `SELECT * FROM (SELECT p.*,o.name outlet_name,ROW_NUMBER() OVER (PARTITION BY p.category ORDER BY p.stock>0 DESC,md5(p.id||?)) home_rank FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.active=1 AND o.active=1${everywhere ? '' : ' AND ' + productInArea} AND p.category IN (${homeCategories.map(() => '?').join(',')})) x WHERE home_rank<=96 ORDER BY home_rank`,
+      seed,
+      ...area,
+      ...area,
+      ...homeCategories.map((c) => c.name),
+    );
+  };
+  const [nearbyRows, dealRows, categoryRows, outlets] = await Promise.all([
+    mixed('', 8),
+    mixed(' AND p.discount>0 AND p.stock>0', 8),
+    sectionRows(),
     all(
       `SELECT o.id,o.name,o.location_id,o.address,o.phone,o.image,o.category,${outletPublicColumns},(SELECT COUNT(*) FROM products p WHERE p.outlet_id=o.id AND p.active=1) products,(SELECT MIN(delivery_minutes) FROM products p WHERE p.outlet_id=o.id AND p.active=1) delivery_minutes FROM outlets o LEFT JOIN outlet_settings s ON s.outlet_id=o.id WHERE o.active=1${everywhere ? '' : ' AND ' + servesArea} ORDER BY featured DESC,products DESC`,
       ...area,
     ),
   ]);
+  const sections = homeCategories.map((c) => ({
+    id: c.id,
+    name: c.name,
+    description: c.description,
+    image: c.image,
+    rows: spreadByOutlet(
+      categoryRows.filter((p) => p.category === c.name && p.home_rank <= limitOf(c) * 4),
+      limitOf(c),
+    ),
+  }));
+  // The delivery areas of every product shown, in one more query.
+  const serialized = new Map(
+    (
+      await products([...nearbyRows, ...dealRows, ...sections.flatMap((s) => s.rows)].map(({ home_rank, ...p }) => p))
+    ).map((p) => [p.id, p]),
+  );
+  const out = (rows: Row[]) => rows.map((p) => serialized.get(p.id)!);
   res.json({
-    nearby,
-    deals,
-    categories: categories.filter((c) => c.products.length),
+    nearby: out(nearbyRows),
+    deals: out(dealRows),
+    categories: sections
+      .filter((s) => s.rows.length)
+      .map(({ rows, ...s }) => ({ ...s, products: out(rows) })),
     outlets: outlets.map(withOpen),
   });
 });
@@ -725,42 +778,57 @@ const cart = z.object({
   coupon_code: z.string().max(30).default(''),
   idempotency_key: z.string().uuid(),
 });
+/**
+ * Places a checkout. A cart may hold products from several outlets: it becomes one order per
+ * outlet, all saved together in one transaction and linked by checkout_id, because each outlet
+ * prepares and each rider delivers its own order. Delivery is charged per outlet; a coupon's
+ * discount is taken off the largest order first.
+ */
 app.post('/api/orders', writeLimit, async (req: AuthRequest, res) => {
   if (!req.user) fail('Please log in or create an account to place an order.', 401);
   if (req.user.role !== 'customer') fail('Use a customer account to place an order.', 403);
   const p = await cart.parseAsync(req.body);
   let created = false;
-  const result = await transaction(async () => {
+  const placed = await transaction(async () => {
     const prior = await one('SELECT * FROM orders WHERE idempotency_key=?', p.idempotency_key);
     if (prior) {
       if (!(await orderVisible(req, prior))) fail('Checkout key already used.', 409);
-      return prior;
+      return prior.checkout_id
+        ? await all('SELECT * FROM orders WHERE checkout_id=? ORDER BY created_at,id', prior.checkout_id)
+        : [prior];
     }
     const ids = new Set(p.items.map((i) => i.product_id));
     if (ids.size !== p.items.length) fail('Duplicate cart items are not allowed.');
+    const loc = p.delivery.location_id;
     const lines: Row[] = await Promise.all(
       p.items.map(async (item): Promise<Row> => {
         const x = await one(
-          'SELECT p.*,o.active outlet_active FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.id=?',
+          `SELECT p.*,o.active outlet_active,o.name outlet_name,${productInArea} served FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.id=?`,
+          loc,
+          loc,
           item.product_id,
         );
         if (!x || !x.active || !x.outlet_active) fail('An item is no longer available.');
-        if (x.location_id !== p.delivery.location_id)
-          fail('Every item must be available in your delivery area.');
+        if (!x.served) fail(`${x.name} is not available in your delivery area.`);
         if (x.stock < item.quantity) fail(`${x.name} has only ${x.stock} available.`, 409);
         if (item.quantity > x.max_per_order)
           fail(`You can order up to ${x.max_per_order} of ${x.name} at a time.`);
         return { ...(await product(x)), quantity: item.quantity };
       }),
     );
-    if (new Set(lines.map((x) => x.outlet_id)).size !== 1)
-      fail('Please order from one outlet at a time.');
-    const shop = await outletSettings(lines[0].outlet_id);
-    if (!shop.accepting)
-      fail('This outlet is not accepting orders right now. Please try again later.');
-    if (!withinHours(shop))
-      fail(`This outlet takes orders from ${shop.opens_at} to ${shop.closes_at}. Please order then.`);
-    const center = (await one('SELECT * FROM locations WHERE id=?', p.delivery.location_id))!;
+    // One group per outlet, in the order the cart lists them.
+    const groups = new Map<string, Row[]>();
+    for (const x of lines) groups.set(x.outlet_id, [...(groups.get(x.outlet_id) || []), x]);
+    const several = groups.size > 1;
+    for (const [outletId, items] of groups) {
+      const shop = await outletSettings(outletId);
+      const who = several ? items[0].outlet_name : 'This outlet';
+      if (!shop.accepting)
+        fail(`${who} is not accepting orders right now. Please try again later.`);
+      if (!withinHours(shop))
+        fail(`${who} takes orders from ${shop.opens_at} to ${shop.closes_at}. Please order then.`);
+    }
+    const center = (await one('SELECT * FROM locations WHERE id=?', loc))!;
     const km = Math.hypot((p.delivery.lat - center.lat) * 111, (p.delivery.lng - center.lng) * 92);
     const area = await areaSettings(center.id);
     if (!area.active) fail('Delivery is paused in this area.');
@@ -776,124 +844,153 @@ app.post('/api/orders', writeLimit, async (req: AuthRequest, res) => {
           : `${payment.name} is not accepted for this item.`,
       );
     await validateSubmission(payment, p.payment, req.user!.id);
-    const outlet = lines[0].outlet_id;
-    const subtotal = lines.reduce((s, x) => s + x.effective_price * x.quantity, 0);
+    const sum = (items: Row[]) => items.reduce((s, x) => s + x.effective_price * x.quantity, 0);
+    const subtotal = sum(lines);
     const siteSettings = (await records('settings', true))[0];
     if (siteSettings?.checkout_enabled === false)
       fail(siteSettings.checkout_message || 'Ordering is temporarily paused. Please try again later.');
     if (siteSettings && subtotal < siteSettings.minimum_order)
       fail(`The minimum order subtotal is PKR ${(siteSettings.minimum_order / 100).toFixed(2)}.`);
-    if (subtotal < shop.minimum_order)
-      fail(`The minimum order for this outlet is PKR ${(shop.minimum_order / 100).toFixed(2)}.`);
+    for (const [outletId, items] of groups) {
+      const shop = await outletSettings(outletId);
+      if (sum(items) < shop.minimum_order)
+        fail(
+          `The minimum order for ${several ? items[0].outlet_name : 'this outlet'} is PKR ${(shop.minimum_order / 100).toFixed(2)}.`,
+        );
+    }
     if (subtotal < area.minimum_order)
       fail(`The minimum order in this area is PKR ${(area.minimum_order / 100).toFixed(2)}.`);
+    // The free-delivery threshold looks at the whole checkout.
     const fee = deliveryFee(area, subtotal);
     const { discount, coupon } = await couponDiscount(p.coupon_code, subtotal, {
       userId: req.user!.id,
       locationId: center.id,
-      fee,
+      fee: fee * groups.size,
     });
-    const oid = id();
-    const ref = 'DLV-' + Date.now().toString(36).toUpperCase() + '-' + randomInt(100, 1000);
-    const otp = String(randomInt(100000, 1000000));
-    const due = new Date(
-      Date.now() + Math.max(...lines.map((x) => x.delivery_minutes)) * 60000,
-    ).toISOString();
-    await run(
-      'INSERT INTO orders(id,reference,user_id,guest_session,outlet_id,rider_id,name,email,phone,address,location_id,lat,lng,notes,payment_method,subtotal,delivery_fee,total,status,otp,created_at,deliver_by,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-      oid,
-      ref,
-      req.user!.id,
-      null,
-      outlet,
-      // Riders are assigned by an administrator when the order is sent for confirmation.
-      null,
-      p.delivery.name,
-      p.delivery.email,
-      p.delivery.phone,
-      p.delivery.address,
-      p.delivery.location_id,
-      p.delivery.lat,
-      p.delivery.lng,
-      p.delivery.notes,
-      p.payment_method,
-      subtotal,
-      fee,
-      subtotal + fee - discount,
-      'placed',
-      otp,
-      now(),
-      due,
-      p.idempotency_key,
-    );
+    // Largest order first: it takes the coupon, and its id becomes the checkout's id.
+    const orders = [...groups.values()].sort((a, b) => sum(b) - sum(a));
+    let left = discount;
     const online = isOnline(payment.type);
-    await run(
-      'INSERT INTO order_details(order_id,discount,coupon_code,payment_name,payment_type,payment_instructions,payment_status,transaction_id,payer_name,payer_account,proof_id,payment_details,payment_updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
-      oid,
-      discount,
-      coupon?.code || '',
-      payment.name,
-      payment.type,
-      payment.instructions || '',
-      online ? 'submitted' : 'due',
-      online ? p.payment!.transaction_id : '',
-      online ? p.payment!.payer_name : '',
-      online ? p.payment!.payer_account : '',
-      online ? p.payment!.proof_id || null : null,
-      JSON.stringify(paymentSnapshot(payment)),
-      online ? now() : null,
-    );
-    created = true;
-    if (coupon) await run('INSERT INTO coupon_uses VALUES(?,?)', oid, coupon.id);
-    for (const x of lines) {
-      await run('UPDATE products SET stock=stock-? WHERE id=?', x.quantity, x.id);
+    const placedIds: string[] = [];
+    let checkoutId: string | null = null;
+    for (const [n, items] of orders.entries()) {
+      const oid = id();
+      checkoutId ??= several ? oid : null;
+      const part = Math.min(left, sum(items) + fee);
+      left -= part;
+      const ref = 'DLV-' + Date.now().toString(36).toUpperCase() + '-' + randomInt(100, 1000);
+      const otp = String(randomInt(100000, 1000000));
+      const due = new Date(
+        Date.now() + Math.max(...items.map((x) => x.delivery_minutes)) * 60000,
+      ).toISOString();
       await run(
-        'INSERT INTO order_items VALUES(?,?,?,?,?,?,?)',
-        id(),
+        'INSERT INTO orders(id,reference,user_id,guest_session,outlet_id,rider_id,name,email,phone,address,location_id,lat,lng,notes,payment_method,subtotal,delivery_fee,total,status,otp,created_at,deliver_by,idempotency_key,checkout_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
         oid,
-        x.id,
-        x.name,
-        x.quantity,
-        x.effective_price,
-        x.images[0],
+        ref,
+        req.user!.id,
+        null,
+        items[0].outlet_id,
+        // Riders are assigned by an administrator when the order is sent for confirmation.
+        null,
+        p.delivery.name,
+        p.delivery.email,
+        p.delivery.phone,
+        p.delivery.address,
+        loc,
+        p.delivery.lat,
+        p.delivery.lng,
+        p.delivery.notes,
+        p.payment_method,
+        sum(items),
+        fee,
+        sum(items) + fee - part,
+        'placed',
+        otp,
+        // Later orders of the checkout sort right after the first.
+        new Date(Date.now() + n).toISOString(),
+        due,
+        n ? `${p.idempotency_key}:${n + 1}` : p.idempotency_key,
+        checkoutId,
       );
+      await run(
+        'INSERT INTO order_details(order_id,discount,coupon_code,payment_name,payment_type,payment_instructions,payment_status,transaction_id,payer_name,payer_account,proof_id,payment_details,payment_updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        oid,
+        part,
+        part ? coupon?.code || '' : '',
+        payment.name,
+        payment.type,
+        payment.instructions || '',
+        online ? 'submitted' : 'due',
+        online ? p.payment!.transaction_id : '',
+        online ? p.payment!.payer_name : '',
+        online ? p.payment!.payer_account : '',
+        online ? p.payment!.proof_id || null : null,
+        JSON.stringify(paymentSnapshot(payment)),
+        online ? now() : null,
+      );
+      // A coupon counts as used once per checkout.
+      if (coupon && !n) await run('INSERT INTO coupon_uses VALUES(?,?)', oid, coupon.id);
+      for (const x of items) {
+        await run('UPDATE products SET stock=stock-? WHERE id=?', x.quantity, x.id);
+        await run(
+          'INSERT INTO order_items VALUES(?,?,?,?,?,?,?)',
+          id(),
+          oid,
+          x.id,
+          x.name,
+          x.quantity,
+          x.effective_price,
+          x.images[0],
+        );
+      }
+      await createFlow(oid);
+      await addEvent(oid, 'placed', '', 'customer');
+      // Cash on delivery needs no upfront check; online payments are verified separately.
+      if (!online) await markPaymentVerified(oid);
+      placedIds.push(oid);
     }
-    await createFlow(oid);
-    await addEvent(oid, 'placed', '', 'customer');
-    // Cash on delivery needs no upfront check; online payments are verified separately.
-    if (!online) await markPaymentVerified(oid);
-    return (await one('SELECT * FROM orders WHERE id=?', oid))!;
+    created = true;
+    return await all(
+      `SELECT * FROM orders WHERE id IN (${placedIds.map(() => '?').join(',')}) ORDER BY created_at,id`,
+      ...placedIds,
+    );
   });
+  const first = placed[0];
   if (created) {
-    const o = result;
     const d = (await one(
       'SELECT payment_type,payment_name,payment_status FROM order_details WHERE order_id=?',
-      o.id,
+      first.id,
     ))!;
-    const amount = money(o.total);
+    const amount = money(placed.reduce((s, o) => s + o.total, 0));
     const pendingNote = isOnline(d.payment_type) ? ' · payment under review' : '';
-    await notify([o.user_id], {
+    await notify([first.user_id], {
       type: 'order',
-      title: 'Order placed',
-      body: `${o.reference} · ${amount}${pendingNote}`,
-      link: '/orders/' + o.id,
+      title: placed.length > 1 ? `${placed.length} orders placed` : 'Order placed',
+      body: `${placed.map((o) => o.reference).join(', ')} · ${amount}${pendingNote}`,
+      link: placed.length > 1 ? '/orders' : '/orders/' + first.id,
     });
-    const verified = !!(await flow(o.id)).payment_verified_at;
-    await notify(await adminsWith('orders'), {
-      type: 'order',
-      title: 'New order',
-      body: `${o.reference} from ${o.name} · ${amount} · ${verified ? 'assign a rider and send it' : 'awaiting payment verification'}`,
-      link: '/admin?tab=orders',
-    });
+    for (const o of placed) {
+      const verified = !!(await flow(o.id)).payment_verified_at;
+      await notify(await adminsWith('orders'), {
+        type: 'order',
+        title: 'New order',
+        body: `${o.reference} from ${o.name} · ${money(o.total)}${placed.length > 1 ? ` · 1 of ${placed.length} in one checkout` : ''} · ${verified ? 'assign a rider and send it' : 'awaiting payment verification'}`,
+        link: '/admin?tab=orders',
+      });
+    }
     if (isOnline(d.payment_type))
       await notify(await adminsWith('payments'), {
         type: 'payment',
         title: 'Payment to verify',
-        body: `${o.reference} · ${d.payment_name} · ${amount}`,
+        body: `${placed.map((o) => o.reference).join(', ')} · ${d.payment_name} · ${amount}`,
         link: '/admin?tab=payments',
       });
   }
-  res.status(201).json(await serializeOrder(result, req));
+  // The first order, as before, plus every order of the checkout.
+  res.status(201).json({
+    ...(await serializeOrder(first, req)),
+    checkout: placed.map((o) => ({ id: o.id, reference: o.reference, total: o.total })),
+  });
 });
 app.get('/api/orders', async (req: AuthRequest, res) => {
   let rows: Row[] = [];
@@ -1074,16 +1171,15 @@ app.get('/api/manage/product-outlets', requireRole('admin'), async (_req, res) =
 );
 app.get('/api/manage/products', requireRole('admin', 'outlet'), async (req: AuthRequest, res) =>
   res.json(
-    await Promise.all(
-      (req.user!.role === 'admin'
+    await products(
+      req.user!.role === 'admin'
         ? await all(
             'SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.deleted_at IS NULL',
           )
         : await all(
             'SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.outlet_id=? AND p.deleted_at IS NULL',
             (await myOutlet(req))?.id || '',
-          )
-      ).map(product),
+          ),
     ),
   ),
 );
@@ -1098,7 +1194,11 @@ const productSchema = z.object({
   stock: z.number().int().min(0).max(100000),
   max_per_order: z.number().int().min(1).max(99).default(99),
   unit: str(100),
+  // The main area. The areas the product sells in are Nation Wide or location_ids; left out,
+  // a new product sells in its main area and an edited one keeps the areas it has.
   location_id: location,
+  nationwide: z.number().int().min(0).max(1).optional(),
+  location_ids: z.array(z.string().max(100)).max(500).optional(),
   sku: z
     .string()
     .trim()
@@ -1161,6 +1261,21 @@ async function saveProduct(req: AuthRequest, res: Response, editing: boolean) {
   const known = new Set((await records('payments')).map((m) => m.id));
   const methods = [...new Set(p.payment_methods)].filter((m) => known.has(m));
   if (!methods.length) fail('Choose at least one payment method for this product.');
+  // Delivery areas work like an outlet's: Nation Wide, or the areas ticked.
+  const keepAreas = editing && p.nationwide === undefined && p.location_ids === undefined;
+  const nationwide = p.nationwide ?? 0;
+  const areas = nationwide ? [] : [...new Set(p.location_ids || [p.location_id])];
+  if (!keepAreas && !nationwide) {
+    if (!areas.length) fail('Tick Nation Wide or choose at least one delivery area.');
+    const found = await all(
+      `SELECT id FROM locations WHERE deleted_at IS NULL AND id IN (${areas.map(() => '?').join(',')})`,
+      ...areas,
+    );
+    if (found.length !== areas.length) fail('One of the chosen delivery areas no longer exists.');
+    // The main area is one of the areas it sells in.
+    if (!areas.includes(p.location_id)) p.location_id = areas[0];
+  }
+  const before = editing ? await one('SELECT active FROM products WHERE id=?', pid) : null;
   const values = [
     p.outlet_id,
     p.name,
@@ -1193,6 +1308,17 @@ async function saveProduct(req: AuthRequest, res: Response, editing: boolean) {
       pid,
       ...values,
     );
+  if (!keepAreas) {
+    await run('UPDATE products SET nationwide=? WHERE id=?', nationwide, pid);
+    await run('DELETE FROM product_areas WHERE product_id=?', pid);
+    if (areas.length)
+      await run(
+        `INSERT INTO product_areas(product_id,location_id) VALUES ${areas.map(() => '(?,?)').join(',')}`,
+        ...areas.flatMap((a) => [pid, a]),
+      );
+  }
+  // New and newly listed products are compared with what customers asked for in Find my product.
+  if (p.active && (!before || !before.active)) await afterCommit(() => matchProduct(pid));
   res.json(await product((await one('SELECT * FROM products WHERE id=?', pid))!));
 }
 /** Payment methods a product form can offer: enabled and disabled, without account details. */
@@ -1233,28 +1359,107 @@ app.delete(
     res.json({ ok: true });
   }),
 );
+/** Saves any picture as WebP in the public image folder and answers its address. */
+async function storeImage(req: AuthRequest, res: Response) {
+  if (!req.file) fail('Choose an image.');
+  const f = id() + '.webp';
+  const image = await toWebp(req.file.buffer);
+  await objects.put('images/' + f, image, 'image/webp');
+  res.status(201).json({ url: '/api/media/' + f });
+}
 app.post(
   '/api/manage/images',
   requireRole('admin', 'outlet'),
   writeLimit,
   upload.single('file'),
-  atomicRoute(async (req, res) => {
+  atomicRoute(storeImage),
+);
+// Customers add pictures to their Find my product requests.
+app.post(
+  '/api/uploads/images',
+  requireRole('customer', 'admin', 'outlet', 'rider'),
+  writeLimit,
+  upload.single('file'),
+  atomicRoute(storeImage),
+);
+/**
+ * Turns a picture the browser cannot show (such as an iPhone HEIC photo) into WebP so it can be
+ * cropped before uploading. Nothing is stored.
+ */
+app.post(
+  '/api/uploads/preview',
+  requireRole('customer', 'admin', 'outlet', 'rider'),
+  writeLimit,
+  upload.single('file'),
+  async (req: AuthRequest, res) => {
     if (!req.file) fail('Choose an image.');
-    const f = id() + '.webp';
-    let image: Buffer;
-    try {
-      image = await sharp(req.file.buffer, { limitInputPixels: 24000000 })
-        .rotate()
-        .resize(1400, 1400, { fit: 'inside', withoutEnlargement: true })
-        .webp({ quality: 85 })
-        .toBuffer();
-    } catch {
-      fail('Upload a valid PNG, JPEG or WebP image.');
+    res.setHeader('Cache-Control', 'no-store');
+    res.type('image/webp').send(await toWebp(req.file.buffer, { max: 4096 }));
+  },
+);
+/**
+ * Reads the store's merchant QR from a photo or screenshot of it (or from its text), for the
+ * payment method form. Nothing is stored here; the form saves the text with the method.
+ */
+app.post(
+  '/api/admin/payments/qr-read',
+  requireRole('admin'),
+  writeLimit,
+  upload.single('file'),
+  atomicRoute(async (req: AuthRequest, res) => {
+    let payload = String(req.body?.payload || '').trim();
+    if (req.file) {
+      const { data, info } = await sharp(await toWebp(req.file.buffer, { max: 1600 }))
+        .ensureAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      const found = jsQR(new Uint8ClampedArray(data.buffer, data.byteOffset, data.byteLength), info.width, info.height);
+      if (!found?.data) fail('No QR code was found in this picture. Upload a clear, straight photo or screenshot of it.');
+      payload = found.data.trim();
     }
-    await objects.put('images/' + f, image!, 'image/webp');
-    res.status(201).json({ url: '/api/media/' + f });
+    if (!payload) fail('Upload the QR picture or paste its text.');
+    if (payload.length > 700) fail('This QR holds too much text to be a payment QR.');
+    res.json({ payload, ...describeQr(payload) });
   }),
 );
+app.post(
+  '/api/manage/videos',
+  requireRole('admin'),
+  writeLimit,
+  videoUpload.single('file'),
+  atomicRoute(async (req, res) => {
+    if (!req.file) fail('Choose a video.');
+    const kind = videoType(req.file.buffer);
+    if (!kind) fail('Upload an MP4 or WebM video.');
+    const f = id() + '.' + kind;
+    await objects.put('videos/' + f, req.file.buffer, 'video/' + kind);
+    res.status(201).json({ url: '/api/videos/' + f });
+  }),
+);
+/** Videos play in the browser, which asks for them in parts while seeking. */
+app.get('/api/videos/:name', async (req, res) => {
+  const name = String(req.params.name);
+  const kind = /^[\da-f-]+\.(mp4|webm)$/.exec(name)?.[1];
+  if (!kind) fail('File not found.', 404);
+  const video = await objects.get('videos/' + name);
+  if (!video) return res.sendStatus(404);
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.type('video/' + kind);
+  const size = video.body.length;
+  const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ''));
+  if (!range || (!range[1] && !range[2])) return res.send(video.body);
+  let start = range[1] ? Number(range[1]) : size - Number(range[2]);
+  const end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+  start = Math.max(0, start);
+  if (start > end || start >= size) {
+    res.setHeader('Content-Range', 'bytes */' + size);
+    return res.sendStatus(416);
+  }
+  res.status(206).setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
+  res.send(video.body.subarray(start, end + 1));
+});
 app.get('/api/media/:name', async (req, res) => {
   const name = String(req.params.name);
   if (!/^[\da-f-]+\.webp$/.test(name)) fail('File not found.', 404);
@@ -1934,7 +2139,9 @@ app.use((err: any, _req: AuthRequest, res: Response, _next: NextFunction) => {
       .status(400)
       .json({ error: err.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') });
   if (err instanceof multer.MulterError)
-    return res.status(400).json({ error: 'Upload one file up to 4 MB.' });
+    return res
+      .status(400)
+      .json({ error: 'Upload one picture up to 15 MB, or one video up to 60 MB.' });
   if (err.code === '23505')
     return res.status(409).json({ error: 'That email, account ID or record already exists.' });
   if (err.code === '23503')

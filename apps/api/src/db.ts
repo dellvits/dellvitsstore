@@ -20,11 +20,40 @@ pg.types.setTypeParser(20, (value) => {
   return number;
 });
 
+/**
+ * A database kept in a folder on this computer, for working on Dellvit locally without touching
+ * the live database: DATABASE_URL=pglite:../../data/local-db (relative to apps/api).
+ */
+function localDatabase(folder: string): DatabaseAdapter {
+  if (process.env.NODE_ENV === 'production')
+    throw new Error('The local pglite database is for development only.');
+  const ready = import('@electric-sql/pglite').then(({ PGlite }) => PGlite.create(folder));
+  // PGlite runs one statement per query() call, so scripts such as migrations go through exec().
+  const wrap = (engine: { query: Function; exec: Function }): Connection => ({
+    async query(sql, params) {
+      if (!params) {
+        const results = await engine.exec(sql);
+        const last = results.at(-1);
+        return { rows: last?.rows || [], rowCount: last?.affectedRows ?? last?.rows.length ?? 0 };
+      }
+      const r = await engine.query(sql, params);
+      return { rows: r.rows, rowCount: r.affectedRows ?? r.rows.length };
+    },
+  });
+  return {
+    query: async (sql, params) => wrap(await ready).query(sql, params),
+    transaction: async (fn) => (await ready).transaction((tx) => fn(wrap(tx as any))),
+    close: async () => (await ready).close(),
+  };
+}
+
 function database(): DatabaseAdapter {
   if (adapter) return adapter;
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString)
-    throw new Error('DATABASE_URL is required. Configure the Supabase PostgreSQL connection.');
+    throw new Error('DATABASE_URL is required. Configure the PostgreSQL connection.');
+  if (connectionString.startsWith('pglite:'))
+    return (adapter = localDatabase(connectionString.slice('pglite:'.length)));
   const url = new URL(connectionString);
   const local = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname);
   // URL sslmode options must not disable certificate verification.
@@ -81,7 +110,7 @@ export function setTestDatabase(value: DatabaseAdapter) {
 }
 
 export const applicationTables =
-  'locations users sessions outlets products orders order_items order_events documents messages settings admin_access platform_records area_settings rider_state audit_log order_details coupon_uses notifications push_subscriptions rider_settings rider_earnings rider_payouts payout_requests order_flow payment_proofs outlet_settings order_settlements cod_deposits rate_limits email_codes password_resets ad_stats support_threads support_messages outlet_areas device_tokens broadcasts partner_applications'.split(
+  'locations users sessions outlets products orders order_items order_events documents messages settings admin_access platform_records area_settings rider_state audit_log order_details coupon_uses notifications push_subscriptions rider_settings rider_earnings rider_payouts payout_requests order_flow payment_proofs outlet_settings order_settlements cod_deposits rate_limits email_codes password_resets ad_stats support_threads support_messages outlet_areas device_tokens broadcasts partner_applications product_areas blog_posts blog_comments product_wishes'.split(
     ' ',
   );
 const tables = new Set(applicationTables);

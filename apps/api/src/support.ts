@@ -1,6 +1,6 @@
 import type { Express, RequestHandler } from 'express';
 import { randomUUID } from 'node:crypto';
-import sharp from 'sharp';
+import { toWebp } from './images.js';
 import { z } from 'zod';
 import { atomicRoute } from './atomic-route.js';
 import { all, one, run, afterCommit, type Row } from './db.js';
@@ -33,13 +33,9 @@ async function attachment(file?: { buffer: Buffer; originalname: string }) {
   }
   let image: Buffer;
   try {
-    image = await sharp(file.buffer, { limitInputPixels: 24000000 })
-      .rotate()
-      .resize(1600, 1600, { fit: 'inside', withoutEnlargement: true })
-      .webp({ quality: 82 })
-      .toBuffer();
+    image = await toWebp(file.buffer, { max: 2400 });
   } catch {
-    fail('Attach a picture (PNG, JPEG or WebP) or a PDF, up to 4 MB.');
+    fail('Attach a picture or a PDF, up to 15 MB.');
   }
   await objects.put('support/' + id + '.webp', image, 'image/webp');
   return { file: id + '.webp', name, type: 'image/webp', size: image.length };

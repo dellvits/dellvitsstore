@@ -2,7 +2,7 @@ import { atomicRoute } from './atomic-route.js';
 import type { Express, RequestHandler } from 'express';
 import { randomUUID } from 'node:crypto';
 import { objects } from './storage.js';
-import sharp from 'sharp';
+import { toWebp } from './images.js';
 import { z } from 'zod';
 import { all, one, run, transaction, type Row } from './db.js';
 import { can, isOnline, records } from './platform.js';
@@ -20,6 +20,7 @@ const detailKeys: Record<string, string[]> = {
 };
 /** Account details shown to the customer, copied onto the order when it is placed. */
 export function paymentSnapshot(method: Row) {
+  // The merchant QR stays with the method; an order keeps only the account details.
   return Object.fromEntries(
     [...(detailKeys[method.type] || []), 'logo']
       .filter((k) => (Array.isArray(method[k]) ? method[k].length : method[k]))
@@ -54,12 +55,26 @@ export async function validateSubmission(
     !(await one('SELECT id FROM payment_proofs WHERE id=? AND user_id=?', s!.proof_id, userId))
   )
     fail('Upload your payment receipt again.');
+  // Orders placed together in one checkout (one per outlet) share a single payment.
   const duplicate = await one(
-    "SELECT d.order_id FROM order_details d JOIN orders o ON o.id=d.order_id WHERE d.transaction_id=? AND d.payment_type<>'cod' AND o.status<>'cancelled' AND o.id<>?",
+    "SELECT d.order_id FROM order_details d JOIN orders o ON o.id=d.order_id WHERE d.transaction_id=? AND d.payment_type<>'cod' AND o.status<>'cancelled' AND o.id<>? AND NOT (o.checkout_id IS NOT NULL AND o.checkout_id=(SELECT checkout_id FROM orders WHERE id=?))",
     s!.transaction_id,
+    orderId,
     orderId,
   );
   if (duplicate) fail('This transaction ID has already been used for another order.');
+}
+
+/**
+ * The order and the other unfinished online-paid orders from the same checkout: one payment
+ * covers them all, so it is resubmitted and reviewed for all of them together.
+ */
+async function samePayment(o: Row): Promise<Row[]> {
+  if (!o.checkout_id) return [o];
+  return await all(
+    "SELECT o.* FROM orders o JOIN order_details d ON d.order_id=o.id WHERE o.checkout_id=? AND d.payment_type<>'cod' AND o.status NOT IN ('cancelled','delivered') ORDER BY o.created_at,o.id",
+    o.checkout_id,
+  );
 }
 
 async function notifyReadyToSend(o: Row, how: string) {
@@ -79,17 +94,9 @@ export function installPayments(app: Express, { upload }: { upload: RequestHandl
     atomicRoute(async (req: AuthRequest, res) => {
       if (!req.file) return res.status(400).json({ error: 'Choose a receipt image.' });
       const id = randomUUID();
-      let image: Buffer;
-      try {
-        image = await sharp(req.file.buffer, { limitInputPixels: 24000000 })
-          .rotate()
-          .resize(1600, 1600, { fit: 'inside', withoutEnlargement: true })
-          .webp({ quality: 82 })
-          .toBuffer();
-      } catch {
-        return res.status(400).json({ error: 'Upload a valid PNG, JPEG or WebP screenshot.' });
-      }
-      await objects.put('proofs/' + id + '.webp', image!, 'image/webp');
+      // Receipts stay large enough to read every digit.
+      const image = await toWebp(req.file.buffer, { max: 2400 });
+      await objects.put('proofs/' + id + '.webp', image, 'image/webp');
       await run(
         'INSERT INTO payment_proofs VALUES(?,?,?,?)',
         id,
@@ -139,15 +146,16 @@ export function installPayments(app: Express, { upload }: { upload: RequestHandl
         type: d.payment_type,
       };
       await validateSubmission(method, s, req.user!.id, o.id);
-      await run(
-        "UPDATE order_details SET transaction_id=?,payer_name=?,payer_account=?,proof_id=?,payment_status='submitted',payment_note='',payment_updated_at=?,payment_reviewed_by=NULL,payment_reviewed_at=NULL WHERE order_id=?",
-        s.transaction_id,
-        s.payer_name,
-        s.payer_account,
-        s.proof_id || null,
-        new Date().toISOString(),
-        o.id,
-      );
+      for (const x of await samePayment(o))
+        await run(
+          "UPDATE order_details SET transaction_id=?,payer_name=?,payer_account=?,proof_id=?,payment_status='submitted',payment_note='',payment_updated_at=?,payment_reviewed_by=NULL,payment_reviewed_at=NULL WHERE order_id=? AND payment_status<>'paid'",
+          s.transaction_id,
+          s.payer_name,
+          s.payer_account,
+          s.proof_id || null,
+          new Date().toISOString(),
+          x.id,
+        );
       await notify(await adminsWith('payments'), {
         type: 'payment',
         title: 'Payment resubmitted',
@@ -178,33 +186,45 @@ export function installPayments(app: Express, { upload }: { upload: RequestHandl
       return res
         .status(400)
         .json({ error: 'This order was already sent to the outlet. Cancel it instead.' });
+    // The other orders from the same checkout were paid with the same transfer.
+    const siblings = (await samePayment(o)).filter((x) => x.id !== o.id);
+    const others =
+      p.decision === 'approve'
+        ? siblings
+        : (
+            await Promise.all(siblings.map(async (x) => ((await flow(x.id)).sent_at ? null : x)))
+          ).filter((x): x is Row => !!x);
+    const orders = [o, ...others];
     await transaction(async () => {
       const at = new Date().toISOString();
-      await run(
-        'UPDATE order_details SET payment_status=?,payment_note=?,payment_updated_at=?,payment_reviewed_by=?,payment_reviewed_at=? WHERE order_id=?',
-        p.decision === 'approve' ? 'paid' : 'rejected',
-        p.note,
-        at,
-        req.user!.id,
-        at,
-        o.id,
-      );
-      if (p.decision === 'approve') await markPaymentVerified(o.id);
-      else await clearPaymentVerified(o.id);
+      for (const x of orders) {
+        await run(
+          'UPDATE order_details SET payment_status=?,payment_note=?,payment_updated_at=?,payment_reviewed_by=?,payment_reviewed_at=? WHERE order_id=?',
+          p.decision === 'approve' ? 'paid' : 'rejected',
+          p.note,
+          at,
+          req.user!.id,
+          at,
+          x.id,
+        );
+        if (p.decision === 'approve') await markPaymentVerified(x.id);
+        else await clearPaymentVerified(x.id);
+      }
     });
+    const refs = orders.map((x) => x.reference).join(', ');
     if (p.decision === 'approve') {
       await notify([o.user_id], {
         type: 'payment',
         title: 'Payment verified',
-        body: `We received your payment for ${o.reference}.`,
+        body: `We received your payment for ${refs}.`,
         link: '/orders/' + o.id,
       });
-      if (o.status === 'placed') await notifyReadyToSend(o, 'paid online');
+      for (const x of orders) if (x.status === 'placed') await notifyReadyToSend(x, 'paid online');
     } else
       await notify([o.user_id], {
         type: 'payment',
         title: 'Payment could not be verified',
-        body: `${o.reference}: ${p.note}`,
+        body: `${refs}: ${p.note}`,
         link: '/orders/' + o.id,
       });
     res.json({ ok: true });

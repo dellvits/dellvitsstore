@@ -5,6 +5,9 @@ import { z } from 'zod';
 import { all, one, run, transaction, type Row } from './db.js';
 import { requireRole, hashPassword, accessRow, isOwner, type AuthRequest } from './security.js';
 import { range, between } from './range.js';
+import { blogSitemap, publicBlogSettings } from './blog.js';
+import { describeQr, dynamicQr, raastQr, validIban } from './emvqr.js';
+import QRCode from 'qrcode';
 
 export const permissions = [
   'overview',
@@ -17,6 +20,7 @@ export const permissions = [
   'messages',
   'categories',
   'content',
+  'blog',
   'coupons',
   'payments',
   'customers',
@@ -38,7 +42,11 @@ export async function records(kind: string, activeOnly = false): Promise<Row[]> 
   return (await all('SELECT * FROM platform_records WHERE kind=?', kind))
     .map((r) => ({ ...JSON.parse(r.data), id: r.id }))
     .filter((r) => !activeOnly || r.active)
-    .sort((a, b) => (a.position || 0) - (b.position || 0));
+    .sort(
+      (a, b) =>
+        (a.position || 0) - (b.position || 0) ||
+        String(a.name || '').localeCompare(String(b.name || '')),
+    );
 }
 /** Enabled home page content that is inside its schedule right now. */
 export async function publicContent() {
@@ -116,6 +124,12 @@ export async function areaSettings(id: string): Promise<AreaSettings> {
     ...(await one('SELECT * FROM area_settings WHERE location_id=?', id)),
   };
 }
+/**
+ * Matches products (as `p`) sold in the area given as the next two parameters: Nation Wide ones,
+ * ones whose main area it is, and ones that list it among their areas.
+ */
+export const productInArea =
+  '(p.nationwide=1 OR p.location_id=? OR EXISTS (SELECT 1 FROM product_areas pa WHERE pa.product_id=p.id AND pa.location_id=?))';
 /** What delivery costs for an order of this subtotal: nothing once it reaches the free threshold. */
 export const deliveryFee = (area: AreaSettings, subtotal: number) =>
   area.free_delivery_over > 0 && subtotal >= area.free_delivery_over ? 0 : area.fee;
@@ -178,6 +192,54 @@ async function paymentRecords(activeOnly = false) {
     .map((m) => Object.fromEntries(Object.entries(m).filter(([k]) => !retiredPaymentKeys.includes(k))))
     .sort((a, b) => rank(a.type) - rank(b.type) || String(a.name).localeCompare(String(b.name)));
 }
+/**
+ * The QR a customer scans to pay: dynamic (merchant, amount and reference filled in) when the
+ * imported QR follows the EMVCo standard, otherwise the imported QR as it is.
+ */
+export async function paymentQr(method: Row, amount: number, reference: string) {
+  const ref = 'DLV' + reference.replace(/[^A-Za-z0-9]/g, '').slice(0, 12).toUpperCase();
+  const qr = async (payload: string, extra: Row) => ({
+    amount,
+    payload,
+    image: await QRCode.toDataURL(payload, { errorCorrectionLevel: 'M', margin: 2, width: 480 }),
+    ...extra,
+  });
+  // Made from the method's own IBAN: the usual case, nothing to upload.
+  const iban = qrIban(method);
+  const raast = iban
+    ? raastQr({
+        iban,
+        amount,
+        bankName: method.type === 'wallet' ? method.provider : method.bank_name,
+        particulars: 'Dellvit ' + ref,
+      })
+    : null;
+  if (raast)
+    return await qr(raast, {
+      dynamic: true,
+      kind: 'raast',
+      merchant_name: method.account_title || method.name,
+      merchant_city: '',
+      account: iban!.slice(0, 8) + '…' + iban!.slice(-4),
+      valid_minutes: 30,
+    });
+  // An imported merchant QR, made dynamic when it follows the EMVCo standard.
+  if (!method.qr_payload) return null;
+  const info = describeQr(method.qr_payload);
+  return await qr(dynamicQr(method.qr_payload, amount, ref) || method.qr_payload, {
+    dynamic: info.valid,
+    kind: 'merchant',
+    merchant_name: info.merchant_name || method.account_title || method.name,
+    merchant_city: info.merchant_city,
+  });
+}
+/** The IBAN a method's payment QR pays into: its IBAN, or a Raast ID that is an IBAN. */
+export const qrIban = (m: Row): string | null =>
+  m.type !== 'cod' && validIban(m.iban || '')
+    ? m.iban
+    : m.type !== 'cod' && validIban(m.raast_id || '')
+      ? m.raast_id
+      : null;
 /** Enabled payment methods for checkout. */
 export const paymentMethods = () => paymentRecords(true);
 /** Every payment method, enabled or not, in checkout order. */
@@ -335,6 +397,17 @@ export const headFields = [
   'facebook_pixel_id',
   'custom_head_code',
 ] as const;
+/** Home page sections an administrator can put in any order; the header, hero and footer stay put. */
+export const homeSections = [
+  'trust',
+  'categories',
+  'nearby',
+  'deals',
+  'category_products',
+  'outlets',
+  'blog',
+  'how',
+] as const;
 const base = {
   active: z.boolean().default(true),
   position: z.number().int().min(0).max(999).default(0),
@@ -358,6 +431,8 @@ const schemas: Record<string, z.ZodType> = {
     show_ad: z.boolean(),
     show_outlets: z.boolean().default(true),
     show_category_products: z.boolean().default(true),
+    // The order of the home page sections between the hero and the footer.
+    home_sections: z.array(z.enum(homeSections)).max(20).default([...homeSections]),
     // Brand and contact details shown in the footer and on the contact page.
     tagline: z.string().trim().max(120).default(''),
     support_hours: z.string().trim().max(120).default(''),
@@ -565,6 +640,9 @@ const schemas: Record<string, z.ZodType> = {
           /^PK/i.test(v.trim()) ? v.replace(/\s/g, '').toUpperCase() : pkMobile(v),
         ),
       require_proof: z.boolean().default(false),
+      // The store's own merchant QR as its bank or wallet issued it (the text inside the QR).
+      // Checkout turns it into a dynamic QR with the order's amount (see emvqr.ts).
+      qr_payload: z.string().trim().max(700).default(''),
     })
     .superRefine((v, ctx) => {
       const issue = (path: string, message: string) =>
@@ -582,11 +660,16 @@ const schemas: Record<string, z.ZodType> = {
             'A Pakistani IBAN has 24 characters, for example PK36SCBL0000001123456702.',
           );
       }
+      // Wallets may add their IBAN too: checkout then shows a Raast QR for the exact amount.
+      if (v.type !== 'bank' && v.iban && !IBAN.test(v.iban))
+        issue('iban', 'A Pakistani IBAN has 24 characters, for example PK36SCBL0000001123456702.');
       if (v.type === 'wallet') {
         if (!walletProviders.includes(v.provider)) issue('provider', 'Choose a wallet provider.');
         if (!MOBILE.test(v.mobile_number))
           issue('mobile_number', 'Enter the wallet mobile number as 03XXXXXXXXX.');
       }
+      if (v.qr_payload && /[^\x20-\x7e\u00a0-\uffff]/.test(v.qr_payload))
+        issue('qr_payload', 'Import the QR again; its text looks damaged.');
       if (v.type === 'raast' && !MOBILE.test(v.raast_id) && !IBAN.test(v.raast_id))
         issue('raast_id', 'Use a Raast ID (03XXXXXXXXX mobile number) or an IBAN.');
     }),
@@ -669,15 +752,19 @@ export function installPlatform(app: Express) {
                 tracking: 'riders',
                 cash: 'riders',
                 payouts: 'riders',
+                // Find my product requests are part of the catalogue.
+                wishes: 'products',
+                'home-sections': 'content',
               } as Record<string, string>
             )[parts[1]] || parts[1];
     if (parts[0] === 'orders') p = 'orders';
-    if (parts[0] === 'manage') p = parts[1] === 'images' ? 'images' : 'products';
+    if (parts[0] === 'manage')
+      p = parts[1] === 'images' || parts[1] === 'videos' ? 'images' : 'products';
     const allowed =
       p === 'images'
         ? (
             await Promise.all(
-              ['products', 'outlets', 'ads', 'content', 'categories', 'payments'].map((x) =>
+              ['products', 'outlets', 'ads', 'content', 'categories', 'payments', 'blog'].map((x) =>
                 can(req.user, x),
               ),
             )
@@ -696,12 +783,13 @@ export function installPlatform(app: Express) {
     next();
   });
   app.get('/api/site', async (_req, res) => {
-    const [categories, content, payments, settings, ads] = await Promise.all([
+    const [categories, content, payments, settings, ads, blog] = await Promise.all([
       publicCategories(),
       publicContent(),
       paymentMethods(),
       records('settings', true),
       publicAds(),
+      publicBlogSettings(),
     ]);
     res.json({
       categories,
@@ -710,6 +798,7 @@ export function installPlatform(app: Express) {
       settings: settings[0] || null,
       // Advertising has one master switch in Store settings.
       ads: settings[0]?.show_ad === false ? [] : ads,
+      blog,
     });
   });
   /** Verification tags and analytics for the page <head>; the web server reads this while rendering. */
@@ -743,7 +832,7 @@ export function installPlatform(app: Express) {
     const s = (await records('settings', true))[0] || {};
     const on = (k: string) => s[k] !== false;
     const enabled = on('search_indexing') && on('sitemap_enabled');
-    const [outlets, products, categories] = await Promise.all([
+    const [outlets, products, categories, blog] = await Promise.all([
       enabled && on('sitemap_outlets')
         ? all('SELECT id,image FROM outlets WHERE active=1 AND deleted_at IS NULL ORDER BY name')
         : [],
@@ -756,6 +845,7 @@ export function installPlatform(app: Express) {
           )
         : [],
       enabled && on('sitemap_categories') ? records('categories', true) : [],
+      enabled ? blogSitemap() : [],
     ]);
     res.setHeader('Cache-Control', 'public, max-age=60');
     res.json({
@@ -771,6 +861,7 @@ export function installPlatform(app: Express) {
         images: (JSON.parse(p.images || '[]') as string[]).slice(0, 5),
       })),
       categories: categories.map((c) => c.name),
+      blog,
     });
   });
   /** Every ad with its view and click counts, for the chosen period and overall. */
@@ -852,24 +943,48 @@ export function installPlatform(app: Express) {
             .max(50),
           location_id: text,
           coupon_code: z.string().max(30).default(''),
+          // With a payment method that has a QR, the answer carries the QR for this amount.
+          payment_method: z.string().max(100).optional(),
+          reference: z.string().max(40).default(''),
         })
         .parse(req.body);
       let subtotal = 0;
+      const outlets = new Set<string>();
       for (const i of p.items) {
-        const x = await one('SELECT * FROM products WHERE id=? AND active=1', i.product_id);
-        if (!x || x.location_id !== p.location_id)
-          return res.status(400).json({ error: 'An item is unavailable in this area.' });
+        const x = await one(
+          `SELECT p.*,${productInArea} served FROM products p WHERE p.id=? AND p.active=1`,
+          p.location_id,
+          p.location_id,
+          i.product_id,
+        );
+        if (!x || !x.served)
+          return res
+            .status(400)
+            .json({ error: `${x?.name || 'An item'} is not available in this delivery area.` });
+        outlets.add(x.outlet_id);
         subtotal += Math.round((x.price * (100 - x.discount)) / 100) * i.quantity;
       }
       const area = await areaSettings(p.location_id);
-      const fee = deliveryFee(area, subtotal);
+      // Items from several outlets become one order per outlet, each delivered separately.
+      const fee = deliveryFee(area, subtotal) * outlets.size;
       const user = (req as AuthRequest).user;
       const { discount } = await couponDiscount(p.coupon_code, subtotal, {
         userId: user?.role === 'customer' ? user.id : undefined,
         locationId: p.location_id,
         fee,
       });
-      res.json({ subtotal, delivery_fee: fee, discount, total: subtotal + fee - discount });
+      const total = subtotal + fee - discount;
+      const method = p.payment_method
+        ? (await paymentMethods()).find((m) => m.id === p.payment_method)
+        : undefined;
+      res.json({
+        subtotal,
+        delivery_fee: fee,
+        discount,
+        total,
+        outlets: outlets.size,
+        qr: method && total > 0 ? await paymentQr(method, total, p.reference) : null,
+      });
     }),
   );
   /** Offers shown at checkout: public coupons that are running and valid in the area. */
@@ -1012,6 +1127,49 @@ export function installPlatform(app: Express) {
       res.json(
         kind === 'payments' ? (await adminPaymentMethods()).find((m) => m.id === id) : { ...p, id },
       );
+    }),
+  );
+  /** Saves a new display order: the ids listed come first, in that order. */
+  app.post(
+    '/api/admin/records/:kind/order',
+    requireRole('admin'),
+    atomicRoute(async (req, res) => {
+      const kind = String(req.params.kind);
+      if (!schemas[kind] || kind === 'settings') return res.sendStatus(404);
+      const { ids } = z.object({ ids: z.array(z.string().max(100)).max(500) }).parse(req.body);
+      const rows = await all('SELECT id,data FROM platform_records WHERE kind=?', kind);
+      const rank = (id: string) => (ids.includes(id) ? ids.indexOf(id) : ids.length);
+      const sorted = rows
+        .map((r) => ({ id: r.id, data: JSON.parse(r.data) }))
+        .sort((a, b) => rank(a.id) - rank(b.id) || (a.data.position || 0) - (b.data.position || 0));
+      for (const [i, r] of sorted.entries())
+        if (r.data.position !== i + 1)
+          await run(
+            'UPDATE platform_records SET data=? WHERE kind=? AND id=?',
+            JSON.stringify({ ...r.data, position: i + 1 }),
+            kind,
+            r.id,
+          );
+      res.json({ ok: true });
+    }),
+  );
+  /** The order of the home page sections, saved without the rest of Store settings. */
+  app.put(
+    '/api/admin/home-sections',
+    requireRole('admin'),
+    atomicRoute(async (req, res) => {
+      const { sections } = z
+        .object({ sections: z.array(z.enum(homeSections)).min(1).max(20) })
+        .parse(req.body);
+      // Sections left out keep their place at the end, so none can go missing.
+      const order = [...new Set([...sections, ...homeSections])];
+      const row = await one("SELECT data FROM platform_records WHERE kind='settings' AND id='global'");
+      if (!row) return res.status(400).json({ error: 'Save Store settings once first.' });
+      await run(
+        "UPDATE platform_records SET data=? WHERE kind='settings' AND id='global'",
+        JSON.stringify({ ...JSON.parse(row.data), home_sections: order }),
+      );
+      res.json({ sections: order });
     }),
   );
   app.patch(

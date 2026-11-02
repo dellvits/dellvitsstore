@@ -29,5 +29,10 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     ...d.categories.map((c) => entry('/search?category=' + encodeURIComponent(c), 0.6)),
     ...d.outlets.map((o) => entry('/outlets/' + o.id, 0.7, [o.image])),
     ...d.products.map((p) => entry('/products/' + p.id, 0.6, p.images)),
+    ...(d.blog?.length ? [entry('/blog', 0.7)] : []),
+    ...(d.blog || []).map((b) => ({
+      ...entry('/blog/' + b.slug, 0.6, [b.image]),
+      lastModified: b.updated_at,
+    })),
   ];
 }

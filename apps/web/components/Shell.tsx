@@ -199,12 +199,16 @@ export function Header() {
   const [menu, setMenu] = useState(false);
   const router = useRouter();
   const count = cart.reduce((n, i) => n + i.quantity, 0);
-  const { data: site } = useData<{ settings: Record<string, any> | null }>('/site');
+  const { data: site } = useData<{
+    settings: Record<string, any> | null;
+    blog?: { enabled: boolean; show_in_menu: boolean; title: string };
+  }>('/site');
   useEffect(() => setMenu(false), [path]);
   if (inPortal(path)) return <LocationPicker />;
   const links: [string, string][] = [
     ['/search', 'Explore'],
     ['/outlets', 'Outlets'],
+    ...(site?.blog?.enabled && site.blog.show_in_menu ? [['/blog', 'Blog'] as [string, string]] : []),
     ['/orders', 'Orders'],
   ];
   return (
@@ -436,6 +440,7 @@ export function Footer() {
         </span>
         <div>
           <Link href="/about">About</Link>
+          <Link href="/blog">Blog</Link>
           <Link href="/contact">Contact</Link>
           <Link href="/privacy">Privacy</Link>
           <Link href="/admin">Admin</Link>

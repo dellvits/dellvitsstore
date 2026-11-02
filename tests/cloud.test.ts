@@ -179,11 +179,11 @@ await test('Cloud persistence and concurrent requests', async (t) => {
       );
     },
   );
-  await t.test('uploads larger than 4 MiB are rejected before reaching storage', async () => {
+  await t.test('uploads larger than 15 MiB are rejected before reaching storage', async () => {
     const before = storedObjects.size;
-    const result = await upload('/api/payment-proofs', customer, Buffer.alloc(4 * 1024 * 1024 + 1));
+    const result = await upload('/api/payment-proofs', customer, Buffer.alloc(15 * 1024 * 1024 + 1));
     assert.equal(result.statusCode, 400);
-    assert.match(result.json().error, /4 MB/);
+    assert.match(result.json().error, /15 MB/);
     assert.equal(storedObjects.size, before);
   });
 });

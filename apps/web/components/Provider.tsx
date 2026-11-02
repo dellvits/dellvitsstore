@@ -62,6 +62,9 @@ const State = createContext<Context | null>(null);
 export const useApp = () => useContext(State)!;
 /** The default storefront choice: products and outlets from every delivery area in Pakistan. */
 export const NATION_WIDE: Location = { id: 'nationwide', name: 'Nation Wide', lat: 30.3753, lng: 69.3451 };
+/** Whether a product can be delivered in an area: Nation Wide, or one of its areas. */
+export const sellsIn = (p: Product, areaId: string) =>
+  !!p.nationwide || p.location_id === areaId || !!p.location_ids?.includes(areaId);
 /** Whether the visitor browses one delivery area rather than the whole country. */
 export const oneArea = (a: Location | null): a is Location => !!a && a.id !== NATION_WIDE.id;
 /** Most of one product a single order may hold; carts saved before the limit existed use 99. */
@@ -286,11 +289,8 @@ export default function Provider({ children }: { children: ReactNode }) {
       notice('This item is sold out.');
       return false;
     }
-    if (cart.length && cart[0].product.outlet_id !== p.outlet_id) {
-      notice('Your cart has items from another outlet. Clear it to order from here.');
-      return false;
-    }
-    if (oneArea(area) && p.location_id !== area.id) {
+    // Products from different outlets can share one cart; checkout places one order per outlet.
+    if (oneArea(area) && !sellsIn(p, area.id)) {
       notice('This item is not available in your selected area.');
       openLocation(true);
       return false;

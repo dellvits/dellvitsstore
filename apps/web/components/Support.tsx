@@ -27,6 +27,7 @@ import {
 import { ago, api, date, label } from '@/lib/api';
 import { useData } from '@/lib/useData';
 import { useApp } from './Provider';
+import { IMAGE_ACCEPT, prepareImage } from './ImageCropper';
 import { Badge, Confirm, DataTable, Empty, ErrorBox, IconAction, Loading, Modal, PageLoading, PageTitle, Stat } from './UI';
 
 export type ChatMessage = {
@@ -52,7 +53,7 @@ function day(v: string) {
       ? 'Yesterday'
       : d.toLocaleDateString('en-PK', { weekday: 'short', day: 'numeric', month: 'short', year: days > 300 ? 'numeric' : undefined });
 }
-const MAX_FILE = 4 * 1024 * 1024;
+const MAX_FILE = 15 * 1024 * 1024;
 
 /** A message that has been written but not yet confirmed by the server. */
 type Pending = { id: string; body: string; file: File | null; created_at: string; failed?: string };
@@ -130,11 +131,21 @@ export function ChatView({
     setError('');
     deliver(p);
   }
-  function choose(f?: File) {
+  async function choose(f?: File) {
     if (picker.current) picker.current.value = '';
     if (!f) return;
-    if (f.size > MAX_FILE) return setError('That file is larger than 4 MB.');
     setError('');
+    // Pictures can be cropped first; PDFs are sent as they are.
+    if (f.type !== 'application/pdf' && !/\.pdf$/i.test(f.name)) {
+      try {
+        const ready = await prepareImage(f);
+        if (!ready) return;
+        f = ready;
+      } catch (e) {
+        return setError((e as Error).message);
+      }
+    }
+    if (f.size > MAX_FILE) return setError('That file is larger than 15 MB.');
     setFile(f);
   }
   const receipt = (m: ChatMessage): Receipt =>
@@ -238,10 +249,10 @@ export function ChatView({
           ref={picker}
           type="file"
           hidden
-          accept="image/png,image/jpeg,image/webp,application/pdf"
+          accept={IMAGE_ACCEPT + ',application/pdf'}
           onChange={(e) => choose(e.target.files?.[0])}
         />
-        <button type="button" className="header-icon" aria-label="Attach a picture or PDF" title="Attach a picture or PDF (up to 4 MB)" onClick={() => picker.current?.click()}>
+        <button type="button" className="header-icon" aria-label="Attach a picture or PDF" title="Attach a picture or PDF (up to 15 MB)" onClick={() => picker.current?.click()}>
           <Paperclip size={18} />
         </button>
         <textarea

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#E8243C</color>
+    <!-- Tints the small Dellvit icon on notifications. -->
+    <color name="notification_color">#D91E45</color>
+</resources>

@@ -1,6 +1,7 @@
 'use client';
-import { useState, type FormEvent } from 'react';
+import { Fragment, useState, type FormEvent } from 'react';
 import {
+  ArrowUpDown,
   CalendarClock,
   Check,
   Copy,
@@ -24,6 +25,8 @@ import { useData } from '@/lib/useData';
 import { useApp } from './Provider';
 import { Badge, Confirm, DataTable, ErrorBox, IconAction, Modal, Stat, Toggle } from './UI';
 import { ImageField, localDate } from './Platform';
+import { ArrangeList } from './Arrange';
+import { sectionInfo, sectionOrder, type HomeSection } from '@/lib/homeSections';
 import {
   ContentBlock,
   HeroPreview,
@@ -83,7 +86,12 @@ export function ContentManager() {
   const { notice, locations } = useApp();
   const { data, setData, error, loading, refresh } = useData<Item[]>('/admin/records/content');
   // The built-in sections are switched on and off in Store settings; the outline shows their state.
-  const { data: site } = useData<{ settings: Record<string, any> | null }>('/site');
+  const { data: site, refresh: refreshSite } = useData<{
+    settings: Record<string, any> | null;
+    blog?: { enabled: boolean; show_on_home: boolean };
+  }>('/site');
+  const [arrange, setArrange] = useState<HomeSection[] | null>(null);
+  const sections = sectionOrder(site?.settings?.home_sections);
   const [edit, setEdit] = useState<Item | null>(null);
   const [remove, setRemove] = useState<Item | null>(null);
   const [device, setDevice] = useState<'desktop' | 'mobile'>('desktop');
@@ -132,13 +140,28 @@ export function ContentManager() {
   const statsBusy = loading && !data;
   const count = (key: string) => list.filter((c) => state(c).key === key).length;
   const builtIn = (key: string) => site?.settings?.['show_' + key] !== false;
+  const sectionOn = (s: HomeSection) =>
+    s === 'blog' ? !!site?.blog?.enabled && !!site.blog.show_on_home : builtIn(sectionInfo[s].setting.slice(5));
+  async function saveSections() {
+    setBusy(true);
+    try {
+      await api('/admin/home-sections', { method: 'PUT', body: JSON.stringify({ sections: arrange }) });
+      setArrange(null);
+      refreshSite();
+      notice('Section order saved. The home page shows it now.');
+    } catch (e) {
+      notice((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   const inSlot = (p: Placement) =>
     list.filter((c) => !['hero', 'announcement'].includes(c.type) && (c.placement || 'after_outlets') === p);
   /** One row of the page outline: either a built-in section or a slot for the administrator's blocks. */
-  const fixed = (title: string, on: boolean) => (
+  const fixed = (title: string, on: boolean, offText = 'Hidden in Store settings') => (
     <li className={'outline-fixed' + (on ? '' : ' off')}>
       <span>{title}</span>
-      <small>{on ? 'Built in' : 'Hidden in Store settings'}</small>
+      <small>{on ? 'Built in' : offText}</small>
     </li>
   );
   const slotRow = (title: string, blocks: Item[], add: () => void) => (
@@ -205,6 +228,9 @@ export function ContentManager() {
         <aside className="card outline">
           <div className="card-head">
             <h3>Home page layout</h3>
+            <button type="button" className="button ghost small" onClick={() => setArrange(sections)}>
+              <ArrowUpDown size={14} /> Arrange sections
+            </button>
           </div>
           <small className="muted">Top to bottom, as customers see it. Add a block where you want it.</small>
           <ol className="outline-list">
@@ -218,16 +244,15 @@ export function ContentManager() {
               list.filter((c) => c.type === 'hero'),
               () => start(blank('hero')),
             )}
-            {fixed('Benefits bar', builtIn('trust'))}
-            {slotRow(placements.top, inSlot('top'), () => start(blank('section', 'top')))}
-            {fixed('Good things near you', builtIn('nearby'))}
-            {slotRow(placements.after_nearby, inSlot('after_nearby'), () => start(blank('section', 'after_nearby')))}
-            {fixed('Category sections', builtIn('category_products'))}
-            {slotRow(placements.after_categories, inSlot('after_categories'), () => start(blank('section', 'after_categories')))}
-            {fixed('Outlets near you', builtIn('outlets'))}
-            {slotRow(placements.after_outlets, inSlot('after_outlets'), () => start(blank('section', 'after_outlets')))}
-            {fixed('How it works', builtIn('how'))}
-            {slotRow(placements.bottom, inSlot('bottom'), () => start(blank('section', 'bottom')))}
+            {sections.map((s) => {
+              const slot = sectionInfo[s].slot;
+              return (
+                <Fragment key={s}>
+                  {fixed(sectionInfo[s].title, sectionOn(s), s === 'blog' ? 'Off in Blog settings' : undefined)}
+                  {slot && slotRow(placements[slot], inSlot(slot), () => start(blank('section', slot)))}
+                </Fragment>
+              );
+            })}
             {fixed('Advertising', builtIn('ad'))}
           </ol>
         </aside>
@@ -371,6 +396,33 @@ export function ContentManager() {
           )}
         />
       </div>
+      <Modal open={!!arrange} onClose={() => !busy && setArrange(null)} title="Arrange home page sections">
+        {arrange && (
+          <div className="stack">
+            <small className="muted">
+              Drag a section or use the arrows. The header, announcement bar, hero and footer stay where they are. Your own
+              blocks move with the section they follow. The app uses the same order.
+            </small>
+            <ArrangeList
+              items={arrange.map((s) => ({
+                id: s,
+                title: sectionInfo[s].title,
+                hint: sectionOn(s) ? (sectionInfo[s].slot ? 'Your blocks for this place follow it' : undefined) : 'Hidden right now',
+                off: !sectionOn(s),
+              }))}
+              onChange={(ids) => setArrange(ids as HomeSection[])}
+            />
+            <div className="form-foot">
+              <button type="button" className="button ghost" onClick={() => setArrange(null)} disabled={busy}>
+                Cancel
+              </button>
+              <button type="button" className="button" onClick={saveSections} disabled={busy}>
+                {busy ? 'Saving…' : 'Save order'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
       <Modal open={!!edit} onClose={() => !busy && setEdit(null)} title={isNew ? 'Add content block' : 'Edit content block'} size="xl">
         {edit && (
           <form className="content-editor" onSubmit={save}>

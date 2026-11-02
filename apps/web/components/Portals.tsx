@@ -59,6 +59,8 @@ import {
   X,
   History,
   Layers,
+  Newspaper,
+  PackageSearch,
 } from 'lucide-react';
 import { useApp } from './Provider';
 import { api, money, date, openingHours } from '@/lib/api';
@@ -66,6 +68,7 @@ import { useData } from '@/lib/useData';
 import type { Product, Outlet, AdminOutlet, AdminArea, User, Location, PaymentMethod } from '@/lib/types';
 import { useRange } from '@/lib/range';
 import { PaymentLogo } from './Checkout';
+import { IMAGE_ACCEPT, prepareImages } from './ImageCropper';
 import {
   Badge,
   Confirm,
@@ -99,6 +102,8 @@ import { portalPath } from './Shell';
 import { NotificationsPage } from './Notifications';
 import { OrderDesk } from './OrderDesk';
 import { ContentManager } from './ContentManager';
+import { BlogManager } from './BlogManager';
+import { FindMyProduct, WishesManager } from './Wishes';
 import { AdManager } from './AdManager';
 import { CouponManager } from './CouponManager';
 import { PopupManager } from './PopupManager';
@@ -128,12 +133,15 @@ const adminNav: Nav[] = [
   { key: 'products', title: 'Products', icon: ShoppingBag, group: 'Catalog' },
   { key: 'categories', title: 'Categories', icon: Tags, group: 'Catalog' },
   { key: 'outlets', title: 'Outlets', icon: Store, group: 'Catalog' },
+  // What customers asked for in Find my product.
+  { key: 'wishes', title: 'Product requests', icon: PackageSearch, group: 'Catalog', permission: 'products' },
   { key: 'riders', title: 'Riders', icon: Bike, group: 'Operations' },
   // Riders and outlets who signed up themselves; open to either permission.
   { key: 'applications', title: 'Pending verification', icon: UserCheck, group: 'Operations', permission: 'riders|outlets' },
   { key: 'locations', title: 'Delivery areas', icon: MapPin, group: 'Operations' },
   { key: 'customers', title: 'Customers', icon: Users, group: 'Operations' },
   { key: 'content', title: 'Homepage content', icon: Layers, group: 'Marketing' },
+  { key: 'blog', title: 'Blog', icon: Newspaper, group: 'Marketing' },
   { key: 'ads', title: 'Advertising', icon: Megaphone, group: 'Marketing' },
   { key: 'popups', title: 'App pop-ups', icon: MessageSquareShare, group: 'Marketing', permission: 'ads' },
   { key: 'coupons', title: 'Coupons', icon: Ticket, group: 'Marketing' },
@@ -152,6 +160,7 @@ const outletNav: Nav[] = [
 const customerNav: Nav[] = [
   { key: 'summary', title: 'Dashboard', icon: LayoutDashboard, group: 'My account' },
   { key: 'orders', title: 'My orders', icon: ClipboardList, group: 'My account' },
+  { key: 'wishes', title: 'Find my product', icon: PackageSearch, group: 'My account' },
   { key: 'support', title: 'Support chat', icon: Headphones, group: 'Help' },
 ];
 const riderNav: Nav[] = [
@@ -318,6 +327,12 @@ export default function Portal({ role }: { role: PortalRole }) {
             <CustomerDashboard go={go} />
           ) : role === 'customer' && tab === 'orders' ? (
             <Orders embedded />
+          ) : role === 'customer' && tab === 'wishes' ? (
+            <FindMyProduct />
+          ) : tab === 'wishes' ? (
+            <WishesManager />
+          ) : tab === 'blog' ? (
+            <BlogManager />
           ) : tab === 'overview' ? (
             <AdminOverview go={go} />
           ) : tab === 'dashboard' ? (
@@ -404,7 +419,7 @@ export function ImageUpload({
     try {
       const room = multiple ? max - value.length : 1;
       if (files.length > room) notice(`Only ${max} images are allowed, so some were not added.`);
-      for (const file of files.slice(0, room)) {
+      for (const file of await prepareImages(files.slice(0, room), { aspect: 1 })) {
         const data = new FormData();
         data.append('file', file);
         const r = await api<{ url: string }>('/manage/images', { method: 'POST', body: data });
@@ -451,7 +466,7 @@ export function ImageUpload({
           <span>{busy ? 'Uploading…' : 'Upload'}</span>
           <input
             type="file"
-            accept="image/png,image/jpeg,image/webp"
+            accept={IMAGE_ACCEPT}
             multiple={multiple}
             disabled={busy}
             hidden
@@ -521,6 +536,9 @@ const newProduct = {
   payment_methods: [] as string[],
   outlet_id: '',
   location_id: '',
+  // Like outlets: Nation Wide, or the areas ticked.
+  nationwide: 0,
+  location_ids: [] as string[],
   active: 1,
 };
 type ProductMethod = Pick<PaymentMethod, 'id' | 'name' | 'type' | 'provider' | 'bank_name' | 'logo' | 'active'>;
@@ -543,20 +561,43 @@ function ProductManager({ admin }: { admin: boolean }) {
     const outlet = own || outlets?.[0];
     setEdit(
       p
-        ? { ...p, price: p.price / 100 }
+        ? {
+            ...p,
+            price: p.price / 100,
+            nationwide: p.nationwide ? 1 : 0,
+            location_ids: p.nationwide ? [] : p.location_ids?.length ? p.location_ids : [p.location_id],
+          }
         : {
             ...newProduct,
             category: categories?.[0]?.name || '',
             outlet_id: outlet?.id || '',
             // New products start in their outlet's area.
             location_id: outlet?.location_id || locations[0]?.id || '',
+            location_ids: [outlet?.location_id || locations[0]?.id || ''].filter(Boolean),
           },
     );
   }
-  async function persist(p: typeof newProduct & { id?: string }, message: string) {
+  /** Saves a product. Without areas (the quick switches in the list) it keeps the areas it has. */
+  async function persist(
+    p: Omit<typeof newProduct, 'nationwide' | 'location_ids'> & { id?: string; nationwide?: number; location_ids?: string[] },
+    message: string,
+  ) {
+    const { nationwide, location_ids, ...rest } = p;
+    const areas = nationwide ? [] : location_ids || [];
     await api('/manage/products' + (p.id ? '/' + p.id : ''), {
       method: p.id ? 'PUT' : 'POST',
-      body: JSON.stringify({ ...p, price: Math.round(p.price * 100) }),
+      body: JSON.stringify({
+        ...rest,
+        price: Math.round(p.price * 100),
+        ...(location_ids
+          ? {
+              nationwide: nationwide ? 1 : 0,
+              location_ids: areas,
+              // The main area is the first one ticked.
+              location_id: areas.includes(p.location_id) ? p.location_id : areas[0] || p.location_id,
+            }
+          : {}),
+      }),
     });
     refresh();
     notice(message);
@@ -565,6 +606,7 @@ function ProductManager({ admin }: { admin: boolean }) {
     e.preventDefault();
     if (!edit) return;
     if (!edit.payment_methods.length) return setFormError('Choose at least one payment method for this product.');
+    if (!edit.nationwide && !edit.location_ids.length) return setFormError('Tick Nation Wide or choose at least one delivery area.');
     setBusy(true);
     setFormError('');
     try {
@@ -605,6 +647,13 @@ function ProductManager({ admin }: { admin: boolean }) {
             label: 'Categories',
             options: (categories || []).map((c) => ({ value: c.name, label: c.name })),
             test: (p, v) => p.category === v,
+          },
+          {
+            key: 'area',
+            label: 'Areas',
+            options: [{ value: 'nationwide', label: 'Nation Wide' }, ...locations.map((l) => ({ value: l.id, label: l.name }))],
+            // Nation Wide products are sold in every area, so they match every area.
+            test: (p, v) => !!p.nationwide || (v !== 'nationwide' && (p.location_ids || [p.location_id]).includes(v)),
           },
           {
             key: 'status',
@@ -665,7 +714,17 @@ function ProductManager({ admin }: { admin: boolean }) {
             ),
           },
           ...(admin ? [{ key: 'outlet', header: 'Outlet', render: (p: Product) => p.outlet_name }] : []),
-          { key: 'area', header: 'Area', render: (p) => locations.find((l) => l.id === p.location_id)?.name || '—' },
+          {
+            key: 'area',
+            header: 'Areas',
+            render: (p) => {
+              if (p.nationwide) return <Badge tone="info">Nation Wide</Badge>;
+              const names = (p.location_ids?.length ? p.location_ids : [p.location_id])
+                .map((id) => locations.find((l) => l.id === id)?.name)
+                .filter(Boolean);
+              return names.length > 2 ? <span title={names.join(', ')}>{names.length} areas</span> : names.join(', ') || '—';
+            },
+          },
           {
             key: 'price',
             header: 'Price',
@@ -707,7 +766,7 @@ function ProductManager({ admin }: { admin: boolean }) {
               <Toggle
                 checked={!!p.active}
                 onChange={(v) =>
-                  persist({ ...p, price: p.price / 100, active: v ? 1 : 0 }, v ? 'Product listed.' : 'Product archived.').catch((e) =>
+                  persist({ ...p, nationwide: undefined, location_ids: undefined, price: p.price / 100, active: v ? 1 : 0 }, v ? 'Product listed.' : 'Product archived.').catch((e) =>
                     notice(e.message),
                   )
                 }
@@ -729,7 +788,7 @@ function ProductManager({ admin }: { admin: boolean }) {
               label={p.active ? 'Archive' : 'Restore'}
               tone={p.active ? 'danger' : 'success'}
               onClick={() =>
-                persist({ ...p, price: p.price / 100, active: p.active ? 0 : 1 }, p.active ? 'Product archived.' : 'Product restored.').catch(
+                persist({ ...p, nationwide: undefined, location_ids: undefined, price: p.price / 100, active: p.active ? 0 : 1 }, p.active ? 'Product archived.' : 'Product restored.').catch(
                   (e) => notice(e.message),
                 )
               }
@@ -781,7 +840,16 @@ function ProductManager({ admin }: { admin: boolean }) {
                     onChange={(e) => {
                       const area = outlets?.find((o) => o.id === e.target.value)?.location_id;
                       // Picking an outlet moves the product to that outlet's area; it can still be changed below.
-                      setEdit((p) => (p ? { ...p, outlet_id: e.target.value, location_id: area || p.location_id } : p));
+                      setEdit((p) =>
+                        p
+                          ? {
+                              ...p,
+                              outlet_id: e.target.value,
+                              location_id: area || p.location_id,
+                              location_ids: p.nationwide || !area ? p.location_ids : [area],
+                            }
+                          : p,
+                      );
                     }}
                   >
                     {outlets?.map((o) => (
@@ -793,17 +861,6 @@ function ProductManager({ admin }: { admin: boolean }) {
                 </label>
               )}
               <label>
-                Delivery area
-                <select required value={edit.location_id} onChange={(e) => set('location_id', e.target.value)}>
-                  {locations.map((l) => (
-                    <option value={l.id} key={l.id}>
-                      {l.name}
-                      {l.id === selectedOutlet?.location_id ? ' (outlet’s area)' : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
                 Category
                 <select value={edit.category} onChange={(e) => set('category', e.target.value)}>
                   {(categories || []).map((c) => (
@@ -811,6 +868,41 @@ function ProductManager({ admin }: { admin: boolean }) {
                   ))}
                 </select>
               </label>
+              <h4 className="span-2 form-section">Delivery areas</h4>
+              <div className="field span-2">
+                <span className="field-label">Areas this product is sold in</span>
+                <div className="choice-row">
+                  {locations.map((l) => {
+                    const on = !edit.nationwide && edit.location_ids.includes(l.id);
+                    return (
+                      <label key={l.id} className={'choice' + (on ? ' selected' : '') + (edit.nationwide ? ' disabled' : '')}>
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          disabled={!!edit.nationwide}
+                          onChange={(e) =>
+                            set(
+                              'location_ids',
+                              e.target.checked ? [...edit.location_ids, l.id] : edit.location_ids.filter((x) => x !== l.id),
+                            )
+                          }
+                        />
+                        {l.name}
+                        {l.id === selectedOutlet?.location_id ? ' (outlet’s area)' : ''}
+                      </label>
+                    );
+                  })}
+                </div>
+                <label className="check-line">
+                  <input type="checkbox" checked={!!edit.nationwide} onChange={(e) => set('nationwide', e.target.checked ? 1 : 0)} />
+                  Nation Wide
+                </label>
+                <small className="muted">
+                  {edit.nationwide
+                    ? 'This product shows in every delivery area in Pakistan. Untick Nation Wide to choose areas.'
+                    : 'This product shows only in the areas ticked above.'}
+                </small>
+              </div>
               <h4 className="span-2 form-section">Pricing and stock</h4>
               <label>
                 Price (PKR)

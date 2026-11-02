@@ -2,7 +2,7 @@
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
-import { useState, useEffect, useRef, type FormEvent } from 'react';
+import { Fragment, useState, useEffect, useRef, type FormEvent } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
@@ -17,26 +17,44 @@ import {
   MapPin,
   ShieldCheck,
   Smartphone,
+  Store,
   Tag,
   Trash2,
   UserRound,
   Zap,
 } from 'lucide-react';
-import { useApp, maxQuantity } from './Provider';
+import { useApp, maxQuantity, oneArea, sellsIn } from './Provider';
 import { money, api, currentPosition, distanceKm } from '@/lib/api';
 import { useData } from '@/lib/useData';
 import { checkoutId } from '@/lib/id';
 import { methodLogo } from '@/lib/paymentProviders';
 import type { Order, PaymentMethod } from '@/lib/types';
 import { Empty, Quantity, ErrorBox, Confirm, PageLoading } from './UI';
+import { IMAGE_ACCEPT, prepareImage } from './ImageCropper';
+import { CheckoutQrCard, type CheckoutQr } from './PaymentQr';
 const DeliveryMap = dynamic(() => import('./DeliveryMap'), {
   ssr: false,
   loading: () => <div className="map-placeholder">Loading map…</div>,
 });
 
+/** Cart lines grouped by outlet, in the order they were added; each outlet becomes its own order. */
+export function byOutlet<T extends { product: { outlet_id: string; outlet_name: string } }>(lines: T[]) {
+  const groups = new Map<string, { id: string; name: string; lines: T[] }>();
+  for (const l of lines) {
+    const g = groups.get(l.product.outlet_id);
+    if (g) g.lines.push(l);
+    else groups.set(l.product.outlet_id, { id: l.product.outlet_id, name: l.product.outlet_name, lines: [l] });
+  }
+  return [...groups.values()];
+}
+
 export function Cart() {
-  const { cart, quantity, clear, ready, locations } = useApp();
-  const deliveryFee = locations.find((l) => l.id === cart[0]?.product.location_id)?.fee ?? 0;
+  const { cart, quantity, clear, ready, locations, area } = useApp();
+  const groups = byOutlet(cart);
+  const areaFee =
+    locations.find((l) => l.id === (oneArea(area) ? area.id : cart[0]?.product.location_id))?.fee ?? 0;
+  // Delivery is charged once per outlet; the exact amount is shown at checkout.
+  const deliveryFee = areaFee * groups.length;
   const [confirm, setConfirm] = useState(false);
   const subtotal = cart.reduce((n, i) => n + i.product.effective_price * i.quantity, 0);
   const savings = cart.reduce((n, i) => n + (i.product.price - i.product.effective_price) * i.quantity, 0);
@@ -58,17 +76,27 @@ export function Cart() {
         </div>
       </div>
       <div className="split">
-        <section className="card">
+        <div className="stack">
+        {groups.length > 1 && (
+          <div className="alert info">
+            <Store size={16} /> Your cart has items from {groups.length} outlets. They are ordered together and each
+            outlet sends its part separately.
+          </div>
+        )}
+        {groups.map((g, n) => (
+        <section className="card" key={g.id}>
           <div className="card-head">
-            <Link href={'/outlets/' + cart[0].product.outlet_id} className="card-title-link">
-              {cart[0].product.outlet_name}
+            <Link href={'/outlets/' + g.id} className="card-title-link">
+              {g.name}
             </Link>
-            <button className="button ghost small" onClick={() => setConfirm(true)}>
-              <Trash2 size={15} /> Clear
-            </button>
+            {n === 0 && (
+              <button className="button ghost small" onClick={() => setConfirm(true)}>
+                <Trash2 size={15} /> Clear
+              </button>
+            )}
           </div>
           <div className="cart-lines">
-            {cart.map((i) => (
+            {g.lines.map((i) => (
               <div className="cart-line" key={i.product.id}>
                 <Link href={'/products/' + i.product.id} className="cart-thumb">
                   <img src={i.product.images[0]} alt="" />
@@ -95,10 +123,12 @@ export function Cart() {
               </div>
             ))}
           </div>
-          <Link className="button ghost small" href={'/outlets/' + cart[0].product.outlet_id}>
-            <ArrowLeft size={15} /> Add more items
+          <Link className="button ghost small" href={'/outlets/' + g.id}>
+            <ArrowLeft size={15} /> Add more from {g.name}
           </Link>
         </section>
+        ))}
+        </div>
         <aside className="card summary">
           <h3>Order summary</h3>
           <div className="line">
@@ -112,7 +142,7 @@ export function Cart() {
             </div>
           )}
           <div className="line">
-            <span>Delivery</span>
+            <span>Delivery{groups.length > 1 ? ` (${groups.length} outlets)` : ''}</span>
             <strong>{money(deliveryFee)}</strong>
           </div>
           <div className="line total">
@@ -288,15 +318,17 @@ export function PaymentProofFields({
           <span>{value.proof_url ? 'Replace screenshot' : busy ? 'Uploading…' : 'Upload screenshot'}</span>
           <input
             type="file"
-            accept="image/png,image/jpeg,image/webp"
+            accept={IMAGE_ACCEPT}
             hidden
             onChange={async (e) => {
-              const file = e.target.files?.[0];
+              const chosen = e.target.files?.[0];
               e.target.value = '';
-              if (!file) return;
+              if (!chosen) return;
               setBusy(true);
               setError('');
               try {
+                const file = await prepareImage(chosen, { title: 'Crop your receipt' });
+                if (!file) return;
                 const form = new FormData();
                 form.append('file', file);
                 const r = await api<{ id: string; url: string }>('/payment-proofs', { method: 'POST', body: form });
@@ -352,9 +384,18 @@ export function Checkout() {
   const [proof, setProof] = useState<Proof>({ transaction_id: '', payer_name: '', payer_account: '' });
   const [coupon, setCoupon] = useState('');
   const [appliedCoupon, setAppliedCoupon] = useState('');
-  const [quote, setQuote] = useState<{ signature: string; total: number; delivery_fee: number; discount: number } | null>(
+  const [quote, setQuote] = useState<{
+    signature: string;
+    total: number;
+    delivery_fee: number;
+    discount: number;
+    outlets?: number;
+    qr?: CheckoutQr | null;
+  } | null>(
     null,
   );
+  // The reference printed in the payment QR, so a transfer can be matched to this checkout.
+  const [qrReference] = useState(() => checkoutId().replace(/-/g, '').slice(0, 10).toUpperCase());
   const [quoteError, setQuoteError] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -367,16 +408,28 @@ export function Checkout() {
   const { data: offers } = useData<{ code: string; name: string; description: string }[]>(
     loc ? '/coupons?location=' + encodeURIComponent(loc) : null,
   );
+  // Methods with an IBAN get a Raast QR made automatically; an imported merchant QR also works.
+  const qrMethod = payments?.find(
+    (m) =>
+      m.id === payment &&
+      m.type !== 'cod' &&
+      (/^PK\d{2}[A-Z]{4}/.test(m.iban || '') || /^PK\d{2}[A-Z]{4}/.test(m.raast_id || '') || !!m.qr_payload),
+  );
   const signature = JSON.stringify({
     items: cart.map((i) => ({ product_id: i.product.id, quantity: i.quantity })),
     location_id: loc,
     coupon_code: appliedCoupon,
+    // A method with a QR gets one made for this exact total.
+    ...(qrMethod ? { payment_method: qrMethod.id, reference: qrReference } : {}),
   });
   useEffect(() => {
     if (!loc || !cart.length) return;
     let alive = true;
     setQuoteError('');
-    api<{ total: number; delivery_fee: number; discount: number }>('/quote', { method: 'POST', body: signature })
+    api<{ total: number; delivery_fee: number; discount: number; outlets?: number; qr?: CheckoutQr | null }>('/quote', {
+      method: 'POST',
+      body: signature,
+    })
       .then((q) => alive && setQuote({ ...q, signature }))
       .catch((e) => {
         if (alive) {
@@ -399,8 +452,13 @@ export function Checkout() {
     if (!ready || !user) return;
     const init = user.id + ':' + (cart[0]?.product.location_id || '');
     if (initialized.current === init) return;
+    // The area the shopper chose, then their own, as long as every item sells there.
+    const fits = (id?: string | null) => !!id && cart.every((i) => sellsIn(i.product, id));
     const l =
-      locations.find((l) => l.id === cart[0]?.product.location_id) || locations.find((l) => l.id === area?.id);
+      locations.find((l) => oneArea(area) && l.id === area.id && fits(l.id)) ||
+      locations.find((l) => l.id === user.location_id && fits(l.id)) ||
+      locations.find((l) => fits(l.id)) ||
+      locations.find((l) => l.id === cart[0]?.product.location_id);
     if (l) {
       initialized.current = init;
       setLoc(l.id);
@@ -414,7 +472,8 @@ export function Checkout() {
   const online = !!method && method.type !== 'cod';
   const subtotal = cart.reduce((n, i) => n + i.product.effective_price * i.quantity, 0);
   const areaInfo = locations.find((l) => l.id === loc);
-  const deliveryFee = quote?.delivery_fee ?? areaInfo?.fee ?? 0;
+  const outletCount = new Set(cart.map((i) => i.product.outlet_id)).size;
+  const deliveryFee = quote?.delivery_fee ?? (areaInfo?.fee ?? 0) * outletCount;
   const total = quote?.total ?? subtotal + deliveryFee;
   const pinKm = areaInfo ? distanceKm(pin, areaInfo) : 0;
   const pinOutside = !!areaInfo && pinKm > (areaInfo.radius ?? 8);
@@ -458,7 +517,11 @@ export function Checkout() {
         }),
       });
       clear();
-      router.push('/orders/' + o.id);
+      // Items from several outlets became one order each: the orders page lists them all.
+      if ((o.checkout?.length || 1) > 1) {
+        notice(`${o.checkout!.length} orders placed, one for each outlet.`);
+        router.push('/orders');
+      } else router.push('/orders/' + o.id);
     } catch (e) {
       setError((e as Error).message);
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -668,6 +731,7 @@ export function Checkout() {
                     <b>3</b> We verify the payment, then your order is accepted
                   </span>
                 </div>
+                {qrMethod && <CheckoutQrCard qr={quote?.signature === signature ? quote.qr : null} loading={!quoteError} />}
                 <AccountDetails method={method} />
                 {method.instructions && <p className="muted small">{method.instructions}</p>}
                 <PaymentProofFields value={proof} onChange={setProof} requireProof={method.require_proof} />
@@ -677,19 +741,23 @@ export function Checkout() {
         </div>
         <aside className="card summary sticky">
           <h3>Order summary</h3>
-          <small className="muted">{cart[0].product.outlet_name}</small>
-          <div className="summary-items">
-            {cart.map((i) => (
-              <div className="summary-item" key={i.product.id}>
-                <img src={i.product.images[0]} alt="" />
-                <span>
-                  <strong>{i.product.name}</strong>
-                  <small>Qty {i.quantity}</small>
-                </span>
-                <strong>{money(i.product.effective_price * i.quantity)}</strong>
+          {byOutlet(cart).map((g) => (
+            <Fragment key={g.id}>
+              <small className="muted">{g.name}</small>
+              <div className="summary-items">
+                {g.lines.map((i) => (
+                  <div className="summary-item" key={i.product.id}>
+                    <img src={i.product.images[0]} alt="" />
+                    <span>
+                      <strong>{i.product.name}</strong>
+                      <small>Qty {i.quantity}</small>
+                    </span>
+                    <strong>{money(i.product.effective_price * i.quantity)}</strong>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </Fragment>
+          ))}
           <div className="coupon">
             <div className="input-icon">
               <Tag size={15} />
@@ -743,7 +811,7 @@ export function Checkout() {
             <strong>{money(subtotal)}</strong>
           </div>
           <div className="line">
-            <span>Delivery</span>
+            <span>Delivery{(quote?.outlets ?? outletCount) > 1 ? ` (${quote?.outlets ?? outletCount} outlets)` : ''}</span>
             <strong>{deliveryFee ? money(deliveryFee) : 'Free'}</strong>
           </div>
           {!!areaInfo?.free_delivery_over && deliveryFee > 0 && (

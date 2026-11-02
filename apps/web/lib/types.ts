@@ -62,7 +62,12 @@ export type Product = {
   max_per_order: number;
   unit: string;
   sku: string;
+  /** The product's main delivery area. */
   location_id: string;
+  /** 1 when the product sells in every delivery area. */
+  nationwide?: number;
+  /** The areas it sells in when it is not Nation Wide. */
+  location_ids?: string[];
   discount: number;
   deal: string;
   images: string[];
@@ -143,6 +148,8 @@ export type PaymentMethod = {
   mobile_number?: string;
   raast_id?: string;
   require_proof?: boolean;
+  /** The store's merchant QR text; checkout shows a dynamic QR with the amount made from it. */
+  qr_payload?: string;
   active?: boolean;
   /** Admin list only: how many products accept this method. */
   products?: number;
@@ -151,6 +158,10 @@ export type CartItem = { product: Product; quantity: number };
 export type Order = {
   id: string;
   reference: string;
+  /** Orders placed together from several outlets share this id. */
+  checkout_id?: string | null;
+  /** Only in the answer to placing an order: every order of that checkout. */
+  checkout?: { id: string; reference: string; total: number }[];
   user_id: string | null;
   outlet_id: string;
   rider_id: string | null;

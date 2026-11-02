@@ -15,6 +15,8 @@ import {
   CreditCard,
   Mail,
   Megaphone,
+  Newspaper,
+  PackageSearch,
   Package,
   Settings2,
   Trash2,
@@ -50,6 +52,8 @@ const kinds: { type: string; title: string; hint: string; roles?: User['role'][]
   { type: 'payout', title: 'Payouts', hint: 'Payout requests and payments', roles: ['admin', 'rider'] },
   { type: 'message', title: 'Messages', hint: 'Support chat and contact messages' },
   { type: 'update', title: 'Dellvit updates', hint: 'News and announcements from Dellvit', roles: ['customer', 'outlet', 'rider'] },
+  { type: 'wish', title: 'Find my product', hint: 'When a product you asked for arrives on Dellvit', roles: ['customer'] },
+  { type: 'blog', title: 'Blog comments', hint: 'New comments to approve', roles: ['admin'] },
 ];
 
 const icons: Record<string, typeof Bell> = {
@@ -60,6 +64,8 @@ const icons: Record<string, typeof Bell> = {
   payout: Wallet,
   message: Mail,
   update: Megaphone,
+  wish: PackageSearch,
+  blog: Newspaper,
 };
 function TypeIcon({ type }: { type: string }) {
   const I = icons[type] || Bell;

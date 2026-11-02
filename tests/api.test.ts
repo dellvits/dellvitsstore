@@ -77,6 +77,8 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
   const admin = await login('admin@dellvit.local');
   const outlet = await login('DLV-001');
   const rider = await login('DRV-001');
+  // IDs work in any case.
+  assert.ok(await login(' drv-001 '));
   const otherOutlet = await login('DLV-002');
   const otherRider = await login('DRV-002');
   let order: any;
@@ -154,14 +156,12 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     },
   );
   await t.test(
-    'rejects unavailable stock, mixed outlets, invalid areas and remote pins',
+    'rejects unavailable stock, invalid areas and remote pins',
     async () => {
       const tooMany = orderBody();
       tooMany.items[0].quantity = 99;
       assert.equal((await request('POST', '/orders', tooMany, customer)).status, 409);
-      const mixed = orderBody();
-      mixed.items.push({ product_id: 'product-3', quantity: 1 });
-      assert.equal((await request('POST', '/orders', mixed, customer)).status, 400);
+      // Carts with several outlets are covered in features.test.ts.
       const wrong = orderBody();
       wrong.delivery = { ...delivery, location_id: 'islamabad' };
       assert.equal((await request('POST', '/orders', wrong, customer)).status, 400);
@@ -711,9 +711,13 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
     assert.equal(over.status, 400);
     assert.match(over.data.error, /up to 3/);
     // The delivery area is chosen per product and must be a supported area.
-    const moved = await save({ ...p, location_id: 'islamabad' });
+    const moved = await save({ ...p, location_id: 'islamabad', location_ids: ['islamabad'] });
     assert.equal(moved.status, 200, JSON.stringify(moved.data));
     assert.equal(moved.data.location_id, 'islamabad');
+    assert.deepEqual(moved.data.location_ids, ['islamabad']);
+    // Sent without its areas (as older app versions do), a product keeps the ones it has.
+    const { location_ids, nationwide, ...bare } = moved.data;
+    assert.deepEqual((await save(bare)).data.location_ids, ['islamabad']);
     assert.equal((await save({ ...p, location_id: 'no-such-area' })).status, 400);
     assert.equal((await save({ ...p, sku: '' })).status, 200);
   });
