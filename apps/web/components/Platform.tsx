@@ -72,7 +72,7 @@ import { autoLogo, banks, providerName, wallets, type PaymentProvider } from '@/
 import { PaymentLogo, PaymentName } from './Checkout';
 import { IMAGE_ACCEPT, prepareImage } from './ImageCropper';
 import { ArrangeList } from './Arrange';
-import { MerchantQrField } from './PaymentQr';
+import { IbanFromQr, MerchantQrField } from './PaymentQr';
 type RecordData = Record<string, any>;
 
 async function uploadImage(file: File) {
@@ -1569,6 +1569,7 @@ function PaymentMethods() {
                       placeholder="PK36SCBL0000001123456702"
                       maxLength={34}
                     />
+                    <IbanFromQr onIban={(v) => set('iban', v)} />
                   </label>
                   <label>
                     Branch code <span className="muted">(optional)</span>
@@ -1605,9 +1606,12 @@ function PaymentMethods() {
                     />
                     <small>
                       With the IBAN, checkout shows a Raast QR with the exact amount that any wallet or banking app can scan. Find it
-                      in the {edit.provider || 'wallet'} app under My account → IBAN.
+                      in the {edit.provider || 'wallet'} app under My account → IBAN, or read it from the wallet’s own QR.
                     </small>
                   </label>
+                  <div className="span-2">
+                    <IbanFromQr onIban={(v) => set('iban', v)} />
+                  </div>
                 </>
               )}
               {edit.type === 'raast' && (

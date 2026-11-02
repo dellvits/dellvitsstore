@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { crc16, describeQr, dynamicQr, parseTlv, raastQr, validIban } from '../apps/api/src/emvqr.js';
+import { crc16, describeQr, dynamicQr, parseTlv, raastQr, readRaastQr, validIban } from '../apps/api/src/emvqr.js';
 
 test('a Raast QR for an IBAN carries the amount, reference and expiry', () => {
   assert.equal(validIban('PK36SCBL0000001123456702'), true);
@@ -12,17 +12,17 @@ test('a Raast QR for an IBAN carries the amount, reference and expiry', () => {
     particulars: 'Dellvit DLVAB12',
     now: new Date('2026-11-02T10:00:00Z'),
   })!;
-  // The layout easypaisa and Faysal Bank print: 000202 010212 020200 03.. 0424<IBAN> 05.. 06.. 07.. 1004<CRC>.
+  // Bank name and particulars are only added when asked for.
   assert.equal(
     q.slice(0, -4),
     '000202' + '010212' + '020200' + '0318Standard Chartered' + '0424PK36SCBL0000001123456702' + '05041500' +
-      '0615Dellvit DLVAB12' + '0712021120261530' + '1004',
+      '0615Dellvit DLVAB12' + '0712021120261700' + '1004',
   );
   assert.equal(q.slice(-4), crc16(q.slice(0, -4)));
   const tags = Object.fromEntries(parseTlv(q)!.map((f) => [f.tag, f.value]));
   assert.equal(tags['05'], '1500');
-  // Half past three in Pakistan, 30 minutes after 10:00 UTC.
-  assert.equal(tags['07'], '021120261530');
+  // Five in the afternoon in Pakistan, two hours after 10:00 UTC.
+  assert.equal(tags['07'], '021120261700');
   assert.equal(raastQr({ iban: 'PK36SCBL0000001123456702', amount: 12345 })!.includes('0506123.45'), true);
   assert.equal(raastQr({ iban: 'PK00NOPE', amount: 100 }), null);
 });
@@ -69,4 +69,15 @@ test('a QR that does not follow the standard is not changed', () => {
   assert.equal(dynamicQr('https://example.com/pay/123', 1000, 'X'), null);
   const broken = merchantQr().slice(0, -4) + '0000';
   assert.equal(describeQr(broken).valid, false);
+});
+
+test('the QR matches what easypaisa makes for the same account and amount', () => {
+  // Decoded from easypaisa's "Create QR" for Rs 1000; only the expiry differs per QR.
+  const easypaisa = '0002020102120202000424PK44TMFB00000000681657130504100007122711202619011004411D';
+  assert.equal(crc16(easypaisa.slice(0, -4)), '411D');
+  const ours = raastQr({ iban: 'PK44TMFB0000000068165713', amount: 100000, now: new Date('2026-11-27T14:01:00Z'), validMinutes: 0 })!;
+  assert.equal(ours, easypaisa);
+  assert.deepEqual(readRaastQr(easypaisa), { iban: 'PK44TMFB0000000068165713', amount: '1000', dynamic: true });
+  assert.equal(readRaastQr('0002020102110202000424PK44TMFB00000000681657131004EF24')?.iban, 'PK44TMFB0000000068165713');
+  assert.equal(readRaastQr(easypaisa.slice(0, -4) + '0000'), null);
 });

@@ -210,8 +210,6 @@ export async function paymentQr(method: Row, amount: number, reference: string) 
     ? raastQr({
         iban,
         amount,
-        bankName: method.type === 'wallet' ? method.provider : method.bank_name,
-        particulars: 'Dellvit ' + ref,
       })
     : null;
   if (raast)
@@ -221,7 +219,7 @@ export async function paymentQr(method: Row, amount: number, reference: string) 
       merchant_name: method.account_title || method.name,
       merchant_city: '',
       account: iban!.slice(0, 8) + '…' + iban!.slice(-4),
-      valid_minutes: 30,
+      valid_minutes: 120,
     });
   // An imported merchant QR, made dynamic when it follows the EMVCo standard.
   if (!method.qr_payload) return null;

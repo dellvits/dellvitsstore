@@ -20,7 +20,7 @@ import {
 import { installBlog } from './blog.js';
 import { installWishes, matchProduct } from './wishes.js';
 import { toWebp, videoType } from './images.js';
-import { describeQr } from './emvqr.js';
+import { describeQr, readRaastQr } from './emvqr.js';
 import jsQRModule from 'jsqr';
 import sharp from 'sharp';
 // jsqr is CommonJS; its function is the module itself or its default export.
@@ -529,10 +529,16 @@ app.post(
 /** The storefront's "Nation Wide" choice: browse every delivery area at once. */
 const NATION_WIDE = 'nationwide';
 app.get('/api/products', async (req, res) => {
-  const { location: loc, q, category, outlet } = req.query;
+  const { location: loc, q, category, outlet, ids } = req.query;
   let sql =
     'SELECT p.*,o.name outlet_name FROM products p JOIN outlets o ON o.id=p.outlet_id WHERE p.active=1 AND o.active=1';
   const args: any[] = [];
+  // ?ids=a,b: the products of a saved cart, so it can drop ones that are gone and refresh prices.
+  if (ids) {
+    const list = [...new Set(String(ids).split(',').filter(Boolean))].slice(0, 50);
+    sql += ` AND p.id IN (${list.map(() => '?').join(',') || 'NULL'})`;
+    args.push(...list);
+  }
   if (loc && loc !== NATION_WIDE) {
     sql += ' AND ' + productInArea;
     args.push(String(loc), String(loc));
@@ -1419,7 +1425,10 @@ app.post(
     }
     if (!payload) fail('Upload the QR picture or paste its text.');
     if (payload.length > 700) fail('This QR holds too much text to be a payment QR.');
-    res.json({ payload, ...describeQr(payload) });
+    // A wallet or bank "My QR" (Raast): its IBAN is all checkout needs to make QRs itself.
+    const raast = readRaastQr(payload);
+    if (raast) return res.json({ payload, kind: 'raast', iban: raast.iban, valid: true, merchant_name: '', merchant_city: '', schemes: [] });
+    res.json({ payload, kind: 'merchant', ...describeQr(payload) });
   }),
 );
 app.post(

@@ -124,11 +124,63 @@ export function MerchantQrField({ value, onChange }: { value: string; onChange: 
   );
 }
 
+/**
+ * Reads the IBAN from a wallet's or bank's own "My QR" (JazzCash, Easypaisa, NayaPay, SadaPay or a
+ * bank app), so it does not have to be typed. Use the QR of the account customers should pay.
+ */
+export function IbanFromQr({ onIban }: { onIban: (iban: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  return (
+    <span className="iban-from-qr">
+      <label className="link">
+        <ScanLine size={13} /> {busy ? 'Reading QR…' : 'Fill IBAN from the account’s QR'}
+        <input
+          type="file"
+          hidden
+          accept={IMAGE_ACCEPT}
+          disabled={busy}
+          onChange={async (e) => {
+            const f = e.target.files?.[0];
+            e.target.value = '';
+            if (!f) return;
+            setBusy(true);
+            setMessage('');
+            try {
+              const form = new FormData();
+              form.append('file', f);
+              const r = await api<Read & { kind: string; iban?: string }>('/admin/payments/qr-read', { method: 'POST', body: form });
+              if (r.kind === 'raast' && r.iban) {
+                onIban(r.iban);
+                setMessage('IBAN filled in from the QR. Check that the account name is right before saving.');
+              } else setMessage('This QR has no IBAN in it. Use the account’s “My QR” from the wallet or bank app.');
+            } catch (err) {
+              setMessage((err as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+      </label>
+      {message && <small className="muted">{message}</small>}
+    </span>
+  );
+}
+
 /** The QR at checkout: scan it with any wallet or banking app to pay this exact amount. */
-export function CheckoutQrCard({ qr, loading }: { qr: CheckoutQr | null | undefined; loading: boolean }) {
+export function CheckoutQrCard({
+  qr,
+  loading,
+  compact = false,
+}: {
+  qr: CheckoutQr | null | undefined;
+  loading: boolean;
+  /** Stacked for the narrow order summary. */
+  compact?: boolean;
+}) {
   if (!qr) return loading ? <div className="checkout-qr loading">Preparing your payment QR…</div> : null;
   return (
-    <div className="checkout-qr">
+    <div className={'checkout-qr' + (compact ? ' compact' : '')}>
       <img src={qr.image} alt={`Payment QR for ${money(qr.amount)} to ${qr.merchant_name}`} width={220} height={220} />
       <div className="checkout-qr-text">
         <strong>Scan to pay {money(qr.amount)}</strong>

@@ -16,6 +16,7 @@ import {
   Lock,
   MapPin,
   ShieldCheck,
+  QrCode,
   Smartphone,
   Store,
   Tag,
@@ -731,7 +732,11 @@ export function Checkout() {
                     <b>3</b> We verify the payment, then your order is accepted
                   </span>
                 </div>
-                {qrMethod && <CheckoutQrCard qr={quote?.signature === signature ? quote.qr : null} loading={!quoteError} />}
+                {qrMethod && (
+                  <div className="alert info">
+                    <QrCode size={16} /> Scan the payment QR in the order summary: the account and amount fill in by themselves.
+                  </div>
+                )}
                 <AccountDetails method={method} />
                 {method.instructions && <p className="muted small">{method.instructions}</p>}
                 <PaymentProofFields value={proof} onChange={setProof} requireProof={method.require_proof} />
@@ -827,6 +832,8 @@ export function Checkout() {
             <span>Total</span>
             <strong>{money(total)}</strong>
           </div>
+          {/* The payment QR sits next to the amount it pays. */}
+          {qrMethod && <CheckoutQrCard qr={quote?.signature === signature ? quote.qr : null} loading={!quoteError} compact />}
           <button
             className="button large full"
             disabled={busy || !payment || quote?.signature !== signature || !!quoteError || !!paymentError}

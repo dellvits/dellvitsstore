@@ -278,6 +278,27 @@ export default function Provider({ children }: { children: ReactNode }) {
     if (hydrated) write('dellvit-cart', JSON.stringify(cart));
   }, [cart, hydrated]);
 
+  // A saved cart is checked once against the store: products that were removed or archived
+  // are taken out, and the others get today's price, stock and delivery areas.
+  const cartChecked = useRef(false);
+  useEffect(() => {
+    if (!hydrated || cartChecked.current || !cart.length) return;
+    cartChecked.current = true;
+    api<Product[]>('/products?ids=' + cart.map((i) => i.product.id).join(','))
+      .then((fresh) => {
+        const byId = new Map(fresh.map((p) => [p.id, p]));
+        setCart((c) => {
+          const kept = c.filter((i) => byId.has(i.product.id)).map((i) => ({ ...i, product: byId.get(i.product.id)! }));
+          if (kept.length < c.length)
+            notice(
+              `${c.length - kept.length === 1 ? 'An item' : c.length - kept.length + ' items'} in your cart ${c.length - kept.length === 1 ? 'is' : 'are'} no longer available and ${c.length - kept.length === 1 ? 'was' : 'were'} removed.`,
+            );
+          return kept;
+        });
+      })
+      .catch(() => {});
+  }, [hydrated, cart, notice]);
+
   const setArea = (a: Location) => {
     setAreaState(a);
     setAreaStatus('ready');

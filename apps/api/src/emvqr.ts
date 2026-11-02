@@ -102,18 +102,20 @@ function pakistanTime(at: Date) {
 
 /**
  * A Raast QR for paying an IBAN, made from the payment method's own details: no QR has to be
- * uploaded. This is the person-to-person layout that easypaisa, Faysal Bank and SadaPay print
- * and that easypaisa and JazzCash read (see pakdatakit's createRaastP2PQr):
- * 00 = 02 (Raast P2P), 01 = 12 (dynamic, with an amount), 02 = 00 (scheme), 03 bank name,
- * 04 IBAN, 05 amount in rupees, 06 particulars, 07 expiry DDMMYYYYHHmm (Pakistan time; apps
- * ignore an amount without one) and 10 = CRC-16/CCITT-FALSE.
+ * uploaded. This is the layout easypaisa, JazzCash, NayaPay and Faysal Bank print, checked
+ * against QRs decoded from those apps (easypaisa "Create QR" for Rs 1000 reads
+ * 000202 010212 020200 0424<IBAN> 05041000 0712<DDMMYYYYHHmm> 1004<CRC>):
+ * 00 = 02 (Raast P2P), 01 = 12 (dynamic, with an amount), 02 = 00 (scheme), 04 IBAN,
+ * 05 amount in rupees, 07 expiry in Pakistan time (apps ignore an amount without one) and
+ * 10 = CRC-16/CCITT-FALSE. The optional 03 (bank name) and 06 (particulars) are only added
+ * when asked for, since the wallets themselves leave them out.
  */
 export function raastQr({
   iban,
   amount,
   bankName = '',
   particulars = '',
-  validMinutes = 30,
+  validMinutes = 120,
   now = new Date(),
 }: {
   iban: string;
@@ -140,6 +142,20 @@ export function raastQr({
     field('07', pakistanTime(new Date(now.getTime() + validMinutes * 60000))) +
     '1004';
   return body + crc16(body);
+}
+
+/**
+ * Reads a Raast QR such as a wallet or bank app shows under "My QR" (00 = 02). Answers its IBAN
+ * and amount, or null when it is not one or its checksum is wrong.
+ */
+export function readRaastQr(payload: string) {
+  const text = payload.trim();
+  const fields = parseTlv(text);
+  const get = (tag: string) => fields?.find((f) => f.tag === tag)?.value || '';
+  if (!fields || get('00') !== '02' || fields.at(-1)?.tag !== '10') return null;
+  if (fields.at(-1)!.value.toUpperCase() !== crc16(text.slice(0, -4))) return null;
+  const iban = get('04');
+  return validIban(iban) ? { iban, amount: get('05'), dynamic: get('01') === '12' } : null;
 }
 
 /**
