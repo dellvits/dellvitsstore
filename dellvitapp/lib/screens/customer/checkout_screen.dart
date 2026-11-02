@@ -725,7 +725,12 @@ class _PayQr extends StatelessWidget {
     if (q == null) {
       return AppCard(
         color: c.soft,
-        child: Text(loading ? 'Preparing your payment QR…' : 'The payment QR could not be loaded.', style: context.t.bodySmall),
+        child: Text(
+          loading
+              ? 'Preparing your payment QR…'
+              : 'No QR code for this payment method yet. Pay to the account details below, then enter the TID.',
+          style: context.t.bodySmall,
+        ),
       );
     }
     final image = base64Decode(asString(q['image']).split(',').last);

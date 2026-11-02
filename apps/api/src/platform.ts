@@ -657,10 +657,12 @@ const schemas: Record<string, z.ZodType> = {
             'iban',
             'A Pakistani IBAN has 24 characters, for example PK36SCBL0000001123456702.',
           );
+        else if (v.iban && !validIban(v.iban)) issue('iban', 'These IBAN check digits do not match the account number, so one digit is probably wrong. Copy the IBAN exactly from the bank or wallet app.');
       }
       // Wallets may add their IBAN too: checkout then shows a Raast QR for the exact amount.
       if (v.type !== 'bank' && v.iban && !IBAN.test(v.iban))
         issue('iban', 'A Pakistani IBAN has 24 characters, for example PK36SCBL0000001123456702.');
+      else if (v.type !== 'bank' && v.iban && !validIban(v.iban)) issue('iban', 'These IBAN check digits do not match the account number, so one digit is probably wrong. Copy the IBAN exactly from the bank or wallet app.');
       if (v.type === 'wallet') {
         if (!walletProviders.includes(v.provider)) issue('provider', 'Choose a wallet provider.');
         if (!MOBILE.test(v.mobile_number))

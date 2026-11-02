@@ -2518,7 +2518,7 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
           bank_name: 'Meezan Bank',
           account_title: 'Real Store',
           account_number: '0123456789',
-          iban: 'PK36 MEZN 0000 0001 2345 6789',
+          iban: 'PK64 MEZN 0000 0001 2345 6789',
           instructions: 'Transfer the total and enter the TID.',
           active: true,
           position: 1,
@@ -2547,7 +2547,7 @@ await test('Dellvit delivery workflow and authorization', async (t) => {
         );
         const saved = await request('PUT', '/admin/records/payments/bank', bank, admin);
         assert.equal(saved.status, 200, JSON.stringify(saved.data));
-        assert.equal(saved.data.iban, 'PK36MEZN0000000123456789');
+        assert.equal(saved.data.iban, 'PK64MEZN0000000123456789');
         const publicBank = (await request('GET', '/payments')).data.find(
           (m: any) => m.id === 'bank',
         );

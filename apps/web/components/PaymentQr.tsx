@@ -178,7 +178,14 @@ export function CheckoutQrCard({
   /** Stacked for the narrow order summary. */
   compact?: boolean;
 }) {
-  if (!qr) return loading ? <div className="checkout-qr loading">Preparing your payment QR…</div> : null;
+  if (!qr)
+    return (
+      <div className="checkout-qr loading">
+        {loading
+          ? 'Preparing your payment QR…'
+          : 'No QR code for this payment method yet. Pay to the account details shown in the payment section, then enter the TID.'}
+      </div>
+    );
   return (
     <div className={'checkout-qr' + (compact ? ' compact' : '')}>
       <img src={qr.image} alt={`Payment QR for ${money(qr.amount)} to ${qr.merchant_name}`} width={220} height={220} />

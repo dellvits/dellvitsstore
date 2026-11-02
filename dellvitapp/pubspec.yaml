@@ -3,7 +3,7 @@ description: "Dellvit - your everyday, delivered."
 publish_to: 'none'
 
 # build-name is the versionName shown in the store, build-number is the versionCode.
-version: 1.0.1+2
+version: 1.1.0+3
 
 environment:
   sdk: ^3.12.2

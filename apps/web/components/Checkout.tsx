@@ -833,7 +833,7 @@ export function Checkout() {
             <strong>{money(total)}</strong>
           </div>
           {/* The payment QR sits next to the amount it pays. */}
-          {qrMethod && <CheckoutQrCard qr={quote?.signature === signature ? quote.qr : null} loading={!quoteError} compact />}
+          {qrMethod && <CheckoutQrCard qr={quote?.signature === signature ? quote.qr : null} loading={!quoteError && quote?.signature !== signature} compact />}
           <button
             className="button large full"
             disabled={busy || !payment || quote?.signature !== signature || !!quoteError || !!paymentError}
