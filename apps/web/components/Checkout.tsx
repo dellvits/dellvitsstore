@@ -410,12 +410,7 @@ export function Checkout() {
     loc ? '/coupons?location=' + encodeURIComponent(loc) : null,
   );
   // Methods with an IBAN get a Raast QR made automatically; an imported merchant QR also works.
-  const qrMethod = payments?.find(
-    (m) =>
-      m.id === payment &&
-      m.type !== 'cod' &&
-      (/^PK\d{2}[A-Z]{4}/.test(m.iban || '') || /^PK\d{2}[A-Z]{4}/.test(m.raast_id || '') || !!m.qr_payload),
-  );
+  const qrMethod = payments?.find((m) => m.id === payment && m.has_qr);
   const signature = JSON.stringify({
     items: cart.map((i) => ({ product_id: i.product.id, quantity: i.quantity })),
     location_id: loc,

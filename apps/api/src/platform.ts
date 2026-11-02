@@ -922,12 +922,16 @@ export function installPlatform(app: Express) {
           .filter(Boolean),
       ),
     ].slice(0, 50);
-    if (!ids.length) return res.json(await paymentMethods());
+    // has_qr: checkout can show a payment QR for the method (a valid IBAN, or an imported QR).
+    const withQr = (list: Row[]) => list.map((m) => ({ ...m, has_qr: m.type !== 'cod' && (!!qrIban(m) || !!m.qr_payload) }));
+    if (!ids.length) return res.json(withQr(await paymentMethods()));
     res.json(
-      await paymentMethodsFor(
-        await all(
-          `SELECT payment_methods FROM products WHERE id IN (${ids.map(() => '?').join(',')})`,
-          ...ids,
+      withQr(
+        await paymentMethodsFor(
+          await all(
+            `SELECT payment_methods FROM products WHERE id IN (${ids.map(() => '?').join(',')})`,
+            ...ids,
+          ),
         ),
       ),
     );

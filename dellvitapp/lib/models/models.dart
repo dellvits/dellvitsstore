@@ -212,6 +212,7 @@ class PaymentMethod {
       raastId = asString(j['raast_id']),
       requireProof = asBool(j['require_proof']),
       qrPayload = asString(j['qr_payload']),
+      serverHasQr = j['has_qr'] is bool ? j['has_qr'] as bool : null,
       active = asBool(j['active'], true);
 
   final String id, name, type, logo, instructions;
@@ -222,9 +223,12 @@ class PaymentMethod {
   final String qrPayload;
 
   bool get isOnline => type != 'cod';
-  /// Methods with an IBAN get a Raast QR made automatically at checkout; an imported merchant QR works too.
+  /// What the server says: whether checkout can show a payment QR for this method.
+  final bool? serverHasQr;
+
+  /// Methods with a valid IBAN get a Raast QR made automatically at checkout; an imported merchant QR works too.
   bool get hasQr =>
-      isOnline && (_ibanLike.hasMatch(iban) || _ibanLike.hasMatch(raastId) || qrPayload.isNotEmpty);
+      serverHasQr ?? (isOnline && (_ibanLike.hasMatch(iban) || _ibanLike.hasMatch(raastId) || qrPayload.isNotEmpty));
   static final _ibanLike = RegExp(r'^PK\d{2}[A-Z]{4}');
 
   /// The wallet or the bank the method belongs to.

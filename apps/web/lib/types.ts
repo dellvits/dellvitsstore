@@ -150,6 +150,8 @@ export type PaymentMethod = {
   require_proof?: boolean;
   /** The store's merchant QR text; checkout shows a dynamic QR with the amount made from it. */
   qr_payload?: string;
+  /** Checkout only: the server can make a payment QR for this method. */
+  has_qr?: boolean;
   active?: boolean;
   /** Admin list only: how many products accept this method. */
   products?: number;
